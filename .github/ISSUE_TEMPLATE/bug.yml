@@ -1,0 +1,50 @@
+name: 缺陷报告
+description: 报告一个可复现的错误或回归
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: 安全漏洞请按 SECURITY.md 私密报告，不要创建公开 Issue。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 简要描述实际行为及其影响。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现步骤
+      description: 提供不含敏感数据的确定性复现步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与版本
+      description: 包括版本、提交、操作系统及相关配置；请隐藏凭据。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 日志或证据
+      description: 仅粘贴最小必要片段，不得包含 Token、完整源码或个人数据。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已移除凭据、真实客户源码和个人数据。
+          required: true
+        - label: 我已检查现有 Issue，未发现重复报告。
+          required: true

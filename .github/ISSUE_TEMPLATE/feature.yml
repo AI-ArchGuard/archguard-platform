@@ -1,0 +1,46 @@
+name: 功能需求
+description: 提议一个有明确用户价值和验收标准的功能
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: 请先确认该需求属于本仓库职责，并避免在一个 Issue 中混合多个问题。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与用户价值
+      description: 谁在什么场景遇到什么问题，当前代价是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 目标与范围
+      description: 列出目标、包含范围和明确的非目标。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 使用可验证的 Given / When / Then 或等价条件。
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: 风险与依赖
+      description: 包括安全、兼容、数据、部署和跨仓库影响。
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已确认该需求不包含密钥、真实客户源码或个人数据。
+          required: true
+        - label: 我已检查现有 Issue，未发现重复需求。
+          required: true

@@ -4,7 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -31,6 +34,7 @@ import org.springframework.test.web.servlet.MvcResult;
 class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
     private static final String ACTOR = "11111111-1111-1111-1111-111111111111";
     private static final String OTHER_ACTOR = "22222222-2222-2222-2222-222222222222";
+    private static final String THIRD_ACTOR = "33333333-3333-3333-3333-333333333333";
     private static final String VALID_TRACE_ID = "0123456789abcdef0123456789abcdef";
 
     private final MockMvc mockMvc;
@@ -114,6 +118,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
                 "/api/v1/projects/[0-9a-f-]{36}")))
             .andExpect(jsonPath("$.key").value(key))
             .andExpect(jsonPath("$.name").value("Platform Café"))
+            .andExpect(jsonPath("$.version").value(0))
             .andReturn();
 
         JsonNode body = objectMapper.readTree(creation.getResponse().getContentAsString());
@@ -186,12 +191,159 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.code").value("project.not_found"));
     }
 
+    @Test
+    void listsOnlyProjectsVisibleToTheCurrentActor() throws Exception {
+        String ownKey = uniqueKey();
+        String otherKey = uniqueKey();
+        createProject(ownKey, "Own project").andExpect(status().isCreated());
+        createProjectAs(OTHER_ACTOR, otherKey, "Other project").andExpect(status().isCreated());
+
+        MvcResult result = mockMvc.perform(get("/api/v1/projects")
+                .with(user(ACTOR))
+                .queryParam("page", "0")
+                .queryParam("size", "100"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(0))
+            .andExpect(jsonPath("$.size").value(100))
+            .andExpect(jsonPath("$.total").isNumber())
+            .andReturn();
+
+        JsonNode items = objectMapper.readTree(result.getResponse().getContentAsString()).get("items");
+        assertThat(items).anyMatch(item -> item.get("key").asText().equals(ownKey));
+        assertThat(items).noneMatch(item -> item.get("key").asText().equals(otherKey));
+    }
+
+    @Test
+    void validatesPaginationParameters() throws Exception {
+        mockMvc.perform(get("/api/v1/projects")
+                .with(user(ACTOR))
+                .queryParam("size", "101"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("request.malformed"));
+    }
+
+    @Test
+    void updatesAProjectWithOptimisticConcurrencyAndMaintainerAuthorization() throws Exception {
+        UUID projectId = createdProjectId(createProject(uniqueKey(), "Before"));
+
+        mockMvc.perform(patch("/api/v1/projects/{id}", projectId)
+                .with(user(ACTOR))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(updateJson("After", 0)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.name").value("After"))
+            .andExpect(jsonPath("$.version").value(1));
+
+        mockMvc.perform(patch("/api/v1/projects/{id}", projectId)
+                .with(user(ACTOR))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(updateJson("Stale", 0)))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("project.version_conflict"));
+
+        setMember(projectId, OTHER_ACTOR, "VIEWER").andExpect(status().isOk());
+        mockMvc.perform(patch("/api/v1/projects/{id}", projectId)
+                .with(user(OTHER_ACTOR))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(updateJson("Forbidden", 1)))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code").value("authorization.denied"));
+    }
+
+    @Test
+    void deletesAProjectAtTheExpectedVersionAndRetainsItsAuditRecord() throws Exception {
+        UUID projectId = createdProjectId(createProject(uniqueKey(), "Delete me"));
+        setMember(projectId, OTHER_ACTOR, "VIEWER").andExpect(status().isOk());
+
+        mockMvc.perform(delete("/api/v1/projects/{id}", projectId)
+                .with(user(OTHER_ACTOR))
+                .queryParam("version", "0"))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code").value("authorization.denied"));
+
+        mockMvc.perform(patch("/api/v1/projects/{id}", projectId)
+                .with(user(ACTOR))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(updateJson("Delete me now", 0)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.version").value(1));
+
+        mockMvc.perform(delete("/api/v1/projects/{id}", projectId)
+                .with(user(ACTOR))
+                .queryParam("version", "0"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("project.version_conflict"));
+
+        mockMvc.perform(delete("/api/v1/projects/{id}", projectId)
+                .with(user(ACTOR))
+                .queryParam("version", "1"))
+            .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/v1/projects/{id}", projectId).with(user(ACTOR)))
+            .andExpect(status().isNotFound());
+        assertThat(projectExists(projectId)).isFalse();
+        assertThat(auditActionCount(projectId, "project.delete", "SUCCESS")).isOne();
+    }
+
+    @Test
+    void managesMembersWhilePreservingAtLeastOneMaintainer() throws Exception {
+        UUID projectId = createdProjectId(createProject(uniqueKey(), "Members"));
+
+        setMember(projectId, OTHER_ACTOR, "VIEWER")
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.actorId").value(OTHER_ACTOR))
+            .andExpect(jsonPath("$.role").value("VIEWER"));
+
+        mockMvc.perform(get("/api/v1/projects/{id}/members", projectId)
+                .with(user(OTHER_ACTOR)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(2));
+
+        mockMvc.perform(put("/api/v1/projects/{id}/members/{actorId}", projectId, THIRD_ACTOR)
+                .with(user(OTHER_ACTOR))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(memberJson("VIEWER")))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code").value("authorization.denied"));
+
+        setMember(projectId, OTHER_ACTOR, "MAINTAINER")
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.role").value("MAINTAINER"));
+
+        mockMvc.perform(delete("/api/v1/projects/{id}/members/{actorId}", projectId, OTHER_ACTOR)
+                .with(user(ACTOR)))
+            .andExpect(status().isNoContent());
+
+        mockMvc.perform(delete("/api/v1/projects/{id}/members/{actorId}", projectId, OTHER_ACTOR)
+                .with(user(ACTOR)))
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("project.member_not_found"));
+
+        mockMvc.perform(delete("/api/v1/projects/{id}/members/{actorId}", projectId, ACTOR)
+                .with(user(ACTOR)))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("project.last_maintainer"));
+    }
+
     private org.springframework.test.web.servlet.ResultActions createProject(String key, String name) throws Exception {
+        return createProjectAs(ACTOR, key, name);
+    }
+
+    private org.springframework.test.web.servlet.ResultActions createProjectAs(String actorId, String key, String name)
+            throws Exception {
         return mockMvc.perform(post("/api/v1/projects")
             .with(csrf())
-            .with(creator(ACTOR))
+            .with(creator(actorId))
             .contentType(MediaType.APPLICATION_JSON)
             .content(projectJson(key, name)));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions setMember(UUID projectId, String actorId, String role)
+            throws Exception {
+        return mockMvc.perform(put("/api/v1/projects/{id}/members/{actorId}", projectId, actorId)
+            .with(user(ACTOR))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(memberJson(role)));
     }
 
     private static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.UserRequestPostProcessor
@@ -215,6 +367,20 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
 
     private String projectJson(String key, String name) throws Exception {
         return objectMapper.writeValueAsString(java.util.Map.of("key", key, "name", name));
+    }
+
+    private String updateJson(String name, long version) throws Exception {
+        return objectMapper.writeValueAsString(java.util.Map.of("name", name, "version", version));
+    }
+
+    private String memberJson(String role) throws Exception {
+        return objectMapper.writeValueAsString(java.util.Map.of("role", role));
+    }
+
+    private UUID createdProjectId(org.springframework.test.web.servlet.ResultActions creation) throws Exception {
+        MvcResult result = creation.andExpect(status().isCreated()).andReturn();
+        return UUID.fromString(objectMapper.readTree(
+            result.getResponse().getContentAsString()).get("id").asText());
     }
 
     private static String uniqueKey() {
@@ -247,6 +413,25 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
     private int projectCount(String projectKey) {
         return jdbcClient.sql("SELECT count(*) FROM project.projects WHERE project_key = :projectKey")
             .param("projectKey", projectKey)
+            .query(Integer.class)
+            .single();
+    }
+
+    private boolean projectExists(UUID projectId) {
+        return jdbcClient.sql("SELECT EXISTS (SELECT 1 FROM project.projects WHERE id = :projectId)")
+            .param("projectId", projectId)
+            .query(Boolean.class)
+            .single();
+    }
+
+    private int auditActionCount(UUID projectId, String action, String result) {
+        return jdbcClient.sql("""
+                SELECT count(*) FROM audit.audit_records
+                WHERE project_id = :projectId AND action = :action AND result = :result
+                """)
+            .param("projectId", projectId)
+            .param("action", action)
+            .param("result", result)
             .query(Integer.class)
             .single();
     }

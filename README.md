@@ -4,7 +4,7 @@ ArchGuard 的核心业务平台，初期采用 Java/Spring Boot 模块化单体�
 
 ## 当前状态
 
-M0 仓库基线和 [M2 Platform 骨架与 Project 最小垂直切片设计](docs/technical-design/m2-platform-skeleton-and-project-slice.md)已建立。M2 首个实现切片提供 Java 21/Spring Boot 模块化单体、Flyway/PostgreSQL、Project 创建与成员查询、统一错误、traceId、审计写入和健康探针。
+M0 仓库基线、[M2 Platform 骨架与 Project 最小垂直切片设计](docs/technical-design/m2-platform-skeleton-and-project-slice.md)和 [OIDC 与 Project 生命周期/成员管理设计](docs/technical-design/m2-oidc-and-project-management.md)已建立。当前实现提供 Java 21/Spring Boot 模块化单体、Flyway/PostgreSQL、OIDC JWT 认证、Project 生命周期与成员治理、统一错误、traceId、审计写入和健康探针。
 
 ## 职责
 
@@ -51,7 +51,18 @@ Invoke-RestMethod http://localhost:8080/actuator/health/liveness
 Invoke-RestMethod http://localhost:8080/actuator/health/readiness
 ```
 
-只有 health、liveness 和 readiness 对外暴露，详细组件信息关闭；readiness 聚合应用就绪状态和数据库状态。Project API 为 `POST /api/v1/projects` 与 `GET /api/v1/projects/{projectId}`，静态契约见 [OpenAPI](openapi/platform-v1.yaml)。默认 profile 不提供临时用户或不可信的自报身份，因此在正式认证适配器接入前，Project API 对实际请求保持失败关闭。
+只有 health、liveness 和 readiness 对外暴露，详细组件信息关闭；readiness 聚合应用就绪状态和数据库状态。Project API 支持创建、分页列表、单项查询、名称修改、删除和成员列表/增改删，静态契约见 [OpenAPI](openapi/platform-v1.yaml)。默认 profile 不提供临时用户或不可信的自报身份，因此 Project API 失败关闭；生产请求必须显式启用 `oidc` profile。
+
+OIDC token 必须由配置的 HTTPS issuer 签发，`aud` 包含配置的 Platform audience，`sub` 是 UUID，`scope`/`scp` 携带权限（创建 Project 需要 `project:create`）。启动示例：
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE='oidc'
+$env:ARCHGUARD_OIDC_ISSUER_URI='https://identity.example.com/realms/archguard'
+$env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
+.\mvnw.cmd spring-boot:run
+```
+
+可选的 `ARCHGUARD_OIDC_JWK_SET_URI` 用于显式指定 HTTPS JWKS 地址；省略时从 issuer discovery 获取。示例地址仅说明配置格式，不是可用租户或凭据。
 
 ## 配置
 
@@ -64,8 +75,11 @@ Invoke-RestMethod http://localhost:8080/actuator/health/readiness
 | `ARCHGUARD_DB_PASSWORD` | 无 | PostgreSQL 密码，必填且不得提交。 |
 | `ARCHGUARD_DB_POOL_MAX_SIZE` | `10` | 数据库连接池最大连接数。 |
 | `ARCHGUARD_DB_POOL_MIN_IDLE` | `1` | 数据库连接池最小空闲连接数。 |
+| `ARCHGUARD_OIDC_ISSUER_URI` | 无；`oidc` profile 必填 | 唯一可信 OIDC issuer，必须是绝对 HTTPS URI。 |
+| `ARCHGUARD_OIDC_AUDIENCE` | 无；`oidc` profile 必填 | Platform JWT audience。 |
+| `ARCHGUARD_OIDC_JWK_SET_URI` | 无 | 可选 HTTPS JWKS 地址；省略时执行 issuer discovery。 |
 
-`.env.example` 只包含非敏感示例；应用不会自动读取 `.env`。当前没有本地认证 profile，测试身份只存在于测试进程中，不可用于生产。
+`.env.example` 只包含非敏感示例；应用不会自动读取 `.env`。测试身份只存在于测试进程中，不可用于生产；应用不接受 `X-Actor-Id` 等自报身份头。
 
 仓库级检查：
 

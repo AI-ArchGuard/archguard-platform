@@ -3,9 +3,12 @@ package io.github.aiarchguard.platform.project.web;
 import io.github.aiarchguard.platform.common.ApiError;
 import io.github.aiarchguard.platform.common.TraceIdProvider;
 import io.github.aiarchguard.platform.project.InvalidProjectException;
+import io.github.aiarchguard.platform.project.LastProjectMaintainerException;
 import io.github.aiarchguard.platform.project.ProjectKeyConflictException;
+import io.github.aiarchguard.platform.project.ProjectMemberNotFoundException;
 import io.github.aiarchguard.platform.project.ProjectNotFoundException;
 import io.github.aiarchguard.platform.project.ProjectPermissionDeniedException;
+import io.github.aiarchguard.platform.project.ProjectVersionConflictException;
 import java.util.Map;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -42,6 +45,23 @@ final class ProjectExceptionHandler {
     ResponseEntity<ApiError> denied(ProjectPermissionDeniedException exception) {
         return error(HttpStatus.FORBIDDEN, "authorization.denied",
             "The current actor is not allowed to perform this action.");
+    }
+
+    @ExceptionHandler(ProjectVersionConflictException.class)
+    ResponseEntity<ApiError> versionConflict(ProjectVersionConflictException exception) {
+        return error(HttpStatus.CONFLICT, "project.version_conflict",
+            "The project was modified by another request.");
+    }
+
+    @ExceptionHandler(ProjectMemberNotFoundException.class)
+    ResponseEntity<ApiError> memberNotFound(ProjectMemberNotFoundException exception) {
+        return error(HttpStatus.NOT_FOUND, "project.member_not_found", "Project member was not found.");
+    }
+
+    @ExceptionHandler(LastProjectMaintainerException.class)
+    ResponseEntity<ApiError> lastMaintainer(LastProjectMaintainerException exception) {
+        return error(HttpStatus.CONFLICT, "project.last_maintainer",
+            "A project must retain at least one maintainer.");
     }
 
     private ResponseEntity<ApiError> error(HttpStatus status, String code, String message) {

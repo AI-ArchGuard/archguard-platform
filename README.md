@@ -4,14 +4,14 @@ ArchGuard 的核心业务平台，初期采用 Java/Spring Boot 模块化单体�
 
 ## 当前状态
 
-M0 仓库基线已建立，业务工程骨架尚未初始化。
+M0 仓库基线已建立；[M2 Platform 骨架与 Project 最小垂直切片设计](docs/technical-design/m2-platform-skeleton-and-project-slice.md)已评审通过，业务工程骨架尚未初始化。
 
 ## 职责
 
 - 管理用户、项目、代码仓库、规则、ADR 元数据、扫描任务和审计。
 - 提供版本化 REST API、统一错误结构和业务权限校验。
 - 编排扫描工作流并保存业务事实和可追溯结果。
-- 维护 identity、project、repository、architecture、analysis、audit 等领域模块边界。
+- 维护 identity、project、repository、policy、scan、result、architecture、audit 等领域模块边界；模块只在出现真实职责时物化。
 
 ## 非职责
 

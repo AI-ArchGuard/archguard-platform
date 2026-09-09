@@ -7,3 +7,4 @@
 ### Added
 
 - 初始化仓库治理、协作和质量基线。
+- 增加 M2 Platform 骨架与 Project 最小垂直切片 Technical Design。

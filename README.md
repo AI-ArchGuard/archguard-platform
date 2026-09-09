@@ -35,4 +35,4 @@ git diff --check
 git status --short
 ```
 
-M1 初始化 Maven Wrapper 后，完整验证命令为 `./mvnw verify`；Windows 使用 `.\mvnw.cmd verify`。在 Wrapper 提交前不得声称该命令已可运行。
+M2 初始化 Maven Wrapper 后，完整验证命令为 `./mvnw verify`；Windows 使用 `.\mvnw.cmd verify`。在 Wrapper 提交前不得声称该命令已可运行。

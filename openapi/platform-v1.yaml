@@ -1,0 +1,172 @@
+openapi: 3.1.0
+info:
+  title: ArchGuard Platform API
+  version: 1.0.0-m2
+  description: M2 Project minimal vertical slice. Production authentication adapter is not yet supplied.
+servers:
+  - url: /
+paths:
+  /api/v1/projects:
+    post:
+      operationId: createProject
+      summary: Create a project and make the caller its maintainer
+      security:
+        - platformIdentity: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Project key already exists
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/v1/projects/{projectId}:
+    get:
+      operationId: getProject
+      summary: Get a project visible to the caller
+      security:
+        - platformIdentity: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Project found and caller is a member
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Project does not exist or is not visible to the caller
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+components:
+  securitySchemes:
+    platformIdentity:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque
+      description: Trusted authentication adapter is intentionally not supplied in M2.
+  headers:
+    RequestId:
+      description: Lowercase 32-character hexadecimal request correlation identifier
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{32}$'
+  responses:
+    BadRequest:
+      description: Invalid or malformed request
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Unauthorized:
+      description: Trusted authentication is missing or invalid
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Forbidden:
+      description: Caller lacks the required permission
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  schemas:
+    CreateProjectRequest:
+      type: object
+      additionalProperties: false
+      required: [key, name]
+      properties:
+        key:
+          type: string
+          pattern: '^[a-z][a-z0-9-]{2,62}$'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, key, name, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+        name:
+          type: string
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message, traceId, details]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        traceId:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+        details:
+          type: object
+          additionalProperties: true

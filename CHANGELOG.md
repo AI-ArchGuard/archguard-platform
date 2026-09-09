@@ -8,3 +8,4 @@
 
 - 初始化仓库治理、协作和质量基线。
 - 采用 Apache License 2.0，并在 CI 中固定标准许可证校验和。
+- 增加 M2 Platform 骨架与 Project 最小垂直切片 Technical Design。

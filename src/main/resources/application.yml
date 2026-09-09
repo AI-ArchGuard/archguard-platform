@@ -56,3 +56,16 @@ logging:
   structured:
     format:
       console: logstash
+
+---
+spring:
+  config:
+    activate:
+      on-profile: oidc
+
+archguard:
+  identity:
+    oidc:
+      issuer-uri: ${ARCHGUARD_OIDC_ISSUER_URI}
+      audience: ${ARCHGUARD_OIDC_AUDIENCE}
+      jwk-set-uri: ${ARCHGUARD_OIDC_JWK_SET_URI:}

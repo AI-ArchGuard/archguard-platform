@@ -3,6 +3,7 @@ package io.github.aiarchguard.platform.identity.security;
 import io.github.aiarchguard.platform.common.ApiErrorWriter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -15,7 +16,13 @@ import org.springframework.security.web.SecurityFilterChain;
 class PlatformSecurityConfiguration {
 
     @Bean
-    SecurityFilterChain platformSecurityFilterChain(HttpSecurity http, ApiErrorWriter errorWriter) throws Exception {
+    @Profile("!oidc")
+    SecurityFilterChain failClosedSecurityFilterChain(HttpSecurity http, ApiErrorWriter errorWriter) throws Exception {
+        configureDefaults(http, errorWriter);
+        return http.build();
+    }
+
+    static void configureDefaults(HttpSecurity http, ApiErrorWriter errorWriter) throws Exception {
         http
             .formLogin(AbstractHttpConfigurer::disable)
             .httpBasic(AbstractHttpConfigurer::disable)
@@ -39,8 +46,6 @@ class PlatformSecurityConfiguration {
             .authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                 .anyRequest().authenticated());
-
-        return http.build();
     }
 
     @Bean

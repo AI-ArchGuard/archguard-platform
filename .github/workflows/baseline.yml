@@ -19,9 +19,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for file in README.md AGENTS.md CONTRIBUTING.md SECURITY.md CHANGELOG.md .editorconfig .gitignore .github/pull_request_template.md .github/ISSUE_TEMPLATE/feature.yml .github/ISSUE_TEMPLATE/bug.yml; do
+          for file in README.md LICENSE AGENTS.md CONTRIBUTING.md SECURITY.md CHANGELOG.md .editorconfig .gitignore .github/pull_request_template.md .github/ISSUE_TEMPLATE/feature.yml .github/ISSUE_TEMPLATE/bug.yml; do
             test -f "$file"
           done
+          echo "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4  LICENSE" | sha256sum --check --strict
       - name: Check whitespace errors
         shell: bash
         run: |

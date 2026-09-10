@@ -1,0 +1,71 @@
+spring:
+  application:
+    name: archguard-platform
+  datasource:
+    url: ${ARCHGUARD_DB_URL}
+    username: ${ARCHGUARD_DB_USERNAME}
+    password: ${ARCHGUARD_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${ARCHGUARD_DB_POOL_MAX_SIZE:10}
+      minimum-idle: ${ARCHGUARD_DB_POOL_MIN_IDLE:1}
+  flyway:
+    default-schema: public
+    locations: classpath:db/migration
+    validate-migration-naming: true
+  lifecycle:
+    timeout-per-shutdown-phase: ${ARCHGUARD_SHUTDOWN_TIMEOUT:20s}
+  main:
+    banner-mode: "off"
+    log-startup-info: false
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    include-binding-errors: never
+    include-exception: false
+    include-message: never
+    include-stacktrace: never
+
+management:
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      access: read-only
+      probes:
+        enabled: true
+      show-components: never
+      show-details: never
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+logging:
+  structured:
+    format:
+      console: logstash
+
+---
+spring:
+  config:
+    activate:
+      on-profile: oidc
+
+archguard:
+  identity:
+    oidc:
+      issuer-uri: ${ARCHGUARD_OIDC_ISSUER_URI}
+      audience: ${ARCHGUARD_OIDC_AUDIENCE}
+      jwk-set-uri: ${ARCHGUARD_OIDC_JWK_SET_URI:}

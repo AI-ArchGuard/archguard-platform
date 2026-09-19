@@ -13,3 +13,8 @@
 - 实现 M2 首个 Platform 切片：Flyway/PostgreSQL、数据库 readiness、Project 创建/成员查询、统一错误、traceId 与最小审计。
 - 增加正式 OIDC JWT Resource Server 适配器，校验 issuer、audience、UUID subject 与 scope 权限。
 - 增加 Project 分页列表、乐观锁修改/删除，以及带最后维护者保护的成员增改删。
+- 增加 Repository 受控相对路径注册、不可变 RuleSetVersion 与 Scanner `validate-rules` 适配器。
+- 增加 PostgreSQL ScanJob 状态机、幂等提交、租约/attempt token、取消和文件邮箱 Runner 协议。
+- 固定并重新验证 Scanner Result Schema `0.1.0`，保存原始报告 SHA-256 并规范化 Finding/Evidence。
+- 增加 Finding 误报/风险接受处置、乐观锁、追加历史与审计。
+- 扩展 Platform OpenAPI v1 并将应用版本推进至 `0.3.0-SNAPSHOT`。

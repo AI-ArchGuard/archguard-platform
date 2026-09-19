@@ -7,6 +7,7 @@ import io.github.aiarchguard.platform.project.LastProjectMaintainerException;
 import io.github.aiarchguard.platform.project.ProjectKeyConflictException;
 import io.github.aiarchguard.platform.project.ProjectMemberNotFoundException;
 import io.github.aiarchguard.platform.project.ProjectNotFoundException;
+import io.github.aiarchguard.platform.project.ProjectNotEmptyException;
 import io.github.aiarchguard.platform.project.ProjectPermissionDeniedException;
 import io.github.aiarchguard.platform.project.ProjectVersionConflictException;
 import java.util.Map;
@@ -51,6 +52,12 @@ final class ProjectExceptionHandler {
     ResponseEntity<ApiError> versionConflict(ProjectVersionConflictException exception) {
         return error(HttpStatus.CONFLICT, "project.version_conflict",
             "The project was modified by another request.");
+    }
+
+    @ExceptionHandler(ProjectNotEmptyException.class)
+    ResponseEntity<ApiError> notEmpty(ProjectNotEmptyException exception) {
+        return error(HttpStatus.CONFLICT, "project.not_empty",
+            "Project must not contain repositories, rule sets, or scan jobs when deleted.");
     }
 
     @ExceptionHandler(ProjectMemberNotFoundException.class)

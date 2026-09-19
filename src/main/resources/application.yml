@@ -57,6 +57,17 @@ logging:
     format:
       console: logstash
 
+archguard:
+  repositories:
+    source-root: ${ARCHGUARD_SOURCE_ROOT:./sources}
+  scanner:
+    jar: ${ARCHGUARD_SCANNER_JAR:/opt/archguard/scanner.jar}
+    validation-timeout: ${ARCHGUARD_SCANNER_VALIDATION_TIMEOUT:10s}
+  runner:
+    mailbox: ${ARCHGUARD_RUNNER_MAILBOX:./runner-mailbox}
+    lease: ${ARCHGUARD_RUNNER_LEASE:5m}
+    max-attempts: ${ARCHGUARD_RUNNER_MAX_ATTEMPTS:2}
+
 ---
 spring:
   config:
@@ -69,3 +80,4 @@ archguard:
       issuer-uri: ${ARCHGUARD_OIDC_ISSUER_URI}
       audience: ${ARCHGUARD_OIDC_AUDIENCE}
       jwk-set-uri: ${ARCHGUARD_OIDC_JWK_SET_URI:}
+      allow-http: ${ARCHGUARD_OIDC_ALLOW_HTTP:false}

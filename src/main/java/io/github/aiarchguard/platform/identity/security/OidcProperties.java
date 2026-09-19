@@ -11,22 +11,29 @@ import org.springframework.validation.annotation.Validated;
 record OidcProperties(
     @NotBlank String issuerUri,
     @NotBlank String audience,
-    String jwkSetUri
+    String jwkSetUri,
+    boolean allowHttp
 ) {
+    OidcProperties(String issuerUri, String audience, String jwkSetUri) {
+        this(issuerUri, audience, jwkSetUri, false);
+    }
+
     OidcProperties {
-        requireHttps("issuer-uri", issuerUri);
+        requireSecureUri("issuer-uri", issuerUri, allowHttp);
         if (StringUtils.hasText(jwkSetUri)) {
-            requireHttps("jwk-set-uri", jwkSetUri);
+            requireSecureUri("jwk-set-uri", jwkSetUri, allowHttp);
         }
     }
 
-    private static void requireHttps(String property, String value) {
+    private static void requireSecureUri(String property, String value, boolean allowHttp) {
         if (!StringUtils.hasText(value)) {
             throw new IllegalArgumentException(property + " must be an absolute HTTPS URI");
         }
         try {
             URI uri = URI.create(value);
-            if (!uri.isAbsolute() || !"https".equalsIgnoreCase(uri.getScheme())
+            boolean acceptedScheme = "https".equalsIgnoreCase(uri.getScheme())
+                || (allowHttp && "http".equalsIgnoreCase(uri.getScheme()));
+            if (!uri.isAbsolute() || !acceptedScheme
                 || uri.getHost() == null || uri.getUserInfo() != null || uri.getFragment() != null) {
                 throw new IllegalArgumentException(property + " must be an absolute HTTPS URI");
             }

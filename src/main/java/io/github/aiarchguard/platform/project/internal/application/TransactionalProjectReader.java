@@ -20,6 +20,11 @@ public class TransactionalProjectReader {
     }
 
     @Transactional(readOnly = true)
+    public Optional<ProjectAccess> findAccessForActor(UUID projectId, UUID actorId) {
+        return repository.findAccessForActor(projectId, actorId);
+    }
+
+    @Transactional(readOnly = true)
     public ProjectPageData listForActor(UUID actorId, int page, int size) {
         return new ProjectPageData(
             repository.findPageForActor(actorId, size, (long) page * size),

@@ -9,11 +9,15 @@ import io.github.aiarchguard.platform.identity.CurrentActorProvider;
 import io.github.aiarchguard.platform.project.InvalidProjectException;
 import io.github.aiarchguard.platform.project.LastProjectMaintainerException;
 import io.github.aiarchguard.platform.project.ProjectKeyConflictException;
+import io.github.aiarchguard.platform.project.ProjectAccessView;
+import io.github.aiarchguard.platform.project.ProjectAuthorization;
 import io.github.aiarchguard.platform.project.ProjectMemberNotFoundException;
 import io.github.aiarchguard.platform.project.ProjectMemberPage;
 import io.github.aiarchguard.platform.project.ProjectMemberRole;
 import io.github.aiarchguard.platform.project.ProjectMemberView;
 import io.github.aiarchguard.platform.project.ProjectNotFoundException;
+import io.github.aiarchguard.platform.project.ProjectNotEmptyException;
+import io.github.aiarchguard.platform.project.ProjectDeletionGuard;
 import io.github.aiarchguard.platform.project.ProjectOperations;
 import io.github.aiarchguard.platform.project.ProjectPage;
 import io.github.aiarchguard.platform.project.ProjectPermissionDeniedException;
@@ -35,7 +39,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 @Service
-final class ProjectApplicationService implements ProjectOperations {
+final class ProjectApplicationService implements ProjectOperations, ProjectAuthorization {
     private static final Logger LOGGER = LoggerFactory.getLogger(ProjectApplicationService.class);
     private static final String CREATE_PERMISSION = "project:create";
 
@@ -47,11 +51,12 @@ final class ProjectApplicationService implements ProjectOperations {
     private final AuditRecorder auditRecorder;
     private final TraceIdProvider traceIds;
     private final Clock clock;
+    private final List<ProjectDeletionGuard> deletionGuards;
 
     ProjectApplicationService(CurrentActorProvider actors, ProjectIdGenerator idGenerator,
                               TransactionalProjectCreator creator, TransactionalProjectReader reader,
                               TransactionalProjectManager manager, AuditRecorder auditRecorder,
-                              TraceIdProvider traceIds, Clock clock) {
+                              TraceIdProvider traceIds, Clock clock, List<ProjectDeletionGuard> deletionGuards) {
         this.actors = actors;
         this.idGenerator = idGenerator;
         this.creator = creator;
@@ -60,6 +65,7 @@ final class ProjectApplicationService implements ProjectOperations {
         this.auditRecorder = auditRecorder;
         this.traceIds = traceIds;
         this.clock = clock;
+        this.deletionGuards = List.copyOf(deletionGuards);
     }
 
     @Override
@@ -104,6 +110,23 @@ final class ProjectApplicationService implements ProjectOperations {
     }
 
     @Override
+    public ProjectAccessView requireViewer(UUID projectId) {
+        CurrentActor actor = actors.currentActor();
+        ProjectAccess access = reader.findAccessForActor(projectId, actor.id())
+            .orElseThrow(ProjectNotFoundException::new);
+        return toAccessView(access);
+    }
+
+    @Override
+    public ProjectAccessView requireMaintainer(UUID projectId) {
+        ProjectAccessView access = requireViewer(projectId);
+        if (access.role() != ProjectMemberRole.MAINTAINER) {
+            throw new ProjectPermissionDeniedException();
+        }
+        return access;
+    }
+
+    @Override
     public ProjectView update(UUID projectId, String rawName, long expectedVersion) {
         validateVersion(expectedVersion);
         CurrentActor actor = actors.currentActor();
@@ -125,6 +148,10 @@ final class ProjectApplicationService implements ProjectOperations {
         validateVersion(expectedVersion);
         CurrentActor actor = actors.currentActor();
         try {
+            requireMaintainer(projectId);
+            if (deletionGuards.stream().anyMatch(guard -> guard.hasContent(projectId))) {
+                throw new ProjectNotEmptyException();
+            }
             manager.delete(projectId, actor.id(), expectedVersion, traceIds.currentTraceId());
         } catch (ProjectNotFoundException | ProjectPermissionDeniedException exception) {
             recordFailure(actor.id(), projectId, "project.delete", AuditResult.DENIED, Map.of());
@@ -206,6 +233,12 @@ final class ProjectApplicationService implements ProjectOperations {
     private static ProjectMemberView toMemberView(ProjectMember member) {
         return new ProjectMemberView(member.actorId(), ProjectMemberRole.valueOf(member.role().name()),
             member.createdAt());
+    }
+
+    private static ProjectAccessView toAccessView(ProjectAccess access) {
+        Project project = access.project();
+        return new ProjectAccessView(project.id().value(), project.key().value(), project.name().value(),
+            ProjectMemberRole.valueOf(access.role().name()));
     }
 
     private static void validatePage(int page, int size) {

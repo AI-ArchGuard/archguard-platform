@@ -5,6 +5,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.oidc.StandardClaimNames;
@@ -36,7 +38,10 @@ class OidcSecurityConfiguration {
     }
 
     @Bean
-    JwtDecoder oidcJwtDecoder(OidcProperties properties) {
+    JwtDecoder oidcJwtDecoder(OidcProperties properties, Environment environment) {
+        if (properties.allowHttp() && !environment.acceptsProfiles(Profiles.of("local-compose"))) {
+            throw new IllegalStateException("HTTP OIDC is allowed only in the local-compose profile");
+        }
         NimbusJwtDecoder decoder = StringUtils.hasText(properties.jwkSetUri())
             ? NimbusJwtDecoder.withJwkSetUri(properties.jwkSetUri()).build()
             : JwtDecoders.fromIssuerLocation(properties.issuerUri());

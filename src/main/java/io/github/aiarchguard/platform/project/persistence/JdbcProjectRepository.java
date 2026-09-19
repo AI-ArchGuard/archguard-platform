@@ -80,6 +80,21 @@ public class JdbcProjectRepository implements ProjectRepository {
     }
 
     @Override
+    public Optional<ProjectAccess> findAccessForActor(UUID projectId, UUID actorId) {
+        return jdbcClient.sql("""
+                SELECT p.id, p.project_key, p.name, p.created_by, p.created_at, p.version, m.role
+                FROM project.projects p
+                JOIN project.project_members m ON m.project_id = p.id
+                WHERE p.id = :projectId AND m.actor_id = :actorId
+                """)
+            .param("projectId", projectId)
+            .param("actorId", actorId)
+            .query((resultSet, rowNumber) -> new ProjectAccess(
+                mapProject(resultSet, rowNumber), ProjectRole.valueOf(resultSet.getString("role"))))
+            .optional();
+    }
+
+    @Override
     public List<Project> findPageForActor(UUID actorId, int limit, long offset) {
         return jdbcClient.sql("""
                 SELECT p.id, p.project_key, p.name, p.created_by, p.created_at, p.version

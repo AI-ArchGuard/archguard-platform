@@ -4,7 +4,7 @@ ArchGuard 的核心业务平台，初期采用 Java/Spring Boot 模块化单体�
 
 ## 当前状态
 
-M0 仓库基线、[M2 Platform 骨架与 Project 最小垂直切片设计](docs/technical-design/m2-platform-skeleton-and-project-slice.md)和 [OIDC 与 Project 生命周期/成员管理设计](docs/technical-design/m2-oidc-and-project-management.md)已建立。当前实现提供 Java 21/Spring Boot 模块化单体、Flyway/PostgreSQL、OIDC JWT 认证、Project 生命周期与成员治理、统一错误、traceId、审计写入和健康探针。
+Platform MVP `v0.3.0` 控制面已建立。当前实现提供 Java 21/Spring Boot 模块化单体、Flyway/PostgreSQL、OIDC JWT、Project/Repository/RuleSet/ScanJob/Finding 生命周期、统一错误、traceId、审计、文件邮箱 Runner 编排与健康探针。设计见 [Platform MVP Technical Design](docs/technical-design/v0.3-platform-mvp.md)。
 
 ## 职责
 
@@ -52,7 +52,7 @@ Invoke-RestMethod http://localhost:8080/actuator/health/liveness
 Invoke-RestMethod http://localhost:8080/actuator/health/readiness
 ```
 
-只有 health、liveness 和 readiness 对外暴露，详细组件信息关闭；readiness 聚合应用就绪状态和数据库状态。Project API 支持创建、分页列表、单项查询、名称修改、删除和成员列表/增改删，静态契约见 [OpenAPI](openapi/platform-v1.yaml)。默认 profile 不提供临时用户或不可信的自报身份，因此 Project API 失败关闭；生产请求必须显式启用 `oidc` profile。
+只有 health、liveness 和 readiness 对外暴露，详细组件信息关闭；readiness 聚合应用就绪状态和数据库状态。版本化 REST 契约见 [OpenAPI](openapi/platform-v1.yaml)。默认 profile 不提供临时用户或不可信的自报身份，因此业务 API 失败关闭；生产请求必须显式启用 `oidc` profile。
 
 OIDC token 必须由配置的 HTTPS issuer 签发，`aud` 包含配置的 Platform audience，`sub` 是 UUID，`scope`/`scp` 携带权限（创建 Project 需要 `project:create`）。启动示例：
 
@@ -79,6 +79,12 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 | `ARCHGUARD_OIDC_ISSUER_URI` | 无；`oidc` profile 必填 | 唯一可信 OIDC issuer，必须是绝对 HTTPS URI。 |
 | `ARCHGUARD_OIDC_AUDIENCE` | 无；`oidc` profile 必填 | Platform JWT audience。 |
 | `ARCHGUARD_OIDC_JWK_SET_URI` | 无 | 可选 HTTPS JWKS 地址；省略时执行 issuer discovery。 |
+| `ARCHGUARD_OIDC_ALLOW_HTTP` | `false` | 仅 `local-compose` profile 可设为 `true`。 |
+| `ARCHGUARD_SOURCE_ROOT` | `./sources` | Repository 可注册的唯一受控源码根。 |
+| `ARCHGUARD_SCANNER_JAR` | `/opt/archguard/scanner.jar` | 固定的 Scanner `v0.2.1` JAR。 |
+| `ARCHGUARD_RUNNER_MAILBOX` | `./runner-mailbox` | Platform 与无网络 Runner 共享的版本化文件邮箱。 |
+| `ARCHGUARD_RUNNER_LEASE` | `5m` | 任务 attempt 租约。 |
+| `ARCHGUARD_RUNNER_MAX_ATTEMPTS` | `2` | Runner 故障后的最大认领次数。 |
 
 `.env.example` 只包含非敏感示例；应用不会自动读取 `.env`。测试身份只存在于测试进程中，不可用于生产；应用不接受 `X-Actor-Id` 等自报身份头。
 

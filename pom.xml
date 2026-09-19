@@ -13,7 +13,7 @@
 
   <groupId>io.github.aiarchguard</groupId>
   <artifactId>archguard-platform</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.3.0-SNAPSHOT</version>
   <name>ArchGuard Platform</name>
   <description>ArchGuard modular monolith control plane</description>
 
@@ -21,6 +21,7 @@
     <java.version>21</java.version>
     <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
     <spring-modulith.version>1.4.13</spring-modulith.version>
+    <json-schema-validator.version>2.0.7</json-schema-validator.version>
   </properties>
 
   <dependencyManagement>
@@ -72,6 +73,21 @@
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.networknt</groupId>
+      <artifactId>json-schema-validator</artifactId>
+      <version>${json-schema-validator.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.ethlo.time</groupId>
+          <artifactId>itu</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.fasterxml.jackson.dataformat</groupId>
+          <artifactId>jackson-dataformat-yaml</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <dependency>

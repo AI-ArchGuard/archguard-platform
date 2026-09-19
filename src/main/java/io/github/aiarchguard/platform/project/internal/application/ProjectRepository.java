@@ -12,6 +12,7 @@ import java.util.UUID;
 public interface ProjectRepository {
     void insertWithMaintainer(Project project);
     Optional<Project> findForActor(UUID projectId, UUID actorId);
+    Optional<ProjectAccess> findAccessForActor(UUID projectId, UUID actorId);
     Optional<ProjectAccess> lockForActor(UUID projectId, UUID actorId);
     List<Project> findPageForActor(UUID actorId, int limit, long offset);
     long countForActor(UUID actorId);

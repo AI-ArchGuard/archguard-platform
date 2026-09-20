@@ -1,0 +1,162 @@
+{
+  "schemaVersion": "0.1.0",
+  "project": {
+    "id": "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity": "example/order-service",
+    "name": "order-service",
+    "language": "java",
+    "repositoryPath": ".",
+    "extensions": {
+      "archguard.project.tags": ["sample"]
+    }
+  },
+  "artifacts": [
+    {
+      "id": "artifact_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "projectId": "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "module",
+      "name": "order-api",
+      "language": "java",
+      "repositoryPath": "order-api",
+      "qualifiedName": "order-api",
+      "extensions": {}
+    },
+    {
+      "id": "artifact_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "projectId": "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "module",
+      "name": "order-domain",
+      "language": "java",
+      "repositoryPath": "order-domain",
+      "qualifiedName": "order-domain",
+      "extensions": {}
+    }
+  ],
+  "components": [
+    {
+      "id": "component_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "artifactId": "artifact_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "kind": "type",
+      "name": "OrderController",
+      "language": "java",
+      "qualifiedName": "example.order.OrderController",
+      "location": {
+        "path": "order-api/src/main/OrderController.java",
+        "startLine": 3,
+        "startColumn": 1,
+        "endLine": 12,
+        "endColumn": 2
+      },
+      "extensions": {
+        "java.modifiers": ["final", "public"]
+      }
+    },
+    {
+      "id": "component_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "artifactId": "artifact_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "kind": "type",
+      "name": "OrderService",
+      "language": "java",
+      "qualifiedName": "example.order.OrderService",
+      "location": {
+        "path": "order-domain/src/main/OrderService.java",
+        "startLine": 5,
+        "startColumn": 1,
+        "endLine": 20,
+        "endColumn": 2
+      },
+      "extensions": {}
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "dependency_2222222222222222222222222222222222222222222222222222222222222222",
+      "sourceId": "component_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "targetId": "component_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "kind": "calls",
+      "evidenceIds": [
+        "evidence_1111111111111111111111111111111111111111111111111111111111111111",
+        "evidence_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "extensions": {}
+    }
+  ],
+  "metrics": [
+    {
+      "id": "metric_3333333333333333333333333333333333333333333333333333333333333333",
+      "scopeId": "component_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "key": "complexity.cyclomatic",
+      "value": 3,
+      "unit": "count",
+      "extensions": {}
+    }
+  ],
+  "findings": [
+    {
+      "id": "finding_4444444444444444444444444444444444444444444444444444444444444444",
+      "fingerprint": "5555555555555555555555555555555555555555555555555555555555555555",
+      "rule": {
+        "id": "archguard.layered-architecture",
+        "version": "0.1.0"
+      },
+      "severity": "high",
+      "subjectId": "dependency_2222222222222222222222222222222222222222222222222222222222222222",
+      "message": "API component depends directly on the domain implementation.",
+      "location": {
+        "path": "order-api/src/main/OrderController.java",
+        "startLine": 8,
+        "startColumn": 5,
+        "endLine": 8,
+        "endColumn": 24
+      },
+      "evidenceIds": [
+        "evidence_1111111111111111111111111111111111111111111111111111111111111111"
+      ],
+      "extensions": {}
+    },
+    {
+      "id": "finding_6666666666666666666666666666666666666666666666666666666666666666",
+      "fingerprint": "7777777777777777777777777777777777777777777777777777777777777777",
+      "rule": {
+        "id": "archguard.illegal-package-dependency",
+        "version": "0.1.0"
+      },
+      "severity": "medium",
+      "subjectId": "component_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "message": "API component crosses the declared package boundary.",
+      "location": null,
+      "evidenceIds": [
+        "evidence_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "extensions": {}
+    }
+  ],
+  "evidences": [
+    {
+      "id": "evidence_1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": "reference",
+      "summary": "OrderController references OrderService.",
+      "location": {
+        "path": "order-api/src/main/OrderController.java",
+        "startLine": 8,
+        "startColumn": 5,
+        "endLine": 8,
+        "endColumn": 24
+      },
+      "extensions": {}
+    },
+    {
+      "id": "evidence_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "kind": "declaration",
+      "summary": "OrderService declaration.",
+      "location": {
+        "path": "order-domain/src/main/OrderService.java",
+        "startLine": 5,
+        "startColumn": 1,
+        "endLine": 20,
+        "endColumn": 2
+      },
+      "extensions": {}
+    }
+  ]
+}

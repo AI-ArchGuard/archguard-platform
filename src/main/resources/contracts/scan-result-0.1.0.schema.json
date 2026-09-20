@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://archguard.dev/contracts/scanner/scan-result/0.1.0/schema.json",
+  "title": "ArchGuard Scanner Result 0.1.0",
+  "description": "Language-neutral, deterministic Scanner result contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "project",
+    "artifacts",
+    "components",
+    "dependencies",
+    "metrics",
+    "findings",
+    "evidences"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "0.1.0" },
+    "project": { "$ref": "#/$defs/project" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "components": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/component" }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dependency" }
+    },
+    "metrics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/metric" }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "evidences": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/evidence" }
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001F]+$"
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9+.-]*$"
+    },
+    "repositoryPath": {
+      "oneOf": [
+        { "const": "." },
+        {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/\\u0000-\\u001F]+(?:/[^/\\u0000-\\u001F]+)*$"
+        }
+      ]
+    },
+    "projectId": { "type": "string", "pattern": "^project_[0-9a-f]{64}$" },
+    "artifactId": { "type": "string", "pattern": "^artifact_[0-9a-f]{64}$" },
+    "componentId": { "type": "string", "pattern": "^component_[0-9a-f]{64}$" },
+    "dependencyId": { "type": "string", "pattern": "^dependency_[0-9a-f]{64}$" },
+    "metricId": { "type": "string", "pattern": "^metric_[0-9a-f]{64}$" },
+    "findingId": { "type": "string", "pattern": "^finding_[0-9a-f]{64}$" },
+    "evidenceId": { "type": "string", "pattern": "^evidence_[0-9a-f]{64}$" },
+    "subjectId": {
+      "type": "string",
+      "pattern": "^(?:project|artifact|component|dependency)_[0-9a-f]{64}$"
+    },
+    "metricScopeId": {
+      "type": "string",
+      "pattern": "^(?:project|artifact|component|dependency|finding)_[0-9a-f]{64}$"
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_-]*)+$"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": { "$ref": "#/$defs/text" }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "startLine", "startColumn", "endLine", "endColumn"],
+      "properties": {
+        "path": { "$ref": "#/$defs/repositoryPath" },
+        "startLine": { "type": "integer", "minimum": 1 },
+        "startColumn": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "endColumn": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "nullableLocation": {
+      "oneOf": [
+        { "$ref": "#/$defs/location" },
+        { "type": "null" }
+      ]
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "identity", "name", "language", "repositoryPath", "extensions"],
+      "properties": {
+        "id": { "$ref": "#/$defs/projectId" },
+        "identity": { "$ref": "#/$defs/text" },
+        "name": { "$ref": "#/$defs/text" },
+        "language": { "$ref": "#/$defs/language" },
+        "repositoryPath": { "$ref": "#/$defs/repositoryPath" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "projectId",
+        "kind",
+        "name",
+        "language",
+        "repositoryPath",
+        "qualifiedName",
+        "extensions"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/artifactId" },
+        "projectId": { "$ref": "#/$defs/projectId" },
+        "kind": { "enum": ["module", "source-set", "package", "namespace", "library"] },
+        "name": { "$ref": "#/$defs/text" },
+        "language": { "$ref": "#/$defs/language" },
+        "repositoryPath": { "$ref": "#/$defs/repositoryPath" },
+        "qualifiedName": { "$ref": "#/$defs/text" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "artifactId",
+        "kind",
+        "name",
+        "language",
+        "qualifiedName",
+        "location",
+        "extensions"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/componentId" },
+        "artifactId": { "$ref": "#/$defs/artifactId" },
+        "kind": { "enum": ["module", "namespace", "type", "function", "resource", "data-store"] },
+        "name": { "$ref": "#/$defs/text" },
+        "language": { "$ref": "#/$defs/language" },
+        "qualifiedName": { "$ref": "#/$defs/text" },
+        "location": { "$ref": "#/$defs/nullableLocation" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sourceId", "targetId", "kind", "evidenceIds", "extensions"],
+      "properties": {
+        "id": { "$ref": "#/$defs/dependencyId" },
+        "sourceId": { "$ref": "#/$defs/componentId" },
+        "targetId": { "$ref": "#/$defs/componentId" },
+        "kind": {
+          "enum": ["contains", "depends-on", "imports", "calls", "reads", "writes", "extends", "implements"]
+        },
+        "evidenceIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/evidenceId" }
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "scopeId", "key", "value", "unit", "extensions"],
+      "properties": {
+        "id": { "$ref": "#/$defs/metricId" },
+        "scopeId": { "$ref": "#/$defs/metricScopeId" },
+        "key": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9][a-z0-9-]*)*$" },
+        "value": { "type": "number" },
+        "unit": { "$ref": "#/$defs/text" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "ruleReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9][a-z0-9-]*)+$" },
+        "version": { "type": "string", "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "fingerprint",
+        "rule",
+        "severity",
+        "subjectId",
+        "message",
+        "location",
+        "evidenceIds",
+        "extensions"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/findingId" },
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "rule": { "$ref": "#/$defs/ruleReference" },
+        "severity": { "enum": ["info", "low", "medium", "high", "critical"] },
+        "subjectId": { "$ref": "#/$defs/subjectId" },
+        "message": { "$ref": "#/$defs/text" },
+        "location": { "$ref": "#/$defs/nullableLocation" },
+        "evidenceIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/evidenceId" }
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "summary", "location", "extensions"],
+      "properties": {
+        "id": { "$ref": "#/$defs/evidenceId" },
+        "kind": { "enum": ["declaration", "reference", "relation", "configuration", "metric"] },
+        "summary": { "$ref": "#/$defs/text" },
+        "location": { "$ref": "#/$defs/location" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    }
+  }
+}

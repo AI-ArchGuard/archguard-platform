@@ -10,9 +10,9 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 @Repository
-final class JdbcFindingIngestionStore implements FindingIngestionStore {
+public class JdbcFindingIngestionStore implements FindingIngestionStore {
     private final JdbcClient jdbc;
-    JdbcFindingIngestionStore(JdbcClient jdbc){this.jdbc=jdbc;}
+    public JdbcFindingIngestionStore(JdbcClient jdbc){this.jdbc=jdbc;}
     @Override
     @Transactional
     public void store(UUID jobId,List<NormalizedEvidence> evidences,List<NormalizedFinding> findings){

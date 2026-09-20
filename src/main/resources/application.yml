@@ -64,6 +64,7 @@ archguard:
     jar: ${ARCHGUARD_SCANNER_JAR:/opt/archguard/scanner.jar}
     validation-timeout: ${ARCHGUARD_SCANNER_VALIDATION_TIMEOUT:10s}
   runner:
+    enabled: ${ARCHGUARD_RUNNER_ENABLED:true}
     mailbox: ${ARCHGUARD_RUNNER_MAILBOX:./runner-mailbox}
     lease: ${ARCHGUARD_RUNNER_LEASE:5m}
     max-attempts: ${ARCHGUARD_RUNNER_MAX_ATTEMPTS:2}

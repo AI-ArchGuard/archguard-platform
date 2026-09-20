@@ -43,7 +43,7 @@ class OidcTokenValidationTest {
     @Test
     void rejectsNonHttpsIdentityEndpoints() {
         assertThatIllegalArgumentException()
-            .isThrownBy(() -> new OidcProperties("http://identity.example.test", "archguard-platform", null))
+            .isThrownBy(() -> new OidcProperties("http://identity.example.test", "archguard-platform", null, false))
             .withMessageContaining("issuer-uri");
     }
 

@@ -16,9 +16,9 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 @Repository
-final class JdbcScanJobStore implements ScanJobStore {
+public class JdbcScanJobStore implements ScanJobStore {
     private final JdbcClient jdbc;
-    JdbcScanJobStore(JdbcClient jdbc) { this.jdbc = jdbc; }
+    public JdbcScanJobStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
     @Override
     public void insert(ScanJobRecord j) {

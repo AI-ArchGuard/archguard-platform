@@ -29,10 +29,12 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
+@ConditionalOnProperty(name="archguard.runner.enabled", havingValue="true", matchIfMissing=true)
 final class MailboxScanJobCoordinator {
     private static final Logger LOGGER=LoggerFactory.getLogger(MailboxScanJobCoordinator.class);
     private static final long MAX_REPORT_BYTES=50L*1024*1024;

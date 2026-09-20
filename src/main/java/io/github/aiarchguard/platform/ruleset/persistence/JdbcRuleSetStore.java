@@ -13,9 +13,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 @Repository
-final class JdbcRuleSetStore implements RuleSetStore {
+public class JdbcRuleSetStore implements RuleSetStore {
     private final JdbcClient jdbc;
-    JdbcRuleSetStore(JdbcClient jdbc) { this.jdbc = jdbc; }
+    public JdbcRuleSetStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
     @Override
     public void insert(RuleSetView value) {

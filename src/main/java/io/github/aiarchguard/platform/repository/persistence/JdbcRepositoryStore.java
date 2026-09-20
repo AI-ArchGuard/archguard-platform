@@ -12,10 +12,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 @Repository
-final class JdbcRepositoryStore implements RepositoryStore {
+public class JdbcRepositoryStore implements RepositoryStore {
     private final JdbcClient jdbc;
 
-    JdbcRepositoryStore(JdbcClient jdbc) {
+    public JdbcRepositoryStore(JdbcClient jdbc) {
         this.jdbc = jdbc;
     }
 

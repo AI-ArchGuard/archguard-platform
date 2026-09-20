@@ -17,9 +17,9 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 @Repository
-final class JdbcFindingStore implements FindingStore {
+public class JdbcFindingStore implements FindingStore {
     private final JdbcClient jdbc;
-    JdbcFindingStore(JdbcClient jdbc) { this.jdbc=jdbc; }
+    public JdbcFindingStore(JdbcClient jdbc) { this.jdbc=jdbc; }
 
     @Override public List<FindingView> list(UUID projectId, UUID jobId, int page, int size) {
         return jdbc.sql("SELECT * FROM finding.findings WHERE project_id=:project AND job_id=:job ORDER BY severity,id LIMIT :size OFFSET :offset")

@@ -14,10 +14,6 @@ record OidcProperties(
     String jwkSetUri,
     boolean allowHttp
 ) {
-    OidcProperties(String issuerUri, String audience, String jwkSetUri) {
-        this(issuerUri, audience, jwkSetUri, false);
-    }
-
     OidcProperties {
         requireSecureUri("issuer-uri", issuerUri, allowHttp);
         if (StringUtils.hasText(jwkSetUri)) {

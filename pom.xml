@@ -13,7 +13,7 @@
 
   <groupId>io.github.aiarchguard</groupId>
   <artifactId>archguard-platform</artifactId>
-  <version>0.3.0-SNAPSHOT</version>
+  <version>0.3.0</version>
   <name>ArchGuard Platform</name>
   <description>ArchGuard modular monolith control plane</description>
 

@@ -17,7 +17,7 @@ final class OidcAudienceValidator implements OAuth2TokenValidator<Jwt> {
 
     @Override
     public OAuth2TokenValidatorResult validate(Jwt token) {
-        return token.getAudience().contains(audience)
+        return token.getAudience() != null && token.getAudience().contains(audience)
             ? OAuth2TokenValidatorResult.success()
             : OAuth2TokenValidatorResult.failure(INVALID_AUDIENCE);
     }

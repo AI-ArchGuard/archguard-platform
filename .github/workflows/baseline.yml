@@ -42,3 +42,5 @@ jobs:
           cache: maven
       - name: Verify Platform
         run: ./mvnw --batch-mode --no-transfer-progress verify
+      - name: Build Platform container image
+        run: docker build --tag archguard/platform:ci .

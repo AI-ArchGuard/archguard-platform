@@ -1,7 +1,7 @@
 FROM maven:3.9.16-eclipse-temurin-21 AS build
 WORKDIR /src
 COPY . .
-RUN ./mvnw --batch-mode --no-transfer-progress -DskipTests package
+RUN mvn --batch-mode --no-transfer-progress -DskipTests package
 
 FROM eclipse-temurin:21-jre-jammy
 RUN apt-get update && apt-get install -y --no-install-recommends curl \

@@ -18,6 +18,7 @@ class OidcTokenValidationTest {
 
         assertThat(validator.validate(jwt(ACTOR, List.of("archguard-platform"))).hasErrors()).isFalse();
         assertThat(validator.validate(jwt(ACTOR, List.of("another-api"))).hasErrors()).isTrue();
+        assertThat(validator.validate(jwtWithoutAudience(ACTOR)).hasErrors()).isTrue();
     }
 
     @Test
@@ -55,6 +56,16 @@ class OidcTokenValidationTest {
                 "iss", "https://identity.example.test",
                 "sub", subject,
                 "aud", audience,
+                "scope", "project:create profile:read"));
+    }
+
+    private static Jwt jwtWithoutAudience(String subject) {
+        Instant now = Instant.now();
+        return new Jwt("token", now.minusSeconds(1), now.plusSeconds(300),
+            Map.of("alg", "RS256"),
+            Map.of(
+                "iss", "https://identity.example.test",
+                "sub", subject,
                 "scope", "project:create profile:read"));
     }
 }

@@ -22,6 +22,8 @@ Platform MVP `v0.3.0` 控制面已建立。当前实现提供 Java 21/Spring Boo
 
 ## 依赖与契约
 
+阶段 3B 的[持续治理契约设计](docs/technical-design/v0.4-governance-3b-contracts.md)和[治理 OpenAPI 扩展](openapi/governance-v1.json)已冻结为后续切片的实现目标；这些新增端点当前尚未在运行时提供。
+
 - 通过版本化 Scanner 契约集成 `archguard-scanner`，不得依赖其内部类。
 - PostgreSQL 是业务事实来源；模块之间通过公开应用接口或事件协作，不直接跨模块写表。
 - 跨仓库架构与工程规范以 [archguard-docs](https://github.com/AI-ArchGuard/archguard-docs) 为准。

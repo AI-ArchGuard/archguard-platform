@@ -1,0 +1,185 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ArchGuard governance v1 contract extension",
+    "version": "0.1.0",
+    "description": "Stage 3B frozen contract. These routes are planned for 3C-3E and are not yet served by Platform."
+  },
+  "x-archguard-lifecycle": "contract-only-3b",
+  "security": [{"platformIdentity": []}],
+  "paths": {
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/report-submissions": {
+      "post": {
+        "operationId": "submitGovernanceReport",
+        "summary": "Submit a Scanner report and Git revision from an authenticated CI workspace",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/RepositoryId"},
+          {"$ref": "#/components/parameters/IdempotencyKey"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["metadata", "report"],
+                "properties": {
+                  "metadata": {"$ref": "#/components/schemas/ReportSubmissionMetadata"},
+                  "report": {"type": "string", "format": "binary", "description": "Original Scanner Result 0.1.0 UTF-8 JSON bytes, maximum 50 MiB"}
+                }
+              },
+              "encoding": {"metadata": {"contentType": "application/json"}, "report": {"contentType": "application/json"}}
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "Idempotent replay of an existing submission", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReportSubmission"}}}},
+          "202": {"description": "Report accepted for governance evaluation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReportSubmission"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "413": {"$ref": "#/components/responses/ReportTooLarge"},
+          "422": {"$ref": "#/components/responses/InvalidReport"}
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/report-submissions/{submissionId}": {
+      "get": {
+        "operationId": "getGovernanceSubmission",
+        "summary": "Read an authorized report submission and processing state",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/RepositoryId"},
+          {"$ref": "#/components/parameters/SubmissionId"}
+        ],
+        "responses": {
+          "200": {"description": "Submission found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReportSubmission"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"}
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/report-submissions/{submissionId}/gate-evaluation": {
+      "get": {
+        "operationId": "getGovernanceGateEvaluation",
+        "summary": "Read the immutable gate result or the pending submission state",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/RepositoryId"},
+          {"$ref": "#/components/parameters/SubmissionId"}
+        ],
+        "responses": {
+          "200": {"description": "Final gate evaluation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GateEvaluation"}}}},
+          "202": {"description": "Evaluation not yet complete", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReportSubmission"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
+    "parameters": {
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "RepositoryId": {"name": "repositoryId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "SubmissionId": {"name": "submissionId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[\\x21-\\x7E]+$"}}
+    },
+    "responses": {
+      "BadRequest": {"description": "Invalid metadata or request structure"},
+      "Unauthorized": {"description": "Authentication failed"},
+      "Forbidden": {"description": "Caller lacks submission permission within a visible Project"},
+      "NotFound": {"description": "Resource is absent or not visible in this Project"},
+      "Conflict": {"description": "Idempotency key was reused for a different request"},
+      "ReportTooLarge": {"description": "Report exceeds 50 MiB"},
+      "InvalidReport": {"description": "Report digest, Schema, references or ownership is invalid"}
+    },
+    "schemas": {
+      "Sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "CommitSha": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+      "GitRevision": {
+        "type": "object", "additionalProperties": false,
+        "required": ["provider", "providerRepositoryId", "commitSha", "targetBranch"],
+        "properties": {
+          "provider": {"type": "string", "const": "github", "description": "Provider-neutral field; GitHub is the only Stage 3 adapter"},
+          "providerRepositoryId": {"type": "string", "minLength": 1, "maxLength": 128},
+          "commitSha": {"$ref": "#/components/schemas/CommitSha"},
+          "targetBranch": {"type": "string", "minLength": 1, "maxLength": 255, "description": "Branch name without refs/heads/; NFC, no controls or surrounding whitespace"}
+        }
+      },
+      "PullRequestRef": {
+        "type": "object", "additionalProperties": false,
+        "required": ["externalId", "headSha", "baseSha"],
+        "properties": {
+          "externalId": {"type": "string", "minLength": 1, "maxLength": 128},
+          "headSha": {"$ref": "#/components/schemas/CommitSha"},
+          "baseSha": {"$ref": "#/components/schemas/CommitSha"}
+        }
+      },
+      "ReportSubmissionMetadata": {
+        "type": "object", "additionalProperties": false,
+        "required": ["ruleSetVersionId", "revision", "scannerVersion", "schemaVersion", "reportSha256"],
+        "properties": {
+          "ruleSetVersionId": {"type": "string", "format": "uuid"},
+          "revision": {"$ref": "#/components/schemas/GitRevision"},
+          "pullRequest": {"$ref": "#/components/schemas/PullRequestRef"},
+          "scannerVersion": {"type": "string", "minLength": 1, "maxLength": 64},
+          "schemaVersion": {"type": "string", "const": "0.1.0"},
+          "reportSha256": {"$ref": "#/components/schemas/Sha256"}
+        }
+      },
+      "ReportSubmission": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "projectId", "repositoryId", "ruleSetVersionId", "revision", "reportSha256", "requestDigest", "status", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "projectId": {"type": "string", "format": "uuid"},
+          "repositoryId": {"type": "string", "format": "uuid"},
+          "ruleSetVersionId": {"type": "string", "format": "uuid"},
+          "revision": {"$ref": "#/components/schemas/GitRevision"},
+          "pullRequest": {"$ref": "#/components/schemas/PullRequestRef"},
+          "reportSha256": {"$ref": "#/components/schemas/Sha256"},
+          "requestDigest": {"$ref": "#/components/schemas/Sha256"},
+          "status": {"type": "string", "enum": ["RECEIVED", "VALIDATED", "EVALUATING", "COMPLETED", "REJECTED"]},
+          "gateEvaluationId": {"type": "string", "format": "uuid"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "GateEvaluation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "submissionId", "projectId", "repositoryId", "ruleSetVersionId", "revision", "outcome", "ciExitCode", "policyVersion", "fingerprintVersion", "counts", "matchedExceptionVersionIds", "evaluatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "submissionId": {"type": "string", "format": "uuid"},
+          "projectId": {"type": "string", "format": "uuid"},
+          "repositoryId": {"type": "string", "format": "uuid"},
+          "ruleSetVersionId": {"type": "string", "format": "uuid"},
+          "revision": {"$ref": "#/components/schemas/GitRevision"},
+          "baselineVersionId": {"type": "string", "format": "uuid"},
+          "outcome": {"type": "string", "enum": ["PASS", "FAIL", "ERROR"]},
+          "errorKind": {"type": "string", "enum": ["CONFIGURATION", "EXECUTION_OR_CONTRACT"]},
+          "errorCode": {"type": "string", "minLength": 1, "maxLength": 100},
+          "ciExitCode": {"type": "integer", "enum": [0, 2, 64, 70]},
+          "policyVersion": {"type": "string", "minLength": 1},
+          "fingerprintVersion": {"type": "string", "const": "platform-finding-v1"},
+          "counts": {"$ref": "#/components/schemas/FindingClassificationCounts"},
+          "matchedExceptionVersionIds": {"type": "array", "uniqueItems": true, "items": {"type": "string", "format": "uuid"}},
+          "evaluatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "FindingClassificationCounts": {
+        "type": "object", "additionalProperties": false,
+        "required": ["NEW", "EXISTING", "RESOLVED"],
+        "properties": {
+          "NEW": {"type": "integer", "minimum": 0},
+          "EXISTING": {"type": "integer", "minimum": 0},
+          "RESOLVED": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}

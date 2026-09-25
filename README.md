@@ -22,7 +22,7 @@ Platform MVP `v0.3.0` 控制面已建立。当前实现提供 Java 21/Spring Boo
 
 ## 依赖与契约
 
-阶段 3B 的[持续治理契约设计](docs/technical-design/v0.4-governance-3b-contracts.md)和[治理 OpenAPI 扩展](openapi/governance-v1.json)已冻结为后续切片的实现目标；这些新增端点当前尚未在运行时提供。
+阶段 3B 的[持续治理契约设计](docs/technical-design/v0.4-governance-3b-contracts.md)和[报告提交/门禁 OpenAPI 扩展](openapi/governance-v1.json)已冻结，相关端点仍待 3D–3E 实现。阶段 3C 新增[不可变基线与分类设计](docs/technical-design/v0.4-governance-3c-baselines.md)及[运行时基线 API](openapi/governance-baselines-v1.json)：成功扫描可按 Project、Repository、目标分支和 RuleSetVersion 提升为不可变版本，并与候选报告比较出 `NEW`、`EXISTING`、`RESOLVED`。
 
 - 通过版本化 Scanner 契约集成 `archguard-scanner`，不得依赖其内部类。
 - PostgreSQL 是业务事实来源；模块之间通过公开应用接口或事件协作，不直接跨模块写表。

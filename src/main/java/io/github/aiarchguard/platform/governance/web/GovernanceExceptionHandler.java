@@ -3,9 +3,11 @@ package io.github.aiarchguard.platform.governance.web;
 import io.github.aiarchguard.platform.common.ApiError;
 import io.github.aiarchguard.platform.common.TraceIdProvider;
 import io.github.aiarchguard.platform.governance.BaselineNotFoundException;
+import io.github.aiarchguard.platform.governance.GateEvaluationNotFoundException;
 import io.github.aiarchguard.platform.governance.GovernanceConflictException;
 import io.github.aiarchguard.platform.governance.InvalidGovernanceInputException;
 import io.github.aiarchguard.platform.governance.InvalidGovernanceReportException;
+import io.github.aiarchguard.platform.governance.PolicyExceptionNotFoundException;
 import java.util.Map;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -23,6 +25,14 @@ final class GovernanceExceptionHandler {
     @ExceptionHandler(BaselineNotFoundException.class)
     ResponseEntity<ApiError> missing() {
         return error(HttpStatus.NOT_FOUND, "baseline.not_found", "Baseline was not found.");
+    }
+    @ExceptionHandler(PolicyExceptionNotFoundException.class)
+    ResponseEntity<ApiError> missingException() {
+        return error(HttpStatus.NOT_FOUND, "policy_exception.not_found", "Policy exception was not found.");
+    }
+    @ExceptionHandler(GateEvaluationNotFoundException.class)
+    ResponseEntity<ApiError> missingGate() {
+        return error(HttpStatus.NOT_FOUND, "gate_evaluation.not_found", "Gate evaluation was not found.");
     }
     @ExceptionHandler(InvalidGovernanceInputException.class)
     ResponseEntity<ApiError> invalid(InvalidGovernanceInputException exception) {

@@ -205,6 +205,8 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
     private String violationReport(String identity) throws Exception {
         ObjectNode report = fullReport(identity);
         ((ArrayNode) report.path("findings")).remove(1);
+        ((ObjectNode) report.path("findings").get(0).path("extensions"))
+            .putArray("archguard.violation").add("layer-violation");
         return mapper.writeValueAsString(report);
     }
     private ObjectNode fullReport(String identity) throws Exception {

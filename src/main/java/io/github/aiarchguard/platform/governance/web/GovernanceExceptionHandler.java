@@ -14,6 +14,7 @@ import io.github.aiarchguard.platform.governance.InvalidGovernanceReportExceptio
 import io.github.aiarchguard.platform.governance.InvalidGithubWebhookException;
 import io.github.aiarchguard.platform.governance.PolicyExceptionNotFoundException;
 import io.github.aiarchguard.platform.governance.ReportSubmissionNotFoundException;
+import io.github.aiarchguard.platform.finding.InvalidResultException;
 import java.util.Map;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -61,8 +62,8 @@ final class GovernanceExceptionHandler {
     ResponseEntity<ApiError> invalid(InvalidGovernanceInputException exception) {
         return error(HttpStatus.BAD_REQUEST, "governance.invalid", exception.getMessage());
     }
-    @ExceptionHandler(InvalidGovernanceReportException.class)
-    ResponseEntity<ApiError> invalidReport(InvalidGovernanceReportException exception) {
+    @ExceptionHandler({InvalidGovernanceReportException.class, InvalidResultException.class})
+    ResponseEntity<ApiError> invalidReport(RuntimeException exception) {
         return error(HttpStatus.UNPROCESSABLE_ENTITY, "governance.report_invalid", exception.getMessage());
     }
     @ExceptionHandler(GovernanceConflictException.class)

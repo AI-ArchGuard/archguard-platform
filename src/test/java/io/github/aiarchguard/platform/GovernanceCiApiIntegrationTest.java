@@ -12,6 +12,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -110,12 +112,12 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
 
     @Test void badSignatureDeliveryCollisionAndCrossProjectWriteFailClosed() throws Exception {
         Fixture own = fixture(true), other = fixture(false);
-        byte[] payload = webhook("a".repeat(40), Instant.now());
+        byte[] payload = webhook("a".repeat(40), Instant.now(), 999999);
         UUID delivery = UUID.randomUUID();
         webhook(delivery, payload, "sha256=" + "0".repeat(64)).andExpect(status().isUnauthorized());
         webhook(delivery, payload, signature(payload)).andExpect(status().isOk())
             .andExpect(jsonPath("$.disposition").value("UNLINKED"));
-        byte[] changed = webhook("b".repeat(40), Instant.now());
+        byte[] changed = webhook("b".repeat(40), Instant.now(), 999999);
         webhook(delivery, changed, signature(changed)).andExpect(status().isConflict());
         mvc.perform(put(path(other) + "/github/link").with(user(ACTOR)).with(csrf())
             .contentType(MediaType.APPLICATION_JSON)
@@ -174,8 +176,11 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .contentType(MediaType.APPLICATION_JSON).content(payload));
     }
     private byte[] webhook(String head, Instant at) throws Exception {
+        return webhook(head, at, 123);
+    }
+    private byte[] webhook(String head, Instant at, int providerRepositoryId) throws Exception {
         return mapper.writeValueAsBytes(Map.of("action", "synchronize", "number", 7,
-            "repository", Map.of("id", 123), "pull_request", Map.of("updated_at", at.toString(),
+            "repository", Map.of("id", providerRepositoryId), "pull_request", Map.of("updated_at", at.toString(),
                 "head", Map.of("sha", head), "base", Map.of("sha", "a".repeat(40), "ref", "main"))));
     }
     private static String signature(byte[] payload) throws Exception {
@@ -192,15 +197,22 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
     private static String path(Fixture f) {
         return "/api/v1/projects/" + f.project() + "/repositories/" + f.repository();
     }
-    private static String emptyReport(String identity) {
-        return "{\"schemaVersion\":\"0.1.0\",\"project\":{\"identity\":\"" + identity
-            + "\"},\"artifacts\":[],\"components\":[],\"dependencies\":[],\"evidences\":[],\"findings\":[]}";
+    private String emptyReport(String identity) throws Exception {
+        ObjectNode report = fullReport(identity);
+        ((ArrayNode) report.path("findings")).removeAll();
+        return mapper.writeValueAsString(report);
     }
-    private static String violationReport(String identity) {
-        return "{\"schemaVersion\":\"0.1.0\",\"project\":{\"identity\":\"" + identity
-            + "\"},\"artifacts\":[{\"id\":\"artifact_a\",\"kind\":\"module\",\"language\":\"java\",\"repositoryPath\":\".\",\"qualifiedName\":\"test:module\"}],"
-            + "\"components\":[],\"dependencies\":[],\"evidences\":[],\"findings\":[{\"id\":\"finding_a\",\"rule\":{\"id\":\"archguard.complexity-threshold\",\"version\":\"0.1.0\"},"
-            + "\"subjectId\":\"artifact_a\",\"severity\":\"high\",\"extensions\":{\"archguard.metric\":[\"complexity.cyclomatic\"]}}]}";
+    private String violationReport(String identity) throws Exception {
+        ObjectNode report = fullReport(identity);
+        ((ArrayNode) report.path("findings")).remove(1);
+        return mapper.writeValueAsString(report);
+    }
+    private ObjectNode fullReport(String identity) throws Exception {
+        try (var input = getClass().getResourceAsStream("/reports/full-report.json")) {
+            ObjectNode report = (ObjectNode) mapper.readTree(input);
+            ((ObjectNode) report.path("project")).put("identity", identity);
+            return report;
+        }
     }
     private record Fixture(UUID project, UUID repository, UUID rules, String identity) { }
 }

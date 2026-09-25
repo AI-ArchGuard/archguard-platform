@@ -169,6 +169,16 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.outcome").value("ERROR"))
             .andExpect(jsonPath("$.ciExitCode").value(64))
             .andExpect(jsonPath("$.errorKind").value("CONFIGURATION"));
+        UUID unfinished = queuedJob(own);
+        mvc.perform(post(ownBase + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "unfinished-scan").contentType(MediaType.APPLICATION_JSON)
+            .content(compare(own, unfinished))).andExpect(status().isCreated())
+            .andExpect(jsonPath("$.outcome").value("ERROR"))
+            .andExpect(jsonPath("$.ciExitCode").value(70))
+            .andExpect(jsonPath("$.errorKind").value("EXECUTION_OR_CONTRACT"));
+        mvc.perform(post(ownBase + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "no-baseline").contentType(MediaType.APPLICATION_JSON)
+            .content(compare(own, unfinished))).andExpect(status().isConflict());
         mvc.perform(post(path(other) + "/gate-evaluations").with(user(ACTOR)).with(csrf())
             .header("Idempotency-Key", "denied").contentType(MediaType.APPLICATION_JSON)
             .content(compare(other, job))).andExpect(status().isNotFound());
@@ -221,6 +231,18 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
             """).param("id", id).param("project", fixture.project()).param("repository", fixture.repository())
             .param("rules", fixture.rules()).param("key", UUID.randomUUID().toString())
             .param("digest", digest).param("actor", UUID.fromString(ACTOR)).param("report", bytes).update();
+        return id;
+    }
+    private UUID queuedJob(Fixture fixture) {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("""
+            INSERT INTO scanjob.scan_jobs(id,project_id,repository_id,rule_set_version_id,idempotency_key,
+              request_sha256,status,created_by,created_at)
+            VALUES (:id,:project,:repository,:rules,:key,:sha,'QUEUED',:actor,NOW())
+            """).param("id", id).param("project", fixture.project())
+            .param("repository", fixture.repository()).param("rules", fixture.rules())
+            .param("key", UUID.randomUUID().toString()).param("sha", "a".repeat(64))
+            .param("actor", UUID.fromString(ACTOR)).update();
         return id;
     }
     private static String emptyReport(String identity) {

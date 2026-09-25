@@ -18,7 +18,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 @Repository
-public final class JdbcBaselineStore implements BaselineStore {
+public class JdbcBaselineStore implements BaselineStore {
     private final JdbcClient jdbc;
     public JdbcBaselineStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 

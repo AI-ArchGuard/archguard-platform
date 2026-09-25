@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
 @Order(Ordered.LOWEST_PRECEDENCE)
@@ -52,6 +53,12 @@ final class GlobalExceptionHandler {
         LOGGER.error("event=request_failed reason=database exception={}", exception.getClass().getName());
         return error(HttpStatus.SERVICE_UNAVAILABLE, "dependency.unavailable",
             "A required service is temporarily unavailable.", Map.of());
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    ResponseEntity<ApiError> uploadTooLarge() {
+        return error(HttpStatus.PAYLOAD_TOO_LARGE, "request.too_large",
+            "Uploaded request exceeds the configured size limit.", Map.of());
     }
 
     @ExceptionHandler(Exception.class)

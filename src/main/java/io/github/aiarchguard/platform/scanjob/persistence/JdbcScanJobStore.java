@@ -125,6 +125,18 @@ public class JdbcScanJobStore implements ScanJobStore {
             .update() == 1;
     }
 
+    @Override public boolean completeImported(UUID jobId, byte[] report, String sha256,
+            String scannerVersion, String schemaVersion, ScanJobOutcome outcome, Instant now) {
+        return jdbc.sql("""
+            UPDATE scanjob.scan_jobs SET status='SUCCEEDED',outcome=:outcome,report_bytes=:report,
+              report_sha256=:sha,scanner_version=:scanner,result_schema_version=:schema,
+              completed_at=:now,version=version+1
+            WHERE id=:id AND status='QUEUED' AND idempotency_key=:key
+            """).param("outcome", outcome.name()).param("report", report).param("sha", sha256)
+            .param("scanner", scannerVersion).param("schema", schemaVersion)
+            .param("now", Timestamp.from(now)).param("id", jobId).param("key", "ci:" + jobId).update() == 1;
+    }
+
     @Override public boolean existsForProject(UUID projectId) {
         return jdbc.sql("SELECT EXISTS(SELECT 1 FROM scanjob.scan_jobs WHERE project_id=:projectId)")
             .param("projectId",projectId).query(Boolean.class).single();

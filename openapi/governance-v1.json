@@ -3,9 +3,9 @@
   "info": {
     "title": "ArchGuard governance v1 contract extension",
     "version": "0.1.0",
-    "description": "Stage 3B frozen contract. These routes are planned for 3C-3E and are not yet served by Platform."
+    "description": "Stage 3B frozen field contract, implemented at runtime in Stage 3E."
   },
-  "x-archguard-lifecycle": "contract-only-3b",
+  "x-archguard-lifecycle": "runtime-3e",
   "security": [{"platformIdentity": []}],
   "paths": {
     "/api/v1/projects/{projectId}/repositories/{repositoryId}/report-submissions": {

@@ -1,0 +1,58 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "ArchGuard GitHub governance adapter", "version": "0.1.0", "description": "Stage 3E GitHub-only adapter; Platform never stores Git credentials."},
+  "security": [{"platformIdentity": []}],
+  "paths": {
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/github/link": {
+      "put": {
+        "operationId": "linkGithubRepository",
+        "summary": "Maintainer binds an immutable numeric GitHub repository identity",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LinkRequest"}}}},
+        "responses": {"200": {"description": "Repository linked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RepositoryLink"}}}}, "401": {"description": "Unauthenticated"}, "403": {"description": "Maintainer required"}, "404": {"description": "Project or repository is not visible"}, "409": {"description": "Repository identity already bound elsewhere"}}
+      },
+      "get": {
+        "operationId": "getGithubRepositoryLink",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}],
+        "responses": {"200": {"description": "Repository link", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RepositoryLink"}}}}, "401": {"description": "Unauthenticated"}, "404": {"description": "Link is absent or not visible"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/github/pull-requests/{externalId}": {
+      "get": {
+        "operationId": "getGithubPullRequestHead",
+        "summary": "Read the signed-webhook-derived current PR head and attached gate",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"name": "externalId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/NumericId"}}],
+        "responses": {"200": {"description": "Current PR head", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PullRequestHead"}}}}, "401": {"description": "Unauthenticated"}, "404": {"description": "PR is absent or not visible"}}
+      }
+    },
+    "/api/v1/github/webhooks": {
+      "post": {
+        "operationId": "receiveGithubWebhook",
+        "summary": "Verify HMAC-SHA256 and apply a monotonic GitHub PR event",
+        "security": [],
+        "parameters": [
+          {"name": "X-GitHub-Delivery", "in": "header", "required": true, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "X-GitHub-Event", "in": "header", "required": true, "schema": {"type": "string"}},
+          {"name": "X-Hub-Signature-256", "in": "header", "required": true, "schema": {"type": "string", "pattern": "^sha256=[0-9a-f]{64}$"}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "description": "Raw signed GitHub webhook JSON, maximum 2 MiB"}}}},
+        "responses": {"200": {"description": "Authenticated delivery recorded or replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WebhookResult"}}}}, "401": {"description": "Invalid signature or delivery"}, "409": {"description": "Delivery ID reused for different bytes"}, "503": {"description": "Webhook secret is not configured; fails closed"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
+    "parameters": {
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "RepositoryId": {"name": "repositoryId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+    },
+    "schemas": {
+      "NumericId": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"},
+      "CommitSha": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+      "LinkRequest": {"type": "object", "additionalProperties": false, "required": ["providerRepositoryId", "ownerName", "repositoryName"], "properties": {"providerRepositoryId": {"$ref": "#/components/schemas/NumericId"}, "ownerName": {"type": "string", "minLength": 1}, "repositoryName": {"type": "string", "minLength": 1}}},
+      "RepositoryLink": {"type": "object", "additionalProperties": false, "required": ["projectId", "repositoryId", "provider", "providerRepositoryId", "ownerName", "repositoryName", "createdBy", "createdAt"], "properties": {"projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "provider": {"const": "github"}, "providerRepositoryId": {"$ref": "#/components/schemas/NumericId"}, "ownerName": {"type": "string"}, "repositoryName": {"type": "string"}, "createdBy": {"type": "string", "format": "uuid"}, "createdAt": {"type": "string", "format": "date-time"}}},
+      "PullRequestHead": {"type": "object", "additionalProperties": false, "required": ["projectId", "repositoryId", "externalId", "headSha", "baseSha", "targetBranch", "eventAt"], "properties": {"projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "externalId": {"$ref": "#/components/schemas/NumericId"}, "headSha": {"$ref": "#/components/schemas/CommitSha"}, "baseSha": {"$ref": "#/components/schemas/CommitSha"}, "targetBranch": {"type": "string"}, "eventAt": {"type": "string", "format": "date-time"}, "currentGateEvaluationId": {"type": "string", "format": "uuid"}}},
+      "WebhookResult": {"type": "object", "additionalProperties": false, "required": ["deliveryId", "disposition", "replay"], "properties": {"deliveryId": {"type": "string", "format": "uuid"}, "disposition": {"type": "string", "enum": ["RECEIVED", "APPLIED", "STALE", "IGNORED", "UNLINKED"]}, "replay": {"type": "boolean"}}}
+    }
+  }
+}

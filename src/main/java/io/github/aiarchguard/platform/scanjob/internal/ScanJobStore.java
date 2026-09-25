@@ -16,6 +16,9 @@ public interface ScanJobStore {
     boolean heartbeat(UUID jobId, UUID attemptToken, Instant leaseUntil);
     boolean complete(UUID jobId, UUID attemptToken, int exitCode, byte[] report, String sha256,
                      boolean partial, String scannerVersion, String schemaVersion, Instant now);
+    boolean completeImported(UUID jobId, byte[] report, String sha256, String scannerVersion,
+                             String schemaVersion, io.github.aiarchguard.platform.scanjob.ScanJobOutcome outcome,
+                             Instant now);
     boolean fail(UUID jobId, UUID attemptToken, String code, String message, byte[] partialReport,
                  String sha256, Instant now);
     boolean existsForProject(UUID projectId);

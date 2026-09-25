@@ -22,7 +22,7 @@ Platform MVP `v0.3.0` 控制面已建立。当前实现提供 Java 21/Spring Boo
 
 ## 依赖与契约
 
-阶段 3B 的[持续治理契约设计](docs/technical-design/v0.4-governance-3b-contracts.md)和[报告提交/门禁 OpenAPI 扩展](openapi/governance-v1.json)已冻结，其中 CI 报告提交与 GitHub 联动端点仍待 3E 实现。阶段 3C 的[不可变基线与分类设计](docs/technical-design/v0.4-governance-3c-baselines.md)及[运行时基线 API](openapi/governance-baselines-v1.json)支持成功扫描基线与 `NEW`、`EXISTING`、`RESOLVED` 分类。阶段 3D 的[门禁与例外设计](docs/technical-design/v0.4-governance-3d-gates.md)及[运行时门禁 API](openapi/governance-gates-v1.json)提供版本化的门禁判断和有期限例外；这尚不是 3E 的 CI/Webhook 闭环。
+阶段 3B 的[持续治理契约设计](docs/technical-design/v0.4-governance-3b-contracts.md)和[报告提交/门禁 OpenAPI 扩展](openapi/governance-v1.json)已冻结，阶段 3E 实现其运行时入口。阶段 3C 的[不可变基线与分类设计](docs/technical-design/v0.4-governance-3c-baselines.md)及[运行时基线 API](openapi/governance-baselines-v1.json)支持成功扫描基线与 `NEW`、`EXISTING`、`RESOLVED` 分类。阶段 3D 的[门禁与例外设计](docs/technical-design/v0.4-governance-3d-gates.md)及[运行时门禁 API](openapi/governance-gates-v1.json)提供版本化门禁和有期限例外。阶段 3E 的[GitHub/CI 设计](docs/technical-design/v0.4-governance-3e-github-ci.md)与[GitHub Adapter API](openapi/governance-github-v1.json)连接签名事件和 CI 报告；Platform 仍不保存 Git 凭据。
 
 - 通过版本化 Scanner 契约集成 `archguard-scanner`，不得依赖其内部类。
 - PostgreSQL 是业务事实来源；模块之间通过公开应用接口或事件协作，不直接跨模块写表。
@@ -87,6 +87,7 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 | `ARCHGUARD_RUNNER_MAILBOX` | `./runner-mailbox` | Platform 与无网络 Runner 共享的版本化文件邮箱。 |
 | `ARCHGUARD_RUNNER_LEASE` | `5m` | 任务 attempt 租约。 |
 | `ARCHGUARD_RUNNER_MAX_ATTEMPTS` | `2` | Runner 故障后的最大认领次数。 |
+| `ARCHGUARD_GITHUB_WEBHOOK_SECRET` | 无；Webhook 入口失败关闭 | GitHub Webhook HMAC secret，仅运行环境注入，不写入 Git。 |
 
 `.env.example` 只包含非敏感示例；应用不会自动读取 `.env`。测试身份只存在于测试进程中，不可用于生产；应用不接受 `X-Actor-Id` 等自报身份头。
 

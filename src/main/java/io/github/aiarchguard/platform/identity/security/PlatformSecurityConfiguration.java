@@ -45,6 +45,7 @@ class PlatformSecurityConfiguration {
                 )))
             .authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                .requestMatchers("/api/v1/github/webhooks").permitAll()
                 .anyRequest().authenticated());
     }
 

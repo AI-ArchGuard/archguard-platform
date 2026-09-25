@@ -4,10 +4,16 @@ import io.github.aiarchguard.platform.common.ApiError;
 import io.github.aiarchguard.platform.common.TraceIdProvider;
 import io.github.aiarchguard.platform.governance.BaselineNotFoundException;
 import io.github.aiarchguard.platform.governance.GateEvaluationNotFoundException;
+import io.github.aiarchguard.platform.governance.GithubLinkNotFoundException;
+import io.github.aiarchguard.platform.governance.GithubPullRequestNotFoundException;
+import io.github.aiarchguard.platform.governance.GithubWebhookUnavailableException;
+import io.github.aiarchguard.platform.governance.GovernanceReportTooLargeException;
 import io.github.aiarchguard.platform.governance.GovernanceConflictException;
 import io.github.aiarchguard.platform.governance.InvalidGovernanceInputException;
 import io.github.aiarchguard.platform.governance.InvalidGovernanceReportException;
+import io.github.aiarchguard.platform.governance.InvalidGithubWebhookException;
 import io.github.aiarchguard.platform.governance.PolicyExceptionNotFoundException;
+import io.github.aiarchguard.platform.governance.ReportSubmissionNotFoundException;
 import java.util.Map;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -33,6 +39,23 @@ final class GovernanceExceptionHandler {
     @ExceptionHandler(GateEvaluationNotFoundException.class)
     ResponseEntity<ApiError> missingGate() {
         return error(HttpStatus.NOT_FOUND, "gate_evaluation.not_found", "Gate evaluation was not found.");
+    }
+    @ExceptionHandler({GithubLinkNotFoundException.class, GithubPullRequestNotFoundException.class,
+        ReportSubmissionNotFoundException.class})
+    ResponseEntity<ApiError> missingGithubResource() {
+        return error(HttpStatus.NOT_FOUND, "governance.resource_not_found", "Governance resource was not found.");
+    }
+    @ExceptionHandler(InvalidGithubWebhookException.class)
+    ResponseEntity<ApiError> invalidWebhook() {
+        return error(HttpStatus.UNAUTHORIZED, "github.webhook_invalid", "GitHub webhook authentication failed.");
+    }
+    @ExceptionHandler(GithubWebhookUnavailableException.class)
+    ResponseEntity<ApiError> webhookUnavailable() {
+        return error(HttpStatus.SERVICE_UNAVAILABLE, "github.webhook_unavailable", "GitHub webhook is not configured.");
+    }
+    @ExceptionHandler(GovernanceReportTooLargeException.class)
+    ResponseEntity<ApiError> reportTooLarge() {
+        return error(HttpStatus.PAYLOAD_TOO_LARGE, "governance.report_too_large", "Report exceeds 50 MiB.");
     }
     @ExceptionHandler(InvalidGovernanceInputException.class)
     ResponseEntity<ApiError> invalid(InvalidGovernanceInputException exception) {

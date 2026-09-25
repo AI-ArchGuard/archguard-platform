@@ -14,10 +14,25 @@ class GovernanceContractTest {
     private static final Path CONTRACT = Path.of("openapi", "governance-v1.json");
 
     @Test
+    void githubAdapterContractHasResolvableReferencesAndUnsignedWebhookBoundary() throws Exception {
+        JsonNode root = new ObjectMapper().readTree(Path.of("openapi", "governance-github-v1.json").toFile());
+        assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
+        assertThat(root.path("paths").size()).isEqualTo(3);
+        assertThat(root.at("/paths/~1api~1v1~1github~1webhooks/post/security").size()).isZero();
+        assertThat(root.at("/paths/~1api~1v1~1github~1webhooks/post/parameters").size()).isEqualTo(3);
+        List<String> references = new ArrayList<>();
+        collectReferences(root, references);
+        for (String reference : references) {
+            assertThat(reference).startsWith("#/components/");
+            assertThat(root.at(reference.substring(1)).isMissingNode()).isFalse();
+        }
+    }
+
+    @Test
     void contractHasResolvableReferencesAndFrozenGateResults() throws Exception {
         JsonNode root = new ObjectMapper().readTree(CONTRACT.toFile());
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
-        assertThat(root.path("x-archguard-lifecycle").asText()).isEqualTo("contract-only-3b");
+        assertThat(root.path("x-archguard-lifecycle").asText()).isEqualTo("runtime-3e");
         assertThat(root.path("paths").size()).isEqualTo(3);
 
         List<String> references = new ArrayList<>();

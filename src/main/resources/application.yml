@@ -17,6 +17,10 @@ spring:
   main:
     banner-mode: "off"
     log-startup-info: false
+  servlet:
+    multipart:
+      max-file-size: 52428800B
+      max-request-size: 52432896B
 
 server:
   port: ${SERVER_PORT:8080}
@@ -58,6 +62,8 @@ logging:
       console: logstash
 
 archguard:
+  github:
+    webhook-secret: ${ARCHGUARD_GITHUB_WEBHOOK_SECRET:}
   repositories:
     source-root: ${ARCHGUARD_SOURCE_ROOT:./sources}
   scanner:

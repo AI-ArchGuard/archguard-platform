@@ -1,6 +1,7 @@
 package io.github.aiarchguard.platform;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -12,6 +13,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -97,6 +99,98 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isNotFound());
     }
 
+    @Test void gatePersistsImmutableFailureAndExceptionAllowsOnlyNewEvaluation() throws Exception {
+        Fixture fixture = fixture(true);
+        UUID baselineJob = job(fixture, emptyReport(fixture.identity()));
+        UUID candidate = job(fixture, violationReport(fixture.identity()));
+        String base = path(fixture);
+        mvc.perform(post(base + "/baselines").with(user(ACTOR)).with(csrf())
+            .contentType(MediaType.APPLICATION_JSON).content(promote(fixture, baselineJob, "a".repeat(40))))
+            .andExpect(status().isCreated());
+        String request = compare(fixture, candidate);
+        JsonNode failed = mapper.readTree(mvc.perform(post(base + "/gate-evaluations")
+            .with(user(ACTOR)).with(csrf()).header("Idempotency-Key", "gate-one")
+            .contentType(MediaType.APPLICATION_JSON).content(request))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.outcome").value("FAIL"))
+            .andExpect(jsonPath("$.ciExitCode").value(2))
+            .andExpect(jsonPath("$.newCount").value(1))
+            .andExpect(jsonPath("$.blockedCount").value(1))
+            .andReturn().getResponse().getContentAsString());
+        UUID gateId = UUID.fromString(failed.path("id").asText());
+        mvc.perform(post(base + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "gate-one").contentType(MediaType.APPLICATION_JSON).content(request))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.id").value(gateId.toString()));
+        JsonNode compared = mapper.readTree(mvc.perform(post(base + "/comparisons")
+            .with(user(ACTOR)).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(request))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        String fingerprint = compared.path("findings").get(0).path("fingerprint").asText();
+        Instant now = Instant.now();
+        String waiver = "{\"targetBranch\":\"main\",\"ruleSetVersionId\":\"" + fixture.rules()
+            + "\",\"scopeType\":\"FINGERPRINT\",\"scopeValue\":\"" + fingerprint
+            + "\",\"reason\":\"Reviewed temporary exception\",\"effectiveAt\":\""
+            + now.minusSeconds(5) + "\",\"expiresAt\":\"" + now.plusSeconds(3600) + "\"}";
+        JsonNode exception = mapper.readTree(mvc.perform(post(base + "/policy-exceptions")
+            .with(user(ACTOR)).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(waiver))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("ACTIVE"))
+            .andReturn().getResponse().getContentAsString());
+        UUID exceptionId = UUID.fromString(exception.path("id").asText());
+        assertThatThrownBy(() -> jdbc.sql("UPDATE governance.policy_exceptions SET reason='Changed reason' WHERE id=:id")
+            .param("id", exceptionId).update()).isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> jdbc.sql("UPDATE governance.gate_evaluations SET blocked_count=0 WHERE id=:id")
+            .param("id", gateId).update()).isInstanceOf(Exception.class);
+        mvc.perform(post(base + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "gate-two").contentType(MediaType.APPLICATION_JSON).content(request))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.outcome").value("PASS"))
+            .andExpect(jsonPath("$.ciExitCode").value(0))
+            .andExpect(jsonPath("$.matchedExceptionVersionIds[0]").value(exceptionId.toString()));
+        mvc.perform(get(base + "/gate-evaluations/" + gateId).with(user(ACTOR)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.outcome").value("FAIL"));
+        mvc.perform(post(base + "/policy-exceptions/" + exceptionId + "/revoke")
+            .with(user(ACTOR)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"reason\":\"Exception no longer needed\"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("REVOKED"));
+        mvc.perform(post(base + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "gate-three").contentType(MediaType.APPLICATION_JSON).content(request))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.outcome").value("FAIL"));
+        assertThat(jdbc.sql("SELECT count(*) FROM governance.gate_evaluations WHERE project_id=:project")
+            .param("project", fixture.project()).query(Long.class).single()).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT count(*) FROM governance.gate_evaluations WHERE project_id=:project AND sealed")
+            .param("project", fixture.project()).query(Long.class).single()).isEqualTo(3);
+    }
+
+    @Test void missingBaselineReturnsPersistedConfigurationErrorAndCrossProjectWritesAreDenied() throws Exception {
+        Fixture own = fixture(true);
+        Fixture other = fixture(false);
+        UUID job = job(own, emptyReport(own.identity()));
+        String ownBase = path(own);
+        mvc.perform(post(ownBase + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "no-baseline").contentType(MediaType.APPLICATION_JSON)
+            .content(compare(own, job))).andExpect(status().isCreated())
+            .andExpect(jsonPath("$.outcome").value("ERROR"))
+            .andExpect(jsonPath("$.ciExitCode").value(64))
+            .andExpect(jsonPath("$.errorKind").value("CONFIGURATION"));
+        UUID unfinished = queuedJob(own);
+        mvc.perform(post(ownBase + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "unfinished-scan").contentType(MediaType.APPLICATION_JSON)
+            .content(compare(own, unfinished))).andExpect(status().isCreated())
+            .andExpect(jsonPath("$.outcome").value("ERROR"))
+            .andExpect(jsonPath("$.ciExitCode").value(70))
+            .andExpect(jsonPath("$.errorKind").value("EXECUTION_OR_CONTRACT"));
+        mvc.perform(post(ownBase + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "no-baseline").contentType(MediaType.APPLICATION_JSON)
+            .content(compare(own, unfinished))).andExpect(status().isConflict());
+        mvc.perform(post(path(other) + "/gate-evaluations").with(user(ACTOR)).with(csrf())
+            .header("Idempotency-Key", "denied").contentType(MediaType.APPLICATION_JSON)
+            .content(compare(other, job))).andExpect(status().isNotFound());
+        mvc.perform(post(path(other) + "/policy-exceptions").with(user(ACTOR)).with(csrf())
+            .contentType(MediaType.APPLICATION_JSON).content("{\"targetBranch\":\"main\",\"ruleSetVersionId\":\""
+                + other.rules() + "\",\"scopeType\":\"RULE\",\"scopeValue\":\"rule.a\","
+                + "\"reason\":\"Reviewed temporary exception\",\"effectiveAt\":\""
+                + Instant.now().minusSeconds(5) + "\",\"expiresAt\":\""
+                + Instant.now().plusSeconds(3600) + "\"}"))
+            .andExpect(status().isNotFound());
+    }
+
     private Fixture fixture(boolean member) {
         UUID project = UUID.randomUUID(), repository = UUID.randomUUID(), ruleSet = UUID.randomUUID(), rules = UUID.randomUUID();
         String identity = "test:" + project;
@@ -137,6 +231,18 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
             """).param("id", id).param("project", fixture.project()).param("repository", fixture.repository())
             .param("rules", fixture.rules()).param("key", UUID.randomUUID().toString())
             .param("digest", digest).param("actor", UUID.fromString(ACTOR)).param("report", bytes).update();
+        return id;
+    }
+    private UUID queuedJob(Fixture fixture) {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("""
+            INSERT INTO scanjob.scan_jobs(id,project_id,repository_id,rule_set_version_id,idempotency_key,
+              request_sha256,status,created_by,created_at)
+            VALUES (:id,:project,:repository,:rules,:key,:sha,'QUEUED',:actor,NOW())
+            """).param("id", id).param("project", fixture.project())
+            .param("repository", fixture.repository()).param("rules", fixture.rules())
+            .param("key", UUID.randomUUID().toString()).param("sha", "a".repeat(64))
+            .param("actor", UUID.fromString(ACTOR)).update();
         return id;
     }
     private static String emptyReport(String identity) {

@@ -9,6 +9,7 @@ import io.github.aiarchguard.platform.governance.BaselineOperations;
 import io.github.aiarchguard.platform.governance.BaselineVersionView;
 import io.github.aiarchguard.platform.governance.ComparisonView;
 import io.github.aiarchguard.platform.governance.GovernanceConflictException;
+import io.github.aiarchguard.platform.governance.GovernanceScopeInput;
 import io.github.aiarchguard.platform.governance.InvalidGovernanceInputException;
 import io.github.aiarchguard.platform.identity.CurrentActorProvider;
 import io.github.aiarchguard.platform.project.ProjectAuthorization;
@@ -19,7 +20,6 @@ import io.github.aiarchguard.platform.scanjob.ScanJobOperations;
 import io.github.aiarchguard.platform.scanjob.ScanJobResult;
 import io.github.aiarchguard.platform.scanjob.ScanJobStatus;
 import io.github.aiarchguard.platform.scanjob.ScanJobView;
-import java.text.Normalizer;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -54,7 +54,7 @@ class BaselineApplicationService implements BaselineOperations {
     public BaselineVersionView promote(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId, UUID scanJobId, String commitSha) {
         projects.requireMaintainer(projectId);
-        String branch = branch(targetBranch);
+        String branch = GovernanceScopeInput.branch(targetBranch);
         String commit = commit(commitSha);
         RepositoryView repository = repositoryAndRules(projectId, repositoryId, ruleSetVersionId);
         ScanJobResult report = successfulJob(projectId, repositoryId, ruleSetVersionId, scanJobId);
@@ -83,7 +83,7 @@ class BaselineApplicationService implements BaselineOperations {
     public BaselineVersionView select(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId, UUID baselineVersionId) {
         projects.requireMaintainer(projectId);
-        String branch = branch(targetBranch);
+        String branch = GovernanceScopeInput.branch(targetBranch);
         repositoryAndRules(projectId, repositoryId, ruleSetVersionId);
         BaselineScope scope = store.scope(projectId, repositoryId, branch, ruleSetVersionId)
             .orElseThrow(BaselineNotFoundException::new);
@@ -99,7 +99,7 @@ class BaselineApplicationService implements BaselineOperations {
     @Override public BaselineVersionView active(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId) {
         projects.requireViewer(projectId);
-        String branch = branch(targetBranch);
+        String branch = GovernanceScopeInput.branch(targetBranch);
         repositoryAndRules(projectId, repositoryId, ruleSetVersionId);
         BaselineScope scope = store.scope(projectId, repositoryId, branch, ruleSetVersionId)
             .orElseThrow(BaselineNotFoundException::new);
@@ -110,7 +110,7 @@ class BaselineApplicationService implements BaselineOperations {
     @Override public List<BaselineVersionView> list(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId) {
         projects.requireViewer(projectId);
-        String branch = branch(targetBranch);
+        String branch = GovernanceScopeInput.branch(targetBranch);
         repositoryAndRules(projectId, repositoryId, ruleSetVersionId);
         return store.scope(projectId, repositoryId, branch, ruleSetVersionId)
             .map(scope -> store.versions(scope.id())).orElseGet(List::of);
@@ -120,7 +120,7 @@ class BaselineApplicationService implements BaselineOperations {
     public ComparisonView compare(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId, UUID candidateJobId) {
         projects.requireMaintainer(projectId);
-        String branch = branch(targetBranch);
+        String branch = GovernanceScopeInput.branch(targetBranch);
         RepositoryView repository = repositoryAndRules(projectId, repositoryId, ruleSetVersionId);
         ScanJobResult report = successfulJob(projectId, repositoryId, ruleSetVersionId, candidateJobId);
         if (store.scope(projectId, repositoryId, branch, ruleSetVersionId).isEmpty()) {
@@ -167,16 +167,6 @@ class BaselineApplicationService implements BaselineOperations {
     private void record(UUID actorId, UUID projectId, String action, Map<String, Object> metadata) {
         audit.record(new AuditEvent(actorId, projectId, action, AuditResult.SUCCESS,
             traceIds.currentTraceId(), metadata));
-    }
-    private static String branch(String value) {
-        if (value == null || value.isBlank() || value.length() > 255 || !value.equals(value.trim())
-            || value.startsWith("refs/heads/") || value.startsWith("/") || value.endsWith("/")
-            || value.contains("..") || value.contains("@{") || value.contains("//")
-            || value.codePoints().anyMatch(code -> Character.isISOControl(code)
-                || " ~^:?*[]\\".indexOf(code) >= 0)) {
-            throw new InvalidGovernanceInputException("Target branch is invalid");
-        }
-        return Normalizer.normalize(value, Normalizer.Form.NFC);
     }
     private static String commit(String value) {
         if (value == null || !value.matches("(?:[0-9a-f]{40}|[0-9a-f]{64})")) {

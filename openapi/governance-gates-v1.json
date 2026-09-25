@@ -1,0 +1,79 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ArchGuard governance gates API",
+    "version": "0.1.0",
+    "description": "Stage 3D runtime API over successful ScanJobs and immutable 3C comparisons. The 3B CI report submission contract remains scheduled for 3E."
+  },
+  "x-archguard-lifecycle": "runtime-3d",
+  "security": [{"platformIdentity": []}],
+  "paths": {
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/gate-evaluations": {
+      "post": {
+        "operationId": "evaluateGovernanceGate",
+        "summary": "Persist an immutable PASS/FAIL/ERROR decision for a successful scan or a failed scan error",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EvaluateRequest"}}}},
+        "responses": {"201": {"description": "Persisted result; repeated identical key returns the same result", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GateEvaluation"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/gate-evaluations/{id}": {
+      "get": {
+        "operationId": "getGovernanceGate",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"$ref": "#/components/parameters/Id"}],
+        "responses": {"200": {"description": "Immutable gate result", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GateEvaluation"}}}}, "404": {"$ref": "#/components/responses/NotFound"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/policy-exceptions": {
+      "post": {
+        "operationId": "createPolicyException",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateExceptionRequest"}}}},
+        "responses": {"201": {"description": "Created exception", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PolicyException"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}}
+      },
+      "get": {
+        "operationId": "listPolicyExceptions",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"$ref": "#/components/parameters/TargetBranch"}, {"$ref": "#/components/parameters/RuleSetVersionId"}],
+        "responses": {"200": {"description": "Exceptions in one comparison scope", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/PolicyException"}}}}}, "404": {"$ref": "#/components/responses/NotFound"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/policy-exceptions/{id}": {
+      "get": {
+        "operationId": "getPolicyException",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"$ref": "#/components/parameters/Id"}],
+        "responses": {"200": {"description": "Exception and derived current status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PolicyException"}}}}, "404": {"$ref": "#/components/responses/NotFound"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/policy-exceptions/{id}/revoke": {
+      "post": {
+        "operationId": "revokePolicyException",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"$ref": "#/components/parameters/Id"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeRequest"}}}},
+        "responses": {"200": {"description": "Revoked exception", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PolicyException"}}}}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
+    "parameters": {
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "RepositoryId": {"name": "repositoryId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "Id": {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}},
+      "TargetBranch": {"name": "targetBranch", "in": "query", "required": true, "schema": {"type": "string"}},
+      "RuleSetVersionId": {"name": "ruleSetVersionId", "in": "query", "required": true, "schema": {"type": "string", "format": "uuid"}}
+    },
+    "responses": {
+      "BadRequest": {"description": "Invalid input or key"},
+      "NotFound": {"description": "Absent or outside the authenticated Project"},
+      "Conflict": {"description": "Key reused with different input or incompatible resource state"}
+    },
+    "schemas": {
+      "EvaluateRequest": {"type": "object", "required": ["targetBranch", "ruleSetVersionId", "candidateJobId"], "properties": {"targetBranch": {"type": "string"}, "ruleSetVersionId": {"type": "string", "format": "uuid"}, "candidateJobId": {"type": "string", "format": "uuid"}}},
+      "GateEvaluation": {"type": "object", "required": ["id", "projectId", "repositoryId", "targetBranch", "ruleSetVersionId", "candidateJobId", "outcome", "ciExitCode", "policyVersion", "fingerprintVersion", "newCount", "existingCount", "resolvedCount", "blockedCount", "matchedExceptionVersionIds", "evaluatedAt"], "properties": {"id": {"type": "string", "format": "uuid"}, "projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "targetBranch": {"type": "string"}, "ruleSetVersionId": {"type": "string", "format": "uuid"}, "candidateJobId": {"type": "string", "format": "uuid"}, "comparisonId": {"type": ["string", "null"], "format": "uuid"}, "baselineVersionId": {"type": ["string", "null"], "format": "uuid"}, "outcome": {"type": "string", "enum": ["PASS", "FAIL", "ERROR"]}, "ciExitCode": {"type": "integer", "enum": [0, 2, 64, 70]}, "errorKind": {"type": ["string", "null"], "enum": ["CONFIGURATION", "EXECUTION_OR_CONTRACT", null]}, "errorCode": {"type": ["string", "null"]}, "policyVersion": {"type": "string", "const": "default-new-high-critical-v1"}, "fingerprintVersion": {"type": "string", "const": "platform-finding-v1"}, "newCount": {"type": "integer"}, "existingCount": {"type": "integer"}, "resolvedCount": {"type": "integer"}, "blockedCount": {"type": "integer"}, "matchedExceptionVersionIds": {"type": "array", "items": {"type": "string", "format": "uuid"}}, "evaluatedAt": {"type": "string", "format": "date-time"}}},
+      "CreateExceptionRequest": {"type": "object", "required": ["targetBranch", "ruleSetVersionId", "scopeType", "scopeValue", "reason", "effectiveAt", "expiresAt"], "properties": {"targetBranch": {"type": "string"}, "ruleSetVersionId": {"type": "string", "format": "uuid"}, "scopeType": {"type": "string", "enum": ["FINGERPRINT", "RULE"]}, "scopeValue": {"type": "string"}, "reason": {"type": "string", "minLength": 10, "maxLength": 1000}, "effectiveAt": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"}}},
+      "RevokeRequest": {"type": "object", "required": ["reason"], "properties": {"reason": {"type": "string", "minLength": 10, "maxLength": 1000}}},
+      "PolicyException": {"type": "object", "required": ["id", "projectId", "repositoryId", "targetBranch", "ruleSetVersionId", "scopeType", "scopeValue", "reason", "effectiveAt", "expiresAt", "createdBy", "createdAt", "currentVersionId", "version", "status"], "properties": {"id": {"type": "string", "format": "uuid"}, "projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "targetBranch": {"type": "string"}, "ruleSetVersionId": {"type": "string", "format": "uuid"}, "scopeType": {"type": "string", "enum": ["FINGERPRINT", "RULE"]}, "scopeValue": {"type": "string"}, "reason": {"type": "string"}, "effectiveAt": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"}, "createdBy": {"type": "string", "format": "uuid"}, "createdAt": {"type": "string", "format": "date-time"}, "revokedBy": {"type": ["string", "null"], "format": "uuid"}, "revokedAt": {"type": ["string", "null"], "format": "date-time"}, "revocationReason": {"type": ["string", "null"]}, "currentVersionId": {"type": "string", "format": "uuid"}, "version": {"type": "integer"}, "status": {"type": "string", "enum": ["PENDING", "ACTIVE", "EXPIRED", "REVOKED"]}}}
+    }
+  }
+}

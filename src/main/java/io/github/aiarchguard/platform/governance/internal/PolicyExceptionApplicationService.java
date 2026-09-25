@@ -94,7 +94,7 @@ class PolicyExceptionApplicationService implements PolicyExceptionOperations {
         if (inserted) audit.record(new AuditEvent(actor, projectId, "governance.policy_exception.revoke",
             AuditResult.SUCCESS, traceIds.currentTraceId(), Map.of("exceptionId", exceptionId,
                 "versionId", current.revocationVersionId())));
-        return current.viewAt(now);
+        return current.viewAt(Instant.now(clock));
     }
 
     @Override public List<PolicyExceptionView> list(UUID projectId, UUID repositoryId, String targetBranch,

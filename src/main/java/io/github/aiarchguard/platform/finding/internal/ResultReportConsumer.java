@@ -12,6 +12,7 @@ import io.github.aiarchguard.platform.finding.InvalidResultException;
 import io.github.aiarchguard.platform.finding.ResultAcceptance;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -45,7 +46,9 @@ final class ResultReportConsumer implements ResultAcceptance {
                                            String scannerVersion, byte[] bytes) {
         if(bytes==null || bytes.length==0 || bytes.length>MAX_REPORT_BYTES) throw new InvalidResultException("Report size is invalid");
         String json=new String(bytes,StandardCharsets.UTF_8);
-        List<String> schemaErrors=schema.validate(json,InputFormat.JSON).stream().map(Object::toString).sorted().toList();
+        List<String> schemaErrors;
+        try { schemaErrors=schema.validate(json,InputFormat.JSON).stream().map(Object::toString).sorted().toList(); }
+        catch (UncheckedIOException exception) { throw new InvalidResultException("Report is not valid JSON"); }
         if(!schemaErrors.isEmpty()) throw new InvalidResultException("Report does not match Schema 0.1.0: "+schemaErrors.getFirst());
         try {
             JsonNode root=mapper.readTree(bytes);

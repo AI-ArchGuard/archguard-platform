@@ -136,6 +136,13 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.disposition").value("UNLINKED"));
         byte[] changed = webhook("b".repeat(40), Instant.now(), 999999);
         webhook(delivery, changed, signature(changed)).andExpect(status().isConflict());
+        mvc.perform(put(path(own) + "/github/link").with(user(ACTOR)).with(csrf())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"providerRepositoryId\":\"999998\",\"ownerName\":\"AI-ArchGuard\",\"repositoryName\":\"demo\"}"))
+            .andExpect(status().isOk());
+        submit(own, "invalid-report", "a".repeat(40), null,
+            "not-json".getBytes(StandardCharsets.UTF_8), "999998")
+            .andExpect(status().isUnprocessableEntity());
         mvc.perform(put(path(other) + "/github/link").with(user(ACTOR)).with(csrf())
             .contentType(MediaType.APPLICATION_JSON)
             .content("{\"providerRepositoryId\":\"999\",\"ownerName\":\"other\",\"repositoryName\":\"demo\"}"))
@@ -149,6 +156,29 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isNotFound());
         mvc.perform(get(path(other) + "/comparisons/" + UUID.randomUUID()).with(user(ACTOR)))
             .andExpect(status().isNotFound());
+        assertThat(jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records
+            WHERE project_id=:project AND action='governance.write.reject' AND result='DENIED'
+            """).param("project", other.project()).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records
+            WHERE project_id IS NULL AND action='governance.write.reject' AND result='DENIED'
+              AND metadata->>'route'='/api/v1/github/webhooks'
+            """).query(Long.class).single()).isGreaterThanOrEqualTo(1);
+        assertThat(jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records
+            WHERE project_id=:project AND action='governance.write.reject' AND result='FAILURE'
+              AND metadata->>'httpStatus'='422'
+            """).param("project", own.project()).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records
+            WHERE action='governance.write.reject' AND result='CONFLICT'
+              AND metadata->>'route'='/api/v1/github/webhooks'
+            """).query(Long.class).single()).isGreaterThanOrEqualTo(1);
+        assertThat(jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records
+            WHERE action='governance.write.reject' AND metadata::text LIKE '%test-webhook-secret%'
+            """).query(Long.class).single()).isZero();
     }
 
     private Fixture fixture(boolean member) {
@@ -179,7 +209,11 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
         return new Fixture(project, repository, rules, identity);
     }
     private ResultActions submit(Fixture fixture, String key, String commit, String pr, byte[] report) throws Exception {
-        var revision = Map.of("provider", "github", "providerRepositoryId", "123",
+        return submit(fixture, key, commit, pr, report, "123");
+    }
+    private ResultActions submit(Fixture fixture, String key, String commit, String pr, byte[] report,
+            String providerRepositoryId) throws Exception {
+        var revision = Map.of("provider", "github", "providerRepositoryId", providerRepositoryId,
             "commitSha", commit, "targetBranch", "main");
         var metadata = new java.util.LinkedHashMap<String, Object>();
         metadata.put("ruleSetVersionId", fixture.rules().toString());

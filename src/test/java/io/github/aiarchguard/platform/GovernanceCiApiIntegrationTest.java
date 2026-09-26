@@ -181,6 +181,62 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             """).query(Long.class).single()).isZero();
     }
 
+    @Test void persistedReceivedSubmissionResumesAfterInterruptedEvaluationWithoutNewFacts() throws Exception {
+        Fixture fixture = fixture(true);
+        String providerId = "9876543210987654321";
+        mvc.perform(put(path(fixture) + "/github/link").with(user(ACTOR)).with(csrf())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"providerRepositoryId\":\"" + providerId
+                + "\",\"ownerName\":\"AI-ArchGuard\",\"repositoryName\":\"recovery\"}"))
+            .andExpect(status().isOk());
+        byte[] report = emptyReport(fixture.identity()).getBytes(StandardCharsets.UTF_8);
+        String reportSha = sha256(report), commit = "d".repeat(40), key = "resume-after-crash";
+        UUID jobId = UUID.randomUUID(), submissionId = UUID.randomUUID();
+        String digestInput = String.join("\n", "archguard-report-submission-v1",
+            fixture.project().toString(), fixture.repository().toString(), fixture.rules().toString(),
+            "github", providerId, commit, "main", "", "", "", "0.2.1", "0.1.0", reportSha) + "\n";
+        String digest = sha256(digestInput.getBytes(StandardCharsets.UTF_8));
+        jdbc.sql("""
+            INSERT INTO scanjob.scan_jobs(id,project_id,repository_id,rule_set_version_id,idempotency_key,
+              request_sha256,status,outcome,created_by,created_at,report_bytes,report_sha256,
+              scanner_version,result_schema_version)
+            VALUES (:id,:project,:repository,:rules,:key,:sha,'SUCCEEDED','PASS',:actor,NOW(),
+              :report,:sha,'0.2.1','0.1.0')
+            """).param("id", jobId).param("project", fixture.project())
+            .param("repository", fixture.repository()).param("rules", fixture.rules())
+            .param("key", "ci:" + jobId).param("sha", reportSha)
+            .param("actor", UUID.fromString(ACTOR)).param("report", report).update();
+        jdbc.sql("""
+            INSERT INTO governance.report_submissions(id,project_id,repository_id,rule_set_version_id,
+              provider,provider_repository_id,commit_sha,target_branch,scanner_version,schema_version,
+              report_sha256,request_digest,idempotency_key,scan_job_id,status,created_by,created_at)
+            VALUES (:id,:project,:repository,:rules,'github',:provider,:commit,'main','0.2.1','0.1.0',
+              :sha,:digest,:key,:job,'RECEIVED',:actor,NOW())
+            """).param("id", submissionId).param("project", fixture.project())
+            .param("repository", fixture.repository()).param("rules", fixture.rules())
+            .param("provider", providerId).param("commit", commit).param("sha", reportSha)
+            .param("digest", digest).param("key", key).param("job", jobId)
+            .param("actor", UUID.fromString(ACTOR)).update();
+
+        JsonNode resumed = response(submit(fixture, key, commit, null, report, providerId)
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value(submissionId.toString()))
+            .andExpect(jsonPath("$.status").value("COMPLETED")));
+        submit(fixture, key, commit, null, report, providerId)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.gateEvaluationId")
+                .value(resumed.path("gateEvaluationId").asText()));
+        assertThat(jdbc.sql("SELECT count(*) FROM governance.report_submissions WHERE project_id=:project")
+            .param("project", fixture.project()).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM scanjob.scan_jobs WHERE project_id=:project")
+            .param("project", fixture.project()).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM governance.gate_evaluations WHERE project_id=:project")
+            .param("project", fixture.project()).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records WHERE project_id=:project
+              AND action='governance.report_submission.complete'
+            """).param("project", fixture.project()).query(Long.class).single()).isOne();
+    }
+
     private Fixture fixture(boolean member) {
         UUID project = UUID.randomUUID(), repository = UUID.randomUUID(), ruleSet = UUID.randomUUID(), rules = UUID.randomUUID();
         String identity = "test:" + project;

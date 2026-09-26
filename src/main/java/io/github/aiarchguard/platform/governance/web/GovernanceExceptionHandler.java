@@ -3,6 +3,7 @@ package io.github.aiarchguard.platform.governance.web;
 import io.github.aiarchguard.platform.common.ApiError;
 import io.github.aiarchguard.platform.common.TraceIdProvider;
 import io.github.aiarchguard.platform.governance.BaselineNotFoundException;
+import io.github.aiarchguard.platform.governance.ComparisonNotFoundException;
 import io.github.aiarchguard.platform.governance.GateEvaluationNotFoundException;
 import io.github.aiarchguard.platform.governance.GithubLinkNotFoundException;
 import io.github.aiarchguard.platform.governance.GithubPullRequestNotFoundException;
@@ -41,7 +42,7 @@ final class GovernanceExceptionHandler {
     ResponseEntity<ApiError> missingGate() {
         return error(HttpStatus.NOT_FOUND, "gate_evaluation.not_found", "Gate evaluation was not found.");
     }
-    @ExceptionHandler({GithubLinkNotFoundException.class, GithubPullRequestNotFoundException.class,
+    @ExceptionHandler({ComparisonNotFoundException.class, GithubLinkNotFoundException.class, GithubPullRequestNotFoundException.class,
         ReportSubmissionNotFoundException.class})
     ResponseEntity<ApiError> missingGithubResource() {
         return error(HttpStatus.NOT_FOUND, "governance.resource_not_found", "Governance resource was not found.");

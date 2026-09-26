@@ -7,6 +7,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -64,6 +65,16 @@ public class JdbcGithubWebhookStore implements GithubWebhookStore {
             WHERE project_id=:project AND repository_id=:repository AND external_id=:pr
             """).param("project", projectId).param("repository", repositoryId).param("pr", externalId)
             .query(JdbcGithubWebhookStore::map).optional();
+    }
+    @Override public List<GithubPullRequestView> listPullRequests(UUID projectId, UUID repositoryId,
+            long offset, int limit) {
+        return jdbc.sql("""
+            SELECT * FROM governance.github_pull_request_heads
+            WHERE project_id=:project AND repository_id=:repository
+            ORDER BY updated_at DESC,external_id DESC LIMIT :limit OFFSET :offset
+            """).param("project", projectId).param("repository", repositoryId)
+            .param("limit", limit).param("offset", offset)
+            .query(JdbcGithubWebhookStore::map).list();
     }
     @Override public boolean attachGateIfCurrent(UUID projectId, UUID repositoryId, String externalId,
             String headSha, UUID gateId) {

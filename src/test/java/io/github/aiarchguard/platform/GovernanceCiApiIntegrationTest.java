@@ -79,6 +79,13 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isOk()).andExpect(jsonPath("$.outcome").value("FAIL"))
             .andExpect(jsonPath("$.ciExitCode").value(2))
             .andExpect(jsonPath("$.counts.NEW").value(1));
+        JsonNode failedGate = response(mvc.perform(get(base + "/gate-evaluations/"
+            + failed.path("gateEvaluationId").asText()).with(user(ACTOR))).andExpect(status().isOk()));
+        mvc.perform(get(base + "/comparisons/" + failedGate.path("comparisonId").asText())
+            .with(user(ACTOR))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.findings[0].classification").value("NEW"));
+        mvc.perform(get(base + "/github/pull-requests").with(user(ACTOR)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].externalId").value("7"));
         mvc.perform(get(base + "/github/pull-requests/7").with(user(ACTOR)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.headSha").value("b".repeat(40)))
             .andExpect(jsonPath("$.currentGateEvaluationId").value(failed.path("gateEvaluationId").asText()));
@@ -104,6 +111,16 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
         mvc.perform(get(base + "/github/pull-requests/7").with(user(ACTOR)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.headSha").value("c".repeat(40)))
             .andExpect(jsonPath("$.currentGateEvaluationId").value(repaired.path("gateEvaluationId").asText()));
+        mvc.perform(get(base + "/gate-evaluations").with(user(ACTOR))
+            .param("targetBranch", "main").param("ruleSetVersionId", fixture.rules().toString())
+            .param("pullRequestId", "7").param("size", "1"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].outcome").value("PASS"))
+            .andExpect(jsonPath("$.hasMore").value(true));
+        mvc.perform(get(base + "/gate-evaluations").with(user(ACTOR))
+            .param("targetBranch", "main").param("ruleSetVersionId", fixture.rules().toString())
+            .param("pullRequestId", "7").param("size", "1").param("page", "1"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].outcome").value("FAIL"))
+            .andExpect(jsonPath("$.hasMore").value(false));
         assertThat(jdbc.sql("SELECT count(*) FROM governance.report_submissions WHERE project_id=:project")
             .param("project", fixture.project()).query(Long.class).single()).isEqualTo(3);
         assertThat(jdbc.sql("SELECT count(*) FROM scanjob.scan_jobs WHERE project_id=:project AND idempotency_key LIKE 'ci:%'")
@@ -125,6 +142,13 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isNotFound());
         byte[] clean = emptyReport(own.identity()).getBytes(StandardCharsets.UTF_8);
         submit(other, "cross-project", "a".repeat(40), null, clean).andExpect(status().isNotFound());
+        mvc.perform(get(path(other) + "/gate-evaluations").with(user(ACTOR))
+            .param("targetBranch", "main").param("ruleSetVersionId", other.rules().toString()))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(path(other) + "/github/pull-requests").with(user(ACTOR)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(path(other) + "/comparisons/" + UUID.randomUUID()).with(user(ACTOR)))
+            .andExpect(status().isNotFound());
     }
 
     private Fixture fixture(boolean member) {

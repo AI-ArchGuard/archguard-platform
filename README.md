@@ -22,7 +22,7 @@ Platform MVP `v0.3.0` 控制面已建立。当前实现提供 Java 21/Spring Boo
 
 ## 依赖与契约
 
-阶段 3B 的[持续治理契约设计](docs/technical-design/v0.4-governance-3b-contracts.md)和[报告提交/门禁 OpenAPI 扩展](openapi/governance-v1.json)已冻结，阶段 3E 实现其运行时入口。阶段 3C 的[不可变基线与分类设计](docs/technical-design/v0.4-governance-3c-baselines.md)及[运行时基线 API](openapi/governance-baselines-v1.json)支持成功扫描基线与 `NEW`、`EXISTING`、`RESOLVED` 分类。阶段 3D 的[门禁与例外设计](docs/technical-design/v0.4-governance-3d-gates.md)及[运行时门禁 API](openapi/governance-gates-v1.json)提供版本化门禁和有期限例外。阶段 3E 的[GitHub/CI 设计](docs/technical-design/v0.4-governance-3e-github-ci.md)与[GitHub Adapter API](openapi/governance-github-v1.json)连接签名事件和 CI 报告；Platform 仍不保存 Git 凭据。
+阶段 3B 的[持续治理契约设计](docs/technical-design/v0.4-governance-3b-contracts.md)和[报告提交/门禁 OpenAPI 扩展](openapi/governance-v1.json)已冻结，阶段 3E 实现其运行时入口。阶段 3C 的[不可变基线与分类设计](docs/technical-design/v0.4-governance-3c-baselines.md)及[运行时基线 API](openapi/governance-baselines-v1.json)支持成功扫描基线与 `NEW`、`EXISTING`、`RESOLVED` 分类。阶段 3D 的[门禁与例外设计](docs/technical-design/v0.4-governance-3d-gates.md)及[运行时门禁 API](openapi/governance-gates-v1.json)提供版本化门禁和有期限例外。阶段 3E 的[GitHub/CI 设计](docs/technical-design/v0.4-governance-3e-github-ci.md)与[GitHub Adapter API](openapi/governance-github-v1.json)连接签名事件和 CI 报告；Platform 仍不保存 Git 凭据。阶段 3F 的[治理只读视图设计](docs/technical-design/v0.4-governance-3f-read-api.md)和[固定读取契约](openapi/governance-read-v1.json)供 Web 查询 PR、门禁历史和分类详情。
 
 - 通过版本化 Scanner 契约集成 `archguard-scanner`，不得依赖其内部类。
 - PostgreSQL 是业务事实来源；模块之间通过公开应用接口或事件协作，不直接跨模块写表。

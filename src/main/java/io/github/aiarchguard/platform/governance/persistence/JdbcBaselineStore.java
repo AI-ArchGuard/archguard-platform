@@ -116,6 +116,15 @@ public class JdbcBaselineStore implements BaselineStore {
             """).param("baseline", baselineVersionId).param("candidate", candidateJobId)
             .query((r, row) -> mapComparison(r)).optional();
     }
+    @Override public Optional<ComparisonView> findComparison(UUID projectId, UUID repositoryId, UUID id) {
+        return jdbc.sql("""
+            SELECT c.* FROM governance.comparisons c
+            JOIN governance.baseline_versions v ON v.id=c.baseline_version_id
+            JOIN governance.baseline_scopes s ON s.id=v.scope_id
+            WHERE s.project_id=:project AND s.repository_id=:repository AND c.id=:id
+            """).param("project", projectId).param("repository", repositoryId).param("id", id)
+            .query((r, row) -> mapComparison(r)).optional();
+    }
 
     @Override public ComparisonView insertComparison(UUID baselineVersionId, UUID candidateJobId, String reportSha,
             String algorithm, Instant now, List<ClassifiedFinding> findings) {

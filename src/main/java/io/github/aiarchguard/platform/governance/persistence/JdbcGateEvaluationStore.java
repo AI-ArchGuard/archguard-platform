@@ -28,6 +28,26 @@ public class JdbcGateEvaluationStore implements GateEvaluationStore {
             .param("project", projectId).param("repository", repositoryId).param("id", id)
             .query(JdbcGateEvaluationStore::map).optional();
     }
+    @Override public List<GateEvaluationView> list(UUID projectId, UUID repositoryId, String branch,
+            UUID ruleSetVersionId, String pullRequestId, long offset, int limit) {
+        String sql = select() + """
+            WHERE g.project_id=:project AND g.repository_id=:repository
+              AND g.target_branch=:branch AND g.rule_set_version_id=:rules
+            """;
+        if (pullRequestId != null) {
+            sql += """
+                AND EXISTS (SELECT 1 FROM governance.report_submissions s
+                  WHERE s.gate_evaluation_id=g.id AND s.project_id=g.project_id
+                    AND s.repository_id=g.repository_id AND s.pull_request_external_id=:pr)
+                """;
+        }
+        sql += " ORDER BY g.evaluated_at DESC,g.id DESC LIMIT :limit OFFSET :offset";
+        var query = jdbc.sql(sql).param("project", projectId).param("repository", repositoryId)
+            .param("branch", branch).param("rules", ruleSetVersionId)
+            .param("limit", limit).param("offset", offset);
+        if (pullRequestId != null) query = query.param("pr", pullRequestId);
+        return query.query(JdbcGateEvaluationStore::map).list();
+    }
     @Override public boolean insert(GateEvaluationView value, String key, String requestSha256, UUID actorId) {
         int inserted = jdbc.sql("""
             INSERT INTO governance.gate_evaluations(id,project_id,repository_id,target_branch,rule_set_version_id,

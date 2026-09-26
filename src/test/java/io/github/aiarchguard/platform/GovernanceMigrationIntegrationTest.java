@@ -66,8 +66,8 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("2")).load();
         assertThat(v2.migrate().migrationsExecuted).isEqualTo(2);
         Flyway latest = Flyway.configure().dataSource(upgradeUrl, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(3);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("5");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(4);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("6");
     }
 
     @Test void upgradesV3WithoutRewritingHistory() throws Exception {
@@ -83,8 +83,8 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("3")).load();
         assertThat(v3.migrate().migrationsExecuted).isEqualTo(3);
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(2);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("5");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(3);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("6");
     }
 
     @Test void upgradesV4WithoutRewritingHistory() throws Exception {
@@ -100,7 +100,7 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("4")).load();
         assertThat(v4.migrate().migrationsExecuted).isEqualTo(4);
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(1);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("5");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(2);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("6");
     }
 }

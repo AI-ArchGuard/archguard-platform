@@ -19,6 +19,7 @@ public interface BaselineStore {
     BaselineVersionView select(BaselineScope scope, UUID versionId, UUID actorId, Instant now);
     List<FindingSnapshot> findings(UUID baselineVersionId);
     Optional<ComparisonView> comparison(UUID baselineVersionId, UUID candidateJobId);
+    Optional<ComparisonView> findComparison(UUID projectId, UUID repositoryId, UUID comparisonId);
     ComparisonView insertComparison(UUID baselineVersionId, UUID candidateJobId, String reportSha,
                                     String algorithm, Instant now, List<ClassifiedFinding> findings);
 }

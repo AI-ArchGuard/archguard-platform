@@ -3,6 +3,7 @@ package io.github.aiarchguard.platform.governance.internal;
 import io.github.aiarchguard.platform.governance.GithubPullRequestView;
 import io.github.aiarchguard.platform.governance.GithubWebhookDisposition;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -15,6 +16,7 @@ public interface GithubWebhookStore {
     void finishDelivery(UUID id, GithubWebhookDisposition disposition);
     boolean applyPullRequest(GithubPullRequestView value, UUID deliveryId, Instant processedAt);
     Optional<GithubPullRequestView> pullRequest(UUID projectId, UUID repositoryId, String externalId);
+    List<GithubPullRequestView> listPullRequests(UUID projectId, UUID repositoryId, long offset, int limit);
     boolean attachGateIfCurrent(UUID projectId, UUID repositoryId, String externalId,
                                 String headSha, UUID gateId);
 }

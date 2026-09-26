@@ -1,0 +1,67 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "ArchGuard governance read API", "version": "0.1.0", "description": "Stage 3F read-only views for PR status, immutable gate history and finding comparisons."},
+  "x-archguard-lifecycle": "runtime-3f",
+  "security": [{"platformIdentity": []}],
+  "paths": {
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/gate-evaluations": {
+      "get": {
+        "operationId": "listGovernanceGates",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"},
+          {"$ref": "#/components/parameters/TargetBranch"}, {"$ref": "#/components/parameters/RuleSetVersionId"},
+          {"name": "pullRequestId", "in": "query", "schema": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"}},
+          {"$ref": "#/components/parameters/Page"}, {"$ref": "#/components/parameters/Size"}
+        ],
+        "responses": {"200": {"description": "Newest evaluations first, filtered by exact scope and optional PR", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GatePage"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/comparisons/{comparisonId}": {
+      "get": {
+        "operationId": "getGovernanceComparison",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"name": "comparisonId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {"200": {"description": "Immutable NEW, EXISTING and RESOLVED finding snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Comparison"}}}}, "404": {"$ref": "#/components/responses/NotFound"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/github/pull-requests": {
+      "get": {
+        "operationId": "listGithubPullRequests",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"$ref": "#/components/parameters/Page"}, {"$ref": "#/components/parameters/Size"}],
+        "responses": {"200": {"description": "Observed PR heads, newest updated first", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PullRequestPage"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}},
+    "parameters": {
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "RepositoryId": {"name": "repositoryId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "TargetBranch": {"name": "targetBranch", "in": "query", "required": true, "schema": {"type": "string"}},
+      "RuleSetVersionId": {"name": "ruleSetVersionId", "in": "query", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "Page": {"name": "page", "in": "query", "schema": {"type": "integer", "minimum": 0, "default": 0}},
+      "Size": {"name": "size", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}
+    },
+    "responses": {"BadRequest": {"description": "Invalid scope or pagination"}, "NotFound": {"description": "Missing or outside the authorized Project"}},
+    "schemas": {
+      "GatePage": {"type": "object", "required": ["items", "page", "size", "hasMore"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/GateEvaluation"}}, "page": {"type": "integer"}, "size": {"type": "integer"}, "hasMore": {"type": "boolean"}}},
+      "PullRequestPage": {"type": "object", "required": ["items", "page", "size", "hasMore"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/PullRequest"}}, "page": {"type": "integer"}, "size": {"type": "integer"}, "hasMore": {"type": "boolean"}}},
+      "GateEvaluation": {"type": "object", "required": ["id", "projectId", "repositoryId", "targetBranch", "ruleSetVersionId", "outcome", "ciExitCode", "policyVersion", "fingerprintVersion", "newCount", "existingCount", "resolvedCount", "blockedCount", "matchedExceptionVersionIds", "evaluatedAt"], "properties": {
+        "id": {"type": "string", "format": "uuid"}, "projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "targetBranch": {"type": "string"}, "ruleSetVersionId": {"type": "string", "format": "uuid"},
+        "candidateJobId": {"type": ["string", "null"], "format": "uuid"}, "comparisonId": {"type": ["string", "null"], "format": "uuid"}, "baselineVersionId": {"type": ["string", "null"], "format": "uuid"},
+        "outcome": {"type": "string", "enum": ["PASS", "FAIL", "ERROR"]}, "ciExitCode": {"type": "integer", "enum": [0, 2, 64, 70]}, "errorKind": {"type": ["string", "null"]}, "errorCode": {"type": ["string", "null"]},
+        "policyVersion": {"type": "string"}, "fingerprintVersion": {"type": "string"}, "newCount": {"type": "integer"}, "existingCount": {"type": "integer"}, "resolvedCount": {"type": "integer"}, "blockedCount": {"type": "integer"},
+        "matchedExceptionVersionIds": {"type": "array", "items": {"type": "string", "format": "uuid"}}, "evaluatedAt": {"type": "string", "format": "date-time"}
+      }},
+      "Comparison": {"type": "object", "required": ["id", "baselineVersionId", "candidateJobId", "candidateReportSha256", "fingerprintVersion", "createdAt", "findings", "newCount", "existingCount", "resolvedCount"], "properties": {
+        "id": {"type": "string", "format": "uuid"}, "baselineVersionId": {"type": "string", "format": "uuid"}, "candidateJobId": {"type": "string", "format": "uuid"}, "candidateReportSha256": {"type": "string"}, "fingerprintVersion": {"type": "string"}, "createdAt": {"type": "string", "format": "date-time"},
+        "findings": {"type": "array", "items": {"$ref": "#/components/schemas/ClassifiedFinding"}}, "newCount": {"type": "integer"}, "existingCount": {"type": "integer"}, "resolvedCount": {"type": "integer"}
+      }},
+      "ClassifiedFinding": {"type": "object", "required": ["classification", "fingerprint", "payloadSha256", "ruleId", "ruleVersion", "severity", "scannerFindingId"], "properties": {
+        "classification": {"type": "string", "enum": ["NEW", "EXISTING", "RESOLVED"]}, "fingerprint": {"type": "string"}, "payloadSha256": {"type": "string"}, "ruleId": {"type": "string"}, "ruleVersion": {"type": "string"}, "severity": {"type": "string"}, "scannerFindingId": {"type": "string"}
+      }},
+      "PullRequest": {"type": "object", "required": ["projectId", "repositoryId", "externalId", "headSha", "baseSha", "targetBranch", "eventAt"], "properties": {
+        "projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "externalId": {"type": "string"}, "headSha": {"type": "string"}, "baseSha": {"type": "string"}, "targetBranch": {"type": "string"}, "eventAt": {"type": "string", "format": "date-time"}, "currentGateEvaluationId": {"type": ["string", "null"], "format": "uuid"}
+      }}
+    }
+  }
+}

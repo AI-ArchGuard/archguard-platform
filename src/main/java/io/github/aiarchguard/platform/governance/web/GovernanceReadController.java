@@ -5,6 +5,7 @@ import io.github.aiarchguard.platform.governance.GateEvaluationView;
 import io.github.aiarchguard.platform.governance.GithubPullRequestView;
 import io.github.aiarchguard.platform.governance.GovernancePage;
 import io.github.aiarchguard.platform.governance.GovernanceReadOperations;
+import io.github.aiarchguard.platform.governance.PrRevisionDeltaView;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -35,5 +36,10 @@ final class GovernanceReadController {
             @PathVariable UUID repositoryId, @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         return reads.pullRequests(projectId, repositoryId, page, size);
+    }
+    @GetMapping("/github/pull-requests/{externalId}/revision-delta")
+    PrRevisionDeltaView prRevisionDelta(@PathVariable UUID projectId, @PathVariable UUID repositoryId,
+            @PathVariable String externalId, @RequestParam UUID ruleSetVersionId) {
+        return reads.prRevisionDelta(projectId, repositoryId, externalId, ruleSetVersionId);
     }
 }

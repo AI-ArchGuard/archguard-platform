@@ -71,6 +71,9 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.disposition").value("APPLIED"));
         webhook(firstDelivery, firstPayload, signature(firstPayload)).andExpect(status().isOk())
             .andExpect(jsonPath("$.replay").value(true));
+        mvc.perform(get(base + "/github/pull-requests/7/revision-delta")
+            .with(user(ACTOR)).param("ruleSetVersionId", fixture.rules().toString()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.availability").value("NO_PREVIOUS_REVISION"));
         byte[] violation = violationReport(fixture.identity()).getBytes(StandardCharsets.UTF_8);
         JsonNode failed = response(submit(fixture, "pr-violation", "b".repeat(40), "7", violation)
             .andExpect(status().isAccepted()));
@@ -96,6 +99,9 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
         byte[] secondPayload = webhook("c".repeat(40), secondAt);
         webhook(UUID.randomUUID(), secondPayload, signature(secondPayload)).andExpect(status().isOk())
             .andExpect(jsonPath("$.disposition").value("APPLIED"));
+        mvc.perform(get(base + "/github/pull-requests/7/revision-delta")
+            .with(user(ACTOR)).param("ruleSetVersionId", fixture.rules().toString()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.availability").value("CURRENT_REPORT_MISSING"));
         mvc.perform(get(base + "/github/pull-requests/7").with(user(ACTOR)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.headSha").value("c".repeat(40)))
             .andExpect(jsonPath("$.currentGateEvaluationId").doesNotExist());
@@ -107,10 +113,22 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
         mvc.perform(get(base + "/report-submissions/" + repaired.path("id").asText() + "/gate-evaluation")
             .with(user(ACTOR))).andExpect(status().isOk())
             .andExpect(jsonPath("$.outcome").value("PASS"))
-            .andExpect(jsonPath("$.ciExitCode").value(0));
+            .andExpect(jsonPath("$.ciExitCode").value(0))
+            .andExpect(jsonPath("$.counts.RESOLVED").value(0));
         mvc.perform(get(base + "/github/pull-requests/7").with(user(ACTOR)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.headSha").value("c".repeat(40)))
             .andExpect(jsonPath("$.currentGateEvaluationId").value(repaired.path("gateEvaluationId").asText()));
+        mvc.perform(get(base + "/github/pull-requests/7/revision-delta")
+            .with(user(ACTOR)).param("ruleSetVersionId", fixture.rules().toString()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.reference").value("PR_PREVIOUS_REVISION"))
+            .andExpect(jsonPath("$.availability").value("AVAILABLE"))
+            .andExpect(jsonPath("$.previousHeadSha").value("b".repeat(40)))
+            .andExpect(jsonPath("$.currentHeadSha").value("c".repeat(40)))
+            .andExpect(jsonPath("$.resolvedCount").value(1))
+            .andExpect(jsonPath("$.findings[0].classification").value("RESOLVED"));
+        assertThat(jdbc.sql("SELECT count(*) FROM governance.github_pr_head_revisions WHERE project_id=:project")
+            .param("project", fixture.project()).query(Long.class).single()).isEqualTo(2);
         mvc.perform(get(base + "/gate-evaluations").with(user(ACTOR))
             .param("targetBranch", "main").param("ruleSetVersionId", fixture.rules().toString())
             .param("pullRequestId", "7").param("size", "1"))
@@ -154,6 +172,8 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isNotFound());
         mvc.perform(get(path(other) + "/github/pull-requests").with(user(ACTOR)))
             .andExpect(status().isNotFound());
+        mvc.perform(get(path(other) + "/github/pull-requests/7/revision-delta").with(user(ACTOR))
+            .param("ruleSetVersionId", other.rules().toString())).andExpect(status().isNotFound());
         mvc.perform(get(path(other) + "/comparisons/" + UUID.randomUUID()).with(user(ACTOR)))
             .andExpect(status().isNotFound());
         assertThat(jdbc.sql("""

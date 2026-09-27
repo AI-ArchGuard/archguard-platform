@@ -7,4 +7,6 @@ public interface GovernanceReadOperations {
             UUID ruleSetVersionId, String pullRequestId, int page, int size);
     ComparisonView comparison(UUID projectId, UUID repositoryId, UUID comparisonId);
     GovernancePage<GithubPullRequestView> pullRequests(UUID projectId, UUID repositoryId, int page, int size);
+    PrRevisionDeltaView prRevisionDelta(UUID projectId, UUID repositoryId, String externalId,
+                                        UUID ruleSetVersionId);
 }

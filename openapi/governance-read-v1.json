@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
-  "info": {"title": "ArchGuard governance read API", "version": "0.1.0", "description": "Stage 3F read-only views for PR status, immutable gate history and finding comparisons."},
-  "x-archguard-lifecycle": "runtime-3f",
+  "info": {"title": "ArchGuard governance read API", "version": "0.2.0", "description": "Read-only PR status, immutable baseline gate history, finding comparisons and informational PR revision deltas."},
+  "x-archguard-lifecycle": "runtime-3h",
   "security": [{"platformIdentity": []}],
   "paths": {
     "/api/v1/projects/{projectId}/repositories/{repositoryId}/gate-evaluations": {
@@ -21,6 +21,14 @@
         "operationId": "getGovernanceComparison",
         "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"name": "comparisonId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
         "responses": {"200": {"description": "Immutable NEW, EXISTING and RESOLVED finding snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Comparison"}}}}, "404": {"$ref": "#/components/responses/NotFound"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/repositories/{repositoryId}/github/pull-requests/{externalId}/revision-delta": {
+      "get": {
+        "operationId": "getPrRevisionDelta",
+        "description": "Informational previous signed PR head to current head comparison; does not affect the baseline gate.",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RepositoryId"}, {"name": "externalId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[1-9][0-9]{0,19}$"}}, {"$ref": "#/components/parameters/RuleSetVersionId"}],
+        "responses": {"200": {"description": "Difference or explicit unavailability reason", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PrRevisionDelta"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}}
       }
     },
     "/api/v1/projects/{projectId}/repositories/{repositoryId}/github/pull-requests": {
@@ -58,6 +66,12 @@
       }},
       "ClassifiedFinding": {"type": "object", "required": ["classification", "fingerprint", "payloadSha256", "ruleId", "ruleVersion", "severity", "scannerFindingId"], "properties": {
         "classification": {"type": "string", "enum": ["NEW", "EXISTING", "RESOLVED"]}, "fingerprint": {"type": "string"}, "payloadSha256": {"type": "string"}, "ruleId": {"type": "string"}, "ruleVersion": {"type": "string"}, "severity": {"type": "string"}, "scannerFindingId": {"type": "string"}
+      }},
+      "PrRevisionDelta": {"type": "object", "required": ["reference", "availability", "currentHeadSha", "ruleSetVersionId", "findings", "newCount", "existingCount", "resolvedCount"], "properties": {
+        "reference": {"type": "string", "const": "PR_PREVIOUS_REVISION"}, "availability": {"type": "string", "enum": ["AVAILABLE", "NO_PREVIOUS_REVISION", "CURRENT_REPORT_MISSING", "PREVIOUS_REPORT_MISSING", "INCOMPATIBLE"]},
+        "currentHeadSha": {"type": "string"}, "previousHeadSha": {"type": ["string", "null"]}, "currentGateEvaluationId": {"type": ["string", "null"], "format": "uuid"}, "previousGateEvaluationId": {"type": ["string", "null"], "format": "uuid"},
+        "ruleSetVersionId": {"type": "string", "format": "uuid"}, "fingerprintVersion": {"type": ["string", "null"]}, "findings": {"type": "array", "items": {"$ref": "#/components/schemas/ClassifiedFinding"}},
+        "newCount": {"type": "integer"}, "existingCount": {"type": "integer"}, "resolvedCount": {"type": "integer"}
       }},
       "PullRequest": {"type": "object", "required": ["projectId", "repositoryId", "externalId", "headSha", "baseSha", "targetBranch", "eventAt"], "properties": {
         "projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "externalId": {"type": "string"}, "headSha": {"type": "string"}, "baseSha": {"type": "string"}, "targetBranch": {"type": "string"}, "eventAt": {"type": "string", "format": "date-time"}, "currentGateEvaluationId": {"type": ["string", "null"], "format": "uuid"}

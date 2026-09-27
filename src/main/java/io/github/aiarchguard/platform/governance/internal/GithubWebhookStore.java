@@ -15,6 +15,9 @@ public interface GithubWebhookStore {
                            Instant eventAt, Instant processedAt);
     void finishDelivery(UUID id, GithubWebhookDisposition disposition);
     boolean applyPullRequest(GithubPullRequestView value, UUID deliveryId, Instant processedAt);
+    void recordAppliedHead(GithubPullRequestView value, UUID deliveryId);
+    Optional<String> previousDistinctHead(UUID projectId, UUID repositoryId, String externalId,
+                                          String targetBranch, String currentHeadSha, Instant currentEventAt);
     Optional<GithubPullRequestView> pullRequest(UUID projectId, UUID repositoryId, String externalId);
     List<GithubPullRequestView> listPullRequests(UUID projectId, UUID repositoryId, long offset, int limit);
     boolean attachGateIfCurrent(UUID projectId, UUID repositoryId, String externalId,

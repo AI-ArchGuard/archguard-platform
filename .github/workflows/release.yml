@@ -24,15 +24,15 @@ jobs:
       - name: Verify release candidate
         run: |
           ./mvnw --batch-mode --no-transfer-progress verify
-          sha256sum target/archguard-platform-0.3.0.jar > target/archguard-platform-0.3.0.jar.sha256
+          sha256sum target/archguard-platform-0.4.0.jar > target/archguard-platform-0.4.0.jar.sha256
           sha256sum openapi/platform-v1.yaml > openapi/platform-v1.yaml.sha256
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            target/archguard-platform-0.3.0.jar \
-            target/archguard-platform-0.3.0.jar.sha256 \
+            target/archguard-platform-0.4.0.jar \
+            target/archguard-platform-0.4.0.jar.sha256 \
             openapi/platform-v1.yaml \
             openapi/platform-v1.yaml.sha256 \
             --verify-tag \

@@ -59,6 +59,27 @@ public class JdbcGithubWebhookStore implements GithubWebhookStore {
             .param("eventAt", Timestamp.from(value.eventAt())).param("delivery", deliveryId)
             .param("processed", Timestamp.from(processedAt)).update() == 1;
     }
+    @Override public void recordAppliedHead(GithubPullRequestView value, UUID deliveryId) {
+        jdbc.sql("""
+            INSERT INTO governance.github_pr_head_revisions
+              (delivery_id,project_id,repository_id,external_id,head_sha,target_branch,event_at)
+            VALUES (:delivery,:project,:repository,:pr,:head,:branch,:eventAt)
+            """).param("delivery", deliveryId).param("project", value.projectId())
+            .param("repository", value.repositoryId()).param("pr", value.externalId())
+            .param("head", value.headSha()).param("branch", value.targetBranch())
+            .param("eventAt", Timestamp.from(value.eventAt())).update();
+    }
+    @Override public Optional<String> previousDistinctHead(UUID projectId, UUID repositoryId,
+            String externalId, String targetBranch, String currentHeadSha, Instant currentEventAt) {
+        return jdbc.sql("""
+            SELECT head_sha FROM governance.github_pr_head_revisions
+            WHERE project_id=:project AND repository_id=:repository AND external_id=:pr
+              AND target_branch=:branch AND head_sha<>:head AND event_at<:eventAt
+            ORDER BY event_at DESC,delivery_id DESC LIMIT 1
+            """).param("project", projectId).param("repository", repositoryId)
+            .param("pr", externalId).param("branch", targetBranch).param("head", currentHeadSha)
+            .param("eventAt", Timestamp.from(currentEventAt)).query(String.class).optional();
+    }
     @Override public Optional<GithubPullRequestView> pullRequest(UUID projectId, UUID repositoryId, String externalId) {
         return jdbc.sql("""
             SELECT * FROM governance.github_pull_request_heads

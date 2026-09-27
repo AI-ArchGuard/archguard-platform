@@ -143,6 +143,7 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
             disposition = webhooks.applyPullRequest(pr, deliveryId, now)
                 ? GithubWebhookDisposition.APPLIED : GithubWebhookDisposition.STALE;
             if (disposition == GithubWebhookDisposition.APPLIED) {
+                webhooks.recordAppliedHead(pr, deliveryId);
                 GithubPullRequestView currentPr = pr;
                 submissions.latestCompletedGateForPullRequest(pr.projectId(), pr.repositoryId(),
                     pr.externalId(), pr.headSha()).ifPresent(gateId ->

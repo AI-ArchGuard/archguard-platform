@@ -9,5 +9,6 @@ public interface DocumentOperations {
     DocumentPage list(UUID projectId, int page, int size);
     DocumentVersionPage listVersions(UUID projectId, UUID documentId, int page, int size);
     DocumentVersionView getVersion(UUID projectId, UUID documentId, UUID versionId);
+    DocumentVersionView getVersionById(UUID projectId, UUID versionId);
     List<DocumentFragmentView> search(UUID projectId, List<UUID> versionIds, String query);
 }

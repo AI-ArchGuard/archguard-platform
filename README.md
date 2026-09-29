@@ -73,6 +73,8 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 ## 配置
 
+Stage 4D 的单个 Finding 解释 API 已有独立请求和结果存储，但真实模型适配器尚未获批或接入。`ARCHGUARD_AGENT_ENABLED` 默认 `false`；即使显式设为 `true`，没有获批适配器仍返回 `MODEL_UNAVAILABLE`，不会外发数据。CI 只注入确定性假模型。请求须显式调用 `POST /api/v1/projects/{projectId}/agent/requests`，之后用 GET 查询；结果不参与 Finding、基线、门禁或 CI 判断。详情见 [4D 设计](docs/technical-design/v0.5-agent-4d-finding-explanation.md)。
+
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `SERVER_PORT` | `8080` | HTTP 监听端口；公网暴露仍由部署边界控制。 |
@@ -85,6 +87,8 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 | `ARCHGUARD_OIDC_ISSUER_URI` | 无；`oidc` profile 必填 | 唯一可信 OIDC issuer，必须是绝对 HTTPS URI。 |
 | `ARCHGUARD_OIDC_AUDIENCE` | 无；`oidc` profile 必填 | Platform JWT audience。 |
 | `ARCHGUARD_OIDC_JWK_SET_URI` | 无 | 可选 HTTPS JWKS 地址；省略时执行 issuer discovery。 |
+| `ARCHGUARD_AGENT_ENABLED` | `false` | Agent 解释入口开关；本阶段无真实模型适配器，开启后仍不能真实外发。 |
+| `ARCHGUARD_AGENT_PROVIDER_TIMEOUT` | `30s` | 单次模型调用超时；仅可下调，不可超过 30 秒。 |
 | `ARCHGUARD_OIDC_ALLOW_HTTP` | `false` | 仅 `local-compose` profile 可设为 `true`。 |
 | `ARCHGUARD_SOURCE_ROOT` | `./sources` | Repository 可注册的唯一受控源码根。 |
 | `ARCHGUARD_SCANNER_JAR` | `/opt/archguard/scanner.jar` | 固定的 Scanner `v0.2.1` JAR。 |

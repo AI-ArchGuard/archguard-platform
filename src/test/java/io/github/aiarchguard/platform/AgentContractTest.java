@@ -20,10 +20,10 @@ class AgentContractTest {
         .getSchema(getClass().getResourceAsStream("/contracts/agent-model-output-0.1.0.schema.json"));
 
     @Test
-    void openApiIsContractOnlyAndAllReferencesResolve() throws Exception {
+    void openApiDescribesFindingExplanationRuntimeAndAllReferencesResolve() throws Exception {
         JsonNode root = mapper.readTree(Path.of("openapi", "agent-v1.json").toFile());
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
-        assertThat(root.path("x-archguard-lifecycle").asText()).isEqualTo("contract-4b-no-runtime");
+        assertThat(root.path("x-archguard-lifecycle").asText()).isEqualTo("finding-explanation-4d");
         assertThat(root.path("paths").size()).isEqualTo(2);
         List<String> refs = new ArrayList<>();
         collect(root, refs);

@@ -3,9 +3,9 @@
   "info": {
     "title": "ArchGuard Agent asynchronous advice contract",
     "version": "0.1.0",
-    "description": "Stage 4B contract only; no runtime routes or model calls are enabled. Agent advice never changes Finding, baseline, gate, or CI exit code."
+    "description": "Stage 4D Finding explanation runtime; real model calls remain default-disabled pending approval. Agent advice never changes Finding, baseline, gate, or CI exit code."
   },
-  "x-archguard-lifecycle": "contract-4b-no-runtime",
+  "x-archguard-lifecycle": "finding-explanation-4d",
   "security": [{"platformIdentity": []}],
   "paths": {
     "/api/v1/projects/{projectId}/agent/requests": {

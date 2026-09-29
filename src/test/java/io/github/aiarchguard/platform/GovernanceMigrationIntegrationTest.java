@@ -66,8 +66,8 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("2")).load();
         assertThat(v2.migrate().migrationsExecuted).isEqualTo(2);
         Flyway latest = Flyway.configure().dataSource(upgradeUrl, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(5);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("7");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(6);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("8");
     }
 
     @Test void upgradesV3WithoutRewritingHistory() throws Exception {
@@ -83,8 +83,8 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("3")).load();
         assertThat(v3.migrate().migrationsExecuted).isEqualTo(3);
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(4);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("7");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(5);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("8");
     }
 
     @Test void upgradesV4WithoutRewritingHistory() throws Exception {
@@ -100,7 +100,24 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("4")).load();
         assertThat(v4.migrate().migrationsExecuted).isEqualTo(4);
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(3);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("7");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(4);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("8");
+    }
+
+    @Test void upgradesV7WithoutRewritingHistory() throws Exception {
+        String database = "archguard_agent_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try (var connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(),
+                 POSTGRES.getUsername(), POSTGRES.getPassword());
+             var statement = connection.createStatement()) {
+            statement.execute("CREATE DATABASE " + database);
+        }
+        String url = "jdbc:postgresql://" + POSTGRES.getHost() + ":"
+            + POSTGRES.getMappedPort(5432) + "/" + database;
+        Flyway v7 = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
+            .target(MigrationVersion.fromVersion("7")).load();
+        assertThat(v7.migrate().migrationsExecuted).isEqualTo(7);
+        Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
+        assertThat(latest.migrate().migrationsExecuted).isOne();
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("8");
     }
 }

@@ -1,0 +1,96 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ArchGuard Project document API",
+    "version": "0.1.0",
+    "description": "Stage 4C explicit upload, immutable versions and bounded Project-authorized retrieval. No model calls."
+  },
+  "security": [{"platformIdentity": []}],
+  "paths": {
+    "/api/v1/projects/{projectId}/documents": {
+      "post": {
+        "operationId": "uploadProjectDocument",
+        "description": "Maintainer only. A new Idempotency-Key creates a new immutable version of documentKey.",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {
+          "type": "object", "additionalProperties": false, "required": ["documentKey", "file"],
+          "properties": {
+            "documentKey": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,62}$"},
+            "file": {"type": "string", "format": "binary", "description": "Strict UTF-8, <=262144 bytes, text/markdown (.md/.markdown) or text/plain (.txt)."}
+          }
+        }}}},
+        "responses": {
+          "201": {"description": "New immutable version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DocumentVersion"}}}},
+          "200": {"description": "Identical idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DocumentVersion"}}}},
+          "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}, "413": {"$ref": "#/components/responses/Error"}
+        }
+      },
+      "get": {
+        "operationId": "listProjectDocuments",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/Page"}, {"$ref": "#/components/parameters/Size"}],
+        "responses": {"200": {"description": "Project-visible document metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DocumentPage"}}}},
+          "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/documents/{documentId}/versions": {
+      "get": {
+        "operationId": "listProjectDocumentVersions",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/DocumentId"}, {"$ref": "#/components/parameters/Page"}, {"$ref": "#/components/parameters/Size"}],
+        "responses": {"200": {"description": "Immutable version metadata, newest first", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DocumentVersionPage"}}}},
+          "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/documents/{documentId}/versions/{versionId}": {
+      "get": {
+        "operationId": "getProjectDocumentVersion",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/DocumentId"}, {"$ref": "#/components/parameters/VersionId"}],
+        "responses": {"200": {"description": "Exact immutable version, including full text for authorized Project viewers", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DocumentVersion"}}}},
+          "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/documents/search": {
+      "post": {
+        "operationId": "searchProjectDocumentVersions",
+        "description": "Read-only retrieval over 1-10 explicit same-Project versions; all must be authorized or the request fails. No model or external search.",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchRequest"}}}},
+        "responses": {"200": {"description": "At most four source-labeled fragments", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchResponse"}}}},
+          "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer"}},
+    "parameters": {
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "DocumentId": {"name": "documentId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "VersionId": {"name": "versionId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}},
+      "Page": {"name": "page", "in": "query", "schema": {"type": "integer", "minimum": 0, "default": 0}},
+      "Size": {"name": "size", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+    },
+    "responses": {"Error": {"description": "Uniform traceable API error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}}},
+    "schemas": {
+      "ApiError": {"type": "object", "required": ["code", "message", "traceId", "details"], "properties": {
+        "code": {"type": "string"}, "message": {"type": "string"}, "traceId": {"type": "string"}, "details": {"type": "object"}}},
+      "DocumentVersion": {"type": "object", "required": ["id", "documentId", "projectId", "documentKey", "versionNumber", "mediaType", "content", "contentSha256", "byteSize", "fragmentCount", "createdBy", "createdAt"],
+        "properties": {"id": {"type": "string", "format": "uuid"}, "documentId": {"type": "string", "format": "uuid"}, "projectId": {"type": "string", "format": "uuid"}, "documentKey": {"type": "string"}, "versionNumber": {"type": "integer"}, "mediaType": {"type": "string"}, "content": {"type": "string"}, "contentSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "byteSize": {"type": "integer"}, "fragmentCount": {"type": "integer"}, "createdBy": {"type": "string", "format": "uuid"}, "createdAt": {"type": "string", "format": "date-time"}}},
+      "DocumentPage": {"type": "object", "required": ["items", "page", "size", "total"], "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/DocumentSummary"}}, "page": {"type": "integer"}, "size": {"type": "integer"}, "total": {"type": "integer"}}},
+      "DocumentSummary": {"type": "object", "required": ["id", "documentKey", "latestVersionNumber", "createdBy", "createdAt"], "properties": {
+        "id": {"type": "string", "format": "uuid"}, "documentKey": {"type": "string"}, "latestVersionNumber": {"type": "integer"}, "createdBy": {"type": "string", "format": "uuid"}, "createdAt": {"type": "string", "format": "date-time"}}},
+      "DocumentVersionPage": {"type": "object", "required": ["items", "page", "size", "total"], "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/DocumentVersionSummary"}}, "page": {"type": "integer"}, "size": {"type": "integer"}, "total": {"type": "integer"}}},
+      "DocumentVersionSummary": {"type": "object", "required": ["id", "versionNumber", "mediaType", "contentSha256", "byteSize", "fragmentCount", "createdBy", "createdAt"], "properties": {
+        "id": {"type": "string", "format": "uuid"}, "versionNumber": {"type": "integer"}, "mediaType": {"type": "string"}, "contentSha256": {"type": "string"}, "byteSize": {"type": "integer"}, "fragmentCount": {"type": "integer"}, "createdBy": {"type": "string", "format": "uuid"}, "createdAt": {"type": "string", "format": "date-time"}}},
+      "SearchRequest": {"type": "object", "additionalProperties": false, "required": ["versionIds", "query"], "properties": {
+        "versionIds": {"type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}, "query": {"type": "string", "minLength": 2, "maxLength": 120}}},
+      "SearchResponse": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "maxItems": 4, "items": {"$ref": "#/components/schemas/Fragment"}}}},
+      "Fragment": {"type": "object", "required": ["projectId", "documentVersionId", "contentSha256", "fragmentIndex", "startOffset", "fragmentSha256", "content"], "properties": {
+        "projectId": {"type": "string", "format": "uuid"}, "documentVersionId": {"type": "string", "format": "uuid"}, "contentSha256": {"type": "string"}, "fragmentIndex": {"type": "integer"}, "startOffset": {"type": "integer"}, "fragmentSha256": {"type": "string"}, "content": {"type": "string", "maxLength": 1024}}}
+    }
+  }
+}

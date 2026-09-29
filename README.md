@@ -26,6 +26,8 @@ Platform `v0.4.0` 在 `v0.3.0` MVP 控制面之上交付持续治理闭环。当
 
 阶段 3H 按 Docs [ADR-0009](https://github.com/AI-ArchGuard/archguard-docs/blob/main/adr/0009-pr-revision-delta.md) 增加只读 PR 修订差异：从已验签且实际应用的前一个不同 head 到当前 head 比较完整 Finding 集。它与基线门禁使用不同参考点，不影响 `PASS`/`FAIL`、CI 退出码或历史门禁。新增接口写入 [治理只读 OpenAPI](openapi/governance-read-v1.json)；迁移 V7 仅追加 head 历史，旧 PR 若缺少可信历史则明确返回不可用。
 
+阶段 4C 在 Platform 内增加[项目文档版本与有界检索](docs/technical-design/v0.5-agent-4c-documents.md)及[文档 API 契约](openapi/agent-documents-v1.json)：Maintainer 显式上传 Markdown/纯文本，V8 保存不可变版本和片段，Project Viewer 仅在明确版本集合内检索。此切片没有模型调用、Agent 请求运行时、Scanner Schema 或门禁修改。
+
 - 通过版本化 Scanner 契约集成 `archguard-scanner`，不得依赖其内部类。
 - PostgreSQL 是业务事实来源；模块之间通过公开应用接口或事件协作，不直接跨模块写表。
 - 跨仓库架构与工程规范以 [archguard-docs](https://github.com/AI-ArchGuard/archguard-docs) 为准。

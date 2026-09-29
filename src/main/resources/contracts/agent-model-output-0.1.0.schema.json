@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://archguard.dev/contracts/agent/model-output/0.1.0/schema.json",
+  "title": "ArchGuard Agent model output 0.1.0",
+  "description": "Untrusted provider payload. Schema validity never proves authorization, citation validity, or safe advice.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "purpose", "conclusion", "claims", "ruleBasis", "suggestions", "limitations"],
+  "properties": {
+    "schemaVersion": {"type": "string", "enum": ["0.1.0"]},
+    "purpose": {"type": "string", "enum": ["FINDING_EXPLANATION", "PR_SUMMARY"]},
+    "conclusion": {"$ref": "#/$defs/conclusion"},
+    "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+    "ruleBasis": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+    "suggestions": {"type": "array", "items": {"$ref": "#/$defs/suggestion"}},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "conclusion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "text", "citationIds"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["SUPPORTED", "INSUFFICIENT"]},
+        "text": {"type": ["string", "null"]},
+        "citationIds": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["findingRef", "text", "citationIds"],
+      "properties": {
+        "findingRef": {"type": "string"},
+        "text": {"type": "string"},
+        "citationIds": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "suggestion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "text", "findingRefs", "citationIds", "requiresHumanReview"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["HUMAN_VERIFICATION", "LOW_RISK_DIRECTION"]},
+        "text": {"type": "string"},
+        "findingRefs": {"type": "array", "items": {"type": "string"}},
+        "citationIds": {"type": "array", "items": {"type": "string"}},
+        "requiresHumanReview": {"type": "boolean"}
+      }
+    }
+  }
+}

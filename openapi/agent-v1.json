@@ -1,0 +1,149 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ArchGuard Agent asynchronous advice contract",
+    "version": "0.1.0",
+    "description": "Stage 4B contract only; no runtime routes or model calls are enabled. Agent advice never changes Finding, baseline, gate, or CI exit code."
+  },
+  "x-archguard-lifecycle": "contract-4b-no-runtime",
+  "security": [{"platformIdentity": []}],
+  "paths": {
+    "/api/v1/projects/{projectId}/agent/requests": {
+      "post": {
+        "operationId": "createAgentRequest",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateAgentRequest"}}}},
+        "responses": {
+          "202": {"description": "New or identical replay; may already be FAILED when disabled or quota exhausted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AgentRequest"}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/requests/{requestId}": {
+      "get": {
+        "operationId": "getAgentRequest",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RequestId"}],
+        "responses": {
+          "200": {"description": "Project-authorized request snapshot; terminal result is immutable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AgentRequest"}}}},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer"}},
+    "parameters": {
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string"}},
+      "RequestId": {"name": "requestId", "in": "path", "required": true, "schema": {"type": "string"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+    },
+    "responses": {
+      "Error": {"description": "Uniform API error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}}
+    },
+    "schemas": {
+      "ApiError": {
+        "type": "object", "additionalProperties": false, "required": ["code", "message", "traceId", "details"],
+        "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "traceId": {"type": "string"}, "details": {"type": "object"}}
+      },
+      "CreateAgentRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["purpose", "scanJobId", "reportSha256", "prHeadRevisionId", "findingIds", "documentVersionIds"],
+        "properties": {
+          "purpose": {"type": "string", "enum": ["FINDING_EXPLANATION", "PR_SUMMARY"]},
+          "scanJobId": {"type": "string"},
+          "reportSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "prHeadRevisionId": {"type": ["string", "null"], "description": "Required for PR_SUMMARY; null for a standalone Finding explanation."},
+          "findingIds": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string"}},
+          "documentVersionIds": {"type": "array", "maxItems": 10, "uniqueItems": true, "items": {"type": "string"}}
+        }
+      },
+      "AgentRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "projectId", "requesterId", "traceId", "purpose", "state", "bindings", "result", "failure", "usage", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "string"}, "projectId": {"type": "string"}, "requesterId": {"type": "string"}, "traceId": {"type": "string"},
+          "purpose": {"type": "string", "enum": ["FINDING_EXPLANATION", "PR_SUMMARY"]},
+          "state": {"type": "string", "enum": ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED"]},
+          "bindings": {"$ref": "#/components/schemas/VersionBindings"},
+          "result": {"oneOf": [{"$ref": "#/components/schemas/AgentResult"}, {"type": "null"}]},
+          "failure": {"oneOf": [{"$ref": "#/components/schemas/AgentFailure"}, {"type": "null"}]},
+          "usage": {"oneOf": [{"$ref": "#/components/schemas/AgentUsage"}, {"type": "null"}]},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "VersionBindings": {
+        "type": "object", "additionalProperties": false,
+        "required": ["scanJobId", "reportSha256", "prHeadRevisionId", "findingIds", "documentVersions", "promptVersion", "modelProfileVersion", "modelProtocolVersion", "modelId", "outputSchemaVersion", "priceCatalogVersion", "inputDigest"],
+        "properties": {
+          "scanJobId": {"type": "string"}, "reportSha256": {"type": "string"}, "prHeadRevisionId": {"type": ["string", "null"]},
+          "findingIds": {"type": "array", "items": {"type": "string"}},
+          "documentVersions": {"type": "array", "items": {"$ref": "#/components/schemas/DocumentVersionBinding"}},
+          "promptVersion": {"type": "string"}, "modelProfileVersion": {"type": "string"},
+          "modelProtocolVersion": {"type": "string"}, "modelId": {"type": "string"},
+          "outputSchemaVersion": {"type": "string", "enum": ["0.1.0"]},
+          "priceCatalogVersion": {"type": "string"}, "inputDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      },
+      "DocumentVersionBinding": {
+        "type": "object", "additionalProperties": false,
+        "required": ["documentVersionId", "contentSha256"],
+        "properties": {"documentVersionId": {"type": "string"}, "contentSha256": {"type": "string"}}
+      },
+      "AgentResult": {
+        "type": "object", "additionalProperties": false,
+        "required": ["conclusion", "ruleBasis", "claims", "suggestions", "citations", "evidenceCoverage"],
+        "properties": {
+          "conclusion": {"type": "string"},
+          "ruleBasis": {"type": "array", "items": {"type": "string"}},
+          "claims": {"type": "array", "items": {"type": "string"}},
+          "suggestions": {"type": "array", "items": {"$ref": "#/components/schemas/Suggestion"}},
+          "citations": {"type": "array", "items": {"$ref": "#/components/schemas/VerifiedCitation"}},
+          "evidenceCoverage": {"type": "string", "enum": ["NONE", "PARTIAL", "COMPLETE"]}
+        }
+      },
+      "Suggestion": {
+        "type": "object", "additionalProperties": false,
+        "required": ["text", "kind", "requiresHumanReview"],
+        "properties": {"text": {"type": "string"}, "kind": {"type": "string", "enum": ["HUMAN_VERIFICATION", "LOW_RISK_DIRECTION"]}, "requiresHumanReview": {"type": "boolean", "const": true}}
+      },
+      "VerifiedCitation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["citationId", "source", "label", "projectId", "scanJobId", "reportSha256", "evidenceId", "documentVersionId", "contentSha256", "fragmentIndex", "fragmentSha256"],
+        "properties": {
+          "citationId": {"type": "string"}, "source": {"type": "string", "enum": ["SCANNER_EVIDENCE", "PROJECT_DOCUMENT"]},
+          "label": {"type": "string"}, "projectId": {"type": "string"},
+          "scanJobId": {"type": ["string", "null"]}, "reportSha256": {"type": ["string", "null"]}, "evidenceId": {"type": ["string", "null"]},
+          "documentVersionId": {"type": ["string", "null"]}, "contentSha256": {"type": ["string", "null"]},
+          "fragmentIndex": {"type": ["integer", "null"]}, "fragmentSha256": {"type": ["string", "null"]}
+        }
+      },
+      "AgentFailure": {
+        "type": "object", "additionalProperties": false, "required": ["code", "message"],
+        "properties": {
+          "code": {"type": "string", "enum": ["MODEL_DISABLED", "MODEL_UNAVAILABLE", "MODEL_TIMEOUT", "QUOTA_EXHAUSTED", "OUTPUT_INVALID", "CITATION_INVALID", "AUTHORIZATION_REVOKED", "INTERNAL_ERROR"]},
+          "message": {"type": "string"}
+        }
+      },
+      "AgentUsage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["inputTokens", "outputTokens", "latencyMs", "providerLatencyMs", "estimatedCostMicrousd", "actualCostMicrousd", "providerResponseId", "actualModelId"],
+        "properties": {
+          "inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0},
+          "latencyMs": {"type": "integer", "minimum": 0},
+          "providerLatencyMs": {"type": ["integer", "null"], "minimum": 0},
+          "estimatedCostMicrousd": {"type": "integer", "minimum": 0},
+          "actualCostMicrousd": {"type": ["integer", "null"], "minimum": 0},
+          "providerResponseId": {"type": ["string", "null"]},
+          "actualModelId": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

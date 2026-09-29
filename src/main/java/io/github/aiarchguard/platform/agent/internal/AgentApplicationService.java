@@ -56,6 +56,7 @@ class AgentApplicationService implements AgentOperations {
     private final FindingOperations findings;
     private final DocumentOperations documents;
     private final AgentStore store;
+    private final AgentSchemaAvailability schema;
     private final AgentModelPort model;
     private final AgentWorker worker;
     private final Executor executor;
@@ -66,12 +67,14 @@ class AgentApplicationService implements AgentOperations {
     private final boolean enabled;
 
     AgentApplicationService(ProjectAuthorization projects, CurrentActorProvider actors, ScanJobOperations jobs,
-            FindingOperations findings, DocumentOperations documents, AgentStore store, AgentModelPort model,
+            FindingOperations findings, DocumentOperations documents, AgentStore store,
+            AgentSchemaAvailability schema, AgentModelPort model,
             AgentWorker worker, @Qualifier("agentTaskExecutor") Executor executor, AuditRecorder audit,
             TraceIdProvider traceIds, ObjectMapper mapper, Clock clock,
             @Value("${archguard.agent.enabled:false}") boolean enabled) {
         this.projects = projects; this.actors = actors; this.jobs = jobs; this.findings = findings;
-        this.documents = documents; this.store = store; this.model = model; this.worker = worker;
+        this.documents = documents; this.store = store; this.schema = schema;
+        this.model = model; this.worker = worker;
         this.executor = executor; this.audit = audit; this.traceIds = traceIds; this.mapper = mapper;
         this.clock = clock; this.enabled = enabled;
     }
@@ -80,6 +83,7 @@ class AgentApplicationService implements AgentOperations {
     @Transactional
     public AgentRequestView create(UUID projectId, String key, CreateAgentRequest request) {
         projects.requireViewer(projectId);
+        schema.requireReady();
         validate(key, request);
         UUID requester = actors.currentActor().id();
         ScanJobView scan = jobs.get(projectId, request.scanJobId());
@@ -169,6 +173,7 @@ class AgentApplicationService implements AgentOperations {
     @Transactional(readOnly = true)
     public AgentRequestView get(UUID projectId, UUID requestId) {
         projects.requireViewer(projectId);
+        schema.requireReady();
         return store.find(projectId, requestId).map(AgentSnapshot::view).orElseThrow(AgentNotFoundException::new);
     }
 

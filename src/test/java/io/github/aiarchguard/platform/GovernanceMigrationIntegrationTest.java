@@ -66,8 +66,9 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("2")).load();
         assertThat(v2.migrate().migrationsExecuted).isEqualTo(2);
         Flyway latest = Flyway.configure().dataSource(upgradeUrl, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(7);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("9");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(6);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("8");
+        migrateAgentSchema(upgradeUrl);
     }
 
     @Test void upgradesV3WithoutRewritingHistory() throws Exception {
@@ -83,8 +84,9 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("3")).load();
         assertThat(v3.migrate().migrationsExecuted).isEqualTo(3);
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(6);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("9");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(5);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("8");
+        migrateAgentSchema(url);
     }
 
     @Test void upgradesV4WithoutRewritingHistory() throws Exception {
@@ -100,8 +102,9 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("4")).load();
         assertThat(v4.migrate().migrationsExecuted).isEqualTo(4);
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(5);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("9");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(4);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("8");
+        migrateAgentSchema(url);
     }
 
     @Test void upgradesV7WithoutRewritingHistory() throws Exception {
@@ -117,7 +120,17 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             .target(MigrationVersion.fromVersion("7")).load();
         assertThat(v7.migrate().migrationsExecuted).isEqualTo(7);
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(2);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("9");
+        assertThat(latest.migrate().migrationsExecuted).isOne();
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("8");
+        migrateAgentSchema(url);
+    }
+
+    private void migrateAgentSchema(String url) {
+        Flyway agent = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
+            .locations("classpath:db/agent-migration").defaultSchema("public")
+            .table("flyway_agent_schema_history").baselineOnMigrate(true).baselineVersion("8").load();
+        assertThat(agent.migrate().migrationsExecuted).isOne();
+        assertThat(agent.info().current().getVersion().getVersion()).isEqualTo("9");
+        assertThat(agent.migrate().migrationsExecuted).isZero();
     }
 }

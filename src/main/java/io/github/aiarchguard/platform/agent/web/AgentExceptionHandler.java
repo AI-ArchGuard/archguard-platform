@@ -3,6 +3,7 @@ package io.github.aiarchguard.platform.agent.web;
 import io.github.aiarchguard.platform.agent.AgentConflictException;
 import io.github.aiarchguard.platform.agent.AgentInvalidException;
 import io.github.aiarchguard.platform.agent.AgentNotFoundException;
+import io.github.aiarchguard.platform.agent.AgentUnavailableException;
 import io.github.aiarchguard.platform.agentdocument.DocumentNotFoundException;
 import io.github.aiarchguard.platform.common.ApiError;
 import io.github.aiarchguard.platform.common.TraceIdProvider;
@@ -29,6 +30,11 @@ final class AgentExceptionHandler {
     @ExceptionHandler(AgentConflictException.class)
     ResponseEntity<ApiError> conflict() {
         return error(HttpStatus.CONFLICT, "agent.idempotency_conflict", "Idempotency-Key is bound to different input.");
+    }
+
+    @ExceptionHandler(AgentUnavailableException.class)
+    ResponseEntity<ApiError> unavailable() {
+        return error(HttpStatus.SERVICE_UNAVAILABLE, "agent.unavailable", "Agent storage is unavailable.");
     }
 
     @ExceptionHandler({AgentNotFoundException.class, ProjectNotFoundException.class,

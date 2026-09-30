@@ -73,7 +73,7 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 ## 配置
 
-Stage 4D 的单个 Finding 解释 API 已有独立请求和结果存储，但真实模型适配器尚未获批或接入。`ARCHGUARD_AGENT_ENABLED` 默认 `false`；即使显式设为 `true`，没有获批适配器仍返回 `MODEL_UNAVAILABLE`，不会外发数据。Agent 迁移独立于主 Flyway 链，迁移失败时 Agent 路由返回 503，主 Project/Scanner/门禁仍可启动。CI 只注入确定性假模型。请求须显式调用 `POST /api/v1/projects/{projectId}/agent/requests`，之后用 GET 查询；结果不参与 Finding、基线、门禁或 CI 判断。详情见 [4D 设计](docs/technical-design/v0.5-agent-4d-finding-explanation.md)。
+Stage 4D 的单个 Finding 解释 API 已有独立请求和结果存储，但真实模型适配器尚未获批或接入。Docs [ADR-0011](https://github.com/AI-ArchGuard/archguard-docs/blob/main/adr/0011-deepseek-official-api-egress.md)已选择 DeepSeek 官方 API，未批准真实外发；本切片只验收默认关闭的合成解释基础。`ARCHGUARD_AGENT_ENABLED` 默认 `false`；即使显式设为 `true`，没有获批适配器仍返回 `MODEL_UNAVAILABLE`，不会外发数据。Agent 迁移独立于主 Flyway 链，迁移失败时 Agent 路由返回 503，主 Project/Scanner/门禁仍可启动。CI 只注入确定性假模型。请求须显式调用 `POST /api/v1/projects/{projectId}/agent/requests`，之后用 GET 查询；结果不参与 Finding、基线、门禁或 CI 判断。详情见 [4D 设计](docs/technical-design/v0.5-agent-4d-finding-explanation.md)。
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|

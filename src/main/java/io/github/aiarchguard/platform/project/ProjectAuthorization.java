@@ -5,4 +5,5 @@ import java.util.UUID;
 public interface ProjectAuthorization {
     ProjectAccessView requireViewer(UUID projectId);
     ProjectAccessView requireMaintainer(UUID projectId);
+    ProjectAccessView requireViewerForActor(UUID projectId, UUID actorId);
 }

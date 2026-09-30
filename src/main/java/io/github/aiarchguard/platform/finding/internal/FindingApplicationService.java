@@ -42,6 +42,10 @@ final class FindingApplicationService implements FindingOperations {
         projects.requireViewer(projectId);
         return store.findEvidence(projectId, jobId, evidenceId).orElseThrow(FindingNotFoundException::new);
     }
+    @Override public FindingView get(UUID projectId, UUID jobId, UUID findingId) {
+        projects.requireViewer(projectId);
+        return store.find(projectId, jobId, findingId).orElseThrow(FindingNotFoundException::new);
+    }
     @Override public FindingView disposition(UUID projectId, UUID jobId, UUID findingId, FindingDisposition next,
                                              String reason, long expectedVersion) {
         projects.requireMaintainer(projectId);

@@ -103,6 +103,13 @@ class DocumentApplicationService implements DocumentOperations {
 
     @Override
     @Transactional(readOnly = true)
+    public DocumentVersionView getVersionById(UUID projectId, UUID versionId) {
+        projects.requireViewer(projectId);
+        return store.findVersionById(projectId, versionId).orElseThrow(DocumentNotFoundException::new);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<DocumentFragmentView> search(UUID projectId, List<UUID> versionIds, String query) {
         projects.requireViewer(projectId);
         if (versionIds == null || versionIds.isEmpty() || versionIds.size() > MAX_SELECTED_VERSIONS

@@ -62,6 +62,9 @@ logging:
       console: logstash
 
 archguard:
+  agent:
+    enabled: ${ARCHGUARD_AGENT_ENABLED:false}
+    provider-timeout: ${ARCHGUARD_AGENT_PROVIDER_TIMEOUT:30s}
   github:
     webhook-secret: ${ARCHGUARD_GITHUB_WEBHOOK_SECRET:}
   repositories:

@@ -112,7 +112,12 @@ final class ProjectApplicationService implements ProjectOperations, ProjectAutho
     @Override
     public ProjectAccessView requireViewer(UUID projectId) {
         CurrentActor actor = actors.currentActor();
-        ProjectAccess access = reader.findAccessForActor(projectId, actor.id())
+        return requireViewerForActor(projectId, actor.id());
+    }
+
+    @Override
+    public ProjectAccessView requireViewerForActor(UUID projectId, UUID actorId) {
+        ProjectAccess access = reader.findAccessForActor(projectId, actorId)
             .orElseThrow(ProjectNotFoundException::new);
         return toAccessView(access);
     }

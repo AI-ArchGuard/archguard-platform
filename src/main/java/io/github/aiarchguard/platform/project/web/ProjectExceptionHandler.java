@@ -57,7 +57,7 @@ final class ProjectExceptionHandler {
     @ExceptionHandler(ProjectNotEmptyException.class)
     ResponseEntity<ApiError> notEmpty(ProjectNotEmptyException exception) {
         return error(HttpStatus.CONFLICT, "project.not_empty",
-            "Project must not contain repositories, rule sets, scan jobs, or documents when deleted.");
+            "Project must not contain repositories, rule sets, scan jobs, documents, or Agent history when deleted.");
     }
 
     @ExceptionHandler(ProjectMemberNotFoundException.class)

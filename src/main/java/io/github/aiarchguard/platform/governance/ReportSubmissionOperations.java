@@ -8,4 +8,9 @@ public interface ReportSubmissionOperations {
                       ReportSubmissionMetadata metadata, byte[] report);
     ReportSubmissionView get(UUID projectId, UUID repositoryId, UUID submissionId);
     SubmissionGateView gate(UUID projectId, UUID repositoryId, UUID submissionId);
+    /** Only an applied PR head paired with this completed scan report can back an Agent summary. */
+    boolean matchesCompletedPrRevision(UUID projectId, UUID scanJobId, String reportSha256,
+                                       UUID prHeadRevisionId);
+    boolean matchesCompletedPrRevisionForActor(UUID projectId, UUID actorId, UUID scanJobId,
+                                               String reportSha256, UUID prHeadRevisionId);
 }

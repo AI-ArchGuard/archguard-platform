@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.aiarchguard.platform.agent.AgentModelPort;
 import io.github.aiarchguard.platform.agent.AgentRequestView;
+import io.github.aiarchguard.platform.governance.ReportSubmissionOperations;
 import io.github.aiarchguard.platform.project.ProjectAuthorization;
 import io.github.aiarchguard.platform.project.ProjectNotFoundException;
 import java.time.Clock;
@@ -28,15 +29,17 @@ public class AgentWorker {
     private final AgentModelPort model;
     private final AgentOutputValidator validator;
     private final ProjectAuthorization projects;
+    private final ReportSubmissionOperations reports;
     private final ObjectMapper mapper;
     private final Clock clock;
     private final Duration providerTimeout;
 
     AgentWorker(AgentStore store, AgentTransitions transitions, AgentModelPort model,
-            AgentOutputValidator validator, ProjectAuthorization projects, ObjectMapper mapper, Clock clock,
+            AgentOutputValidator validator, ProjectAuthorization projects,
+            ReportSubmissionOperations reports, ObjectMapper mapper, Clock clock,
             @Value("${archguard.agent.provider-timeout:30s}") Duration providerTimeout) {
         this.store = store; this.transitions = transitions; this.model = model; this.validator = validator;
-        this.projects = projects; this.mapper = mapper; this.clock = clock;
+        this.projects = projects; this.reports = reports; this.mapper = mapper; this.clock = clock;
         if (providerTimeout.isZero() || providerTimeout.isNegative()
                 || providerTimeout.compareTo(Duration.ofSeconds(30)) > 0) {
             throw new IllegalArgumentException("Agent provider timeout must be within (0, 30s]");
@@ -75,6 +78,10 @@ public class AgentWorker {
         Instant started = Instant.now(clock);
         try {
             projects.requireViewerForActor(projectId, snapshot.view().requesterId());
+            if (!prScopeStillValid(snapshot)) {
+                fail(snapshot, start, "AUTHORIZATION_REVOKED", started, inputTokens, null, false);
+                return;
+            }
         } catch (ProjectNotFoundException revoked) {
             fail(snapshot, start, "AUTHORIZATION_REVOKED", started, inputTokens, null, false);
             return;
@@ -112,6 +119,10 @@ public class AgentWorker {
         try {
             AgentRequestView.AgentResult result = validator.validate(response.rawJson(), snapshot);
             projects.requireViewerForActor(projectId, snapshot.view().requesterId());
+            if (!prScopeStillValid(snapshot)) {
+                fail(snapshot, start, "AUTHORIZATION_REVOKED", started, inputTokens, response, false);
+                return;
+            }
             transitions.finish(snapshot, start, result, null, usage(started, start.estimate(), response), false);
         } catch (AgentOutputValidator.InvalidOutput invalid) {
             fail(snapshot, start, invalid.code(), started, inputTokens, response, false);
@@ -120,6 +131,14 @@ public class AgentWorker {
         } catch (RuntimeException internal) {
             fail(snapshot, start, "INTERNAL_ERROR", started, inputTokens, response, false);
         }
+    }
+
+    private boolean prScopeStillValid(AgentSnapshot snapshot) {
+        if (!"PR_SUMMARY".equals(snapshot.view().purpose())) return true;
+        var bindings = snapshot.view().bindings();
+        return reports.matchesCompletedPrRevisionForActor(snapshot.view().projectId(),
+            snapshot.view().requesterId(), bindings.scanJobId(), bindings.reportSha256(),
+            bindings.prHeadRevisionId());
     }
 
     public void failQueued(UUID projectId, UUID requestId, String code) {

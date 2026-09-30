@@ -90,4 +90,16 @@ class ReportSubmissionApplicationService implements ReportSubmissionOperations {
             Map.of("NEW", value.newCount(), "EXISTING", value.existingCount(), "RESOLVED", value.resolvedCount()),
             value.matchedExceptionVersionIds(), value.evaluatedAt());
     }
+
+    @Override public boolean matchesCompletedPrRevision(UUID projectId, UUID scanJobId,
+            String reportSha256, UUID prHeadRevisionId) {
+        projects.requireViewer(projectId);
+        return store.matchesCompletedPrRevision(projectId, scanJobId, reportSha256, prHeadRevisionId);
+    }
+
+    @Override public boolean matchesCompletedPrRevisionForActor(UUID projectId, UUID actorId,
+            UUID scanJobId, String reportSha256, UUID prHeadRevisionId) {
+        projects.requireViewerForActor(projectId, actorId);
+        return store.matchesCompletedPrRevision(projectId, scanJobId, reportSha256, prHeadRevisionId);
+    }
 }

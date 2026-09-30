@@ -42,6 +42,22 @@ public class JdbcReportSubmissionStore implements ReportSubmissionStore {
             """).param("project", projectId).param("repository", repositoryId)
             .param("pr", externalId).param("head", headSha).query(UUID.class).optional();
     }
+    @Override public boolean matchesCompletedPrRevision(UUID projectId, UUID scanJobId,
+            String reportSha256, UUID prHeadRevisionId) {
+        return jdbc.sql("""
+            SELECT EXISTS (
+              SELECT 1 FROM governance.report_submissions s
+              JOIN governance.github_pr_head_revisions h
+                ON h.project_id=s.project_id AND h.repository_id=s.repository_id
+               AND h.external_id=s.pull_request_external_id
+               AND h.head_sha=s.pull_request_head_sha AND h.target_branch=s.target_branch
+              WHERE h.delivery_id=:revision AND s.project_id=:project AND s.scan_job_id=:job
+                AND s.report_sha256=:sha AND s.commit_sha=h.head_sha
+                AND s.status='COMPLETED' AND s.gate_evaluation_id IS NOT NULL
+            )
+            """).param("revision", prHeadRevisionId).param("project", projectId)
+            .param("job", scanJobId).param("sha", reportSha256).query(Boolean.class).single();
+    }
     @Override public boolean insert(ReportSubmissionView value, String key, UUID scanJobId,
             String scannerVersion, String schemaVersion, UUID actorId) {
         GitRevision revision = value.revision(); PullRequestRef pr = value.pullRequest();

@@ -112,6 +112,14 @@ class AgentExplanationIntegrationTest extends PostgresIntegrationTestSupport {
         JsonNode unsafe = create(fixture, "unsafe-advice", List.of());
         assertThat(awaitTerminal(fixture.project(), unsafe.path("id").asText())
             .at("/failure/code").asText()).isEqualTo("OUTPUT_INVALID");
+        model.mode.set("MISSING_RULE_BASIS");
+        JsonNode missingRule = create(fixture, "missing-rule-basis", List.of());
+        assertThat(awaitTerminal(fixture.project(), missingRule.path("id").asText())
+            .at("/failure/code").asText()).isEqualTo("OUTPUT_INVALID");
+        model.mode.set("CHINESE_EXECUTED_ACTION");
+        JsonNode executedAction = create(fixture, "executed-action", List.of());
+        assertThat(awaitTerminal(fixture.project(), executedAction.path("id").asText())
+            .at("/failure/code").asText()).isEqualTo("OUTPUT_INVALID");
     }
 
     @Test void documentCitationUsesExactImmutableVersionAndInjectionCannotChangePrompt() throws Exception {
@@ -141,6 +149,11 @@ class AgentExplanationIntegrationTest extends PostgresIntegrationTestSupport {
         mvc.perform(post("/api/v1/projects/{project}/agent/requests", other.project())
             .with(user(ACTOR)).header("Idempotency-Key", "cross-project")
             .contentType(MediaType.APPLICATION_JSON).content(body(owner, List.of())))
+            .andExpect(status().isNotFound());
+        UUID foreignVersion = uploadDocument(other.project(), "foreign-document", "Foreign project architecture.");
+        mvc.perform(post("/api/v1/projects/{project}/agent/requests", owner.project())
+            .with(user(ACTOR)).header("Idempotency-Key", "foreign-document")
+            .contentType(MediaType.APPLICATION_JSON).content(body(owner, List.of(foreignVersion))))
             .andExpect(status().isNotFound());
         assertThat(model.calls.get()).isZero();
         jdbc.sql("""
@@ -300,6 +313,7 @@ class AgentExplanationIntegrationTest extends PostgresIntegrationTestSupport {
                 : input.evidence().getFirst().citationId();
             if ("WITH_DOC".equals(mode.get())) citation += "\",\"" + input.documents().getFirst().citationId();
             String suggestion = "UNSAFE_SUGGESTION".equals(mode.get()) ? "I have modified the PR."
+                : "CHINESE_EXECUTED_ACTION".equals(mode.get()) ? "我已修改 PR 中的规则。"
                 : "Verify the dependency boundary.";
             String raw = """
                 {"schemaVersion":"0.1.0","purpose":"FINDING_EXPLANATION",
@@ -311,6 +325,12 @@ class AgentExplanationIntegrationTest extends PostgresIntegrationTestSupport {
                 "limitations":[]}
                 """.formatted(citation, input.findingRef(), citation, input.findingRef(), citation,
                     suggestion, input.findingRef(), citation);
+            if ("MISSING_RULE_BASIS".equals(mode.get())) {
+                com.fasterxml.jackson.databind.node.ObjectNode output =
+                    (com.fasterxml.jackson.databind.node.ObjectNode) new ObjectMapper().readTree(raw);
+                output.putArray("ruleBasis");
+                raw = output.toString();
+            }
             return new ModelResponse(raw, 100, 80, 1, "synthetic", "fake-v1");
         }
     }

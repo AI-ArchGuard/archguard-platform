@@ -19,7 +19,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class AgentOutputValidator {
     private static final Pattern EXECUTED_ACTION = Pattern.compile(
-        "(?i)\\b(i|we|agent|system)\\s+(have\\s+)?(edited|modified|changed|deleted|merged|committed|pushed|approved)\\b");
+        "(?i)\\b(i|we|agent|system)\\s+(have\\s+)?(edited|modified|changed|deleted|merged|committed|pushed|approved)\\b|"
+            + "(?:已|已经)(?:自动)?(?:修改|删除|合并|提交|推送|批准|禁用|绕过|执行)");
     private static final Pattern EXECUTION_DIRECTIVE = Pattern.compile(
         "(?i)\\b(run|execute|delete|merge|commit|push|approve|disable|bypass)\\b|"
             + "(?:自动|立即)(?:修改|删除|合并|提交|执行)");
@@ -76,6 +77,7 @@ public class AgentOutputValidator {
         }
         List<String> claims = claims(root.path("claims"), snapshot, allowed, cited, supported);
         List<String> ruleBasis = claims(root.path("ruleBasis"), snapshot, allowed, cited, supported);
+        if (supported && ruleBasis.isEmpty()) throw new InvalidOutput("OUTPUT_INVALID");
         List<AgentRequestView.Suggestion> suggestions = new ArrayList<>();
         for (JsonNode suggestion : root.path("suggestions")) {
             checkText(suggestion.path("text").asText(null));

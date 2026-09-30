@@ -44,7 +44,11 @@ public class AgentOutputValidator {
         JsonNode root;
         try { root = mapper.readTree(raw); }
         catch (Exception exception) { throw new InvalidOutput("OUTPUT_INVALID"); }
-        if (!"FINDING_EXPLANATION".equals(root.path("purpose").asText())) throw new InvalidOutput("OUTPUT_INVALID");
+        boolean summary = "PR_SUMMARY".equals(snapshot.view().purpose());
+        if (!snapshot.view().purpose().equals(root.path("purpose").asText())
+                || !snapshot.view().purpose().equals(snapshot.input().purpose())) {
+            throw new InvalidOutput("OUTPUT_INVALID");
+        }
         Map<String, AgentSnapshot.Candidate> allowed = new HashMap<>();
         for (AgentSnapshot.Candidate candidate : snapshot.candidates()) {
             if (allowed.put(candidate.citationId(), candidate) != null) throw new InvalidOutput("CITATION_INVALID");
@@ -59,37 +63,53 @@ public class AgentOutputValidator {
                 throw new InvalidOutput("CITATION_INVALID");
             }
         }
+        Map<String, Set<String>> evidenceByFinding = evidenceByFinding(snapshot, allowed, summary);
+        Set<String> selectedRefs = evidenceByFinding.keySet();
         Set<String> cited = new HashSet<>();
         JsonNode conclusion = root.path("conclusion");
         boolean supported = "SUPPORTED".equals(conclusion.path("kind").asText());
         if (supported) {
             checkText(conclusion.path("text").asText(null));
             checkCitations(conclusion.path("citationIds"), allowed, cited, true);
-            boolean evidenceBasis = false;
-            for (JsonNode id : conclusion.path("citationIds")) {
-                if (allowed.get(id.asText()).evidenceId() != null) evidenceBasis = true;
+            if (summary) {
+                checkScopedCitations(conclusion.path("citationIds"), selectedRefs,
+                    evidenceByFinding, allowed);
+            } else if (!hasEvidence(conclusion.path("citationIds"), allowed)) {
+                throw new InvalidOutput("OUTPUT_INVALID");
             }
-            if (!evidenceBasis) throw new InvalidOutput("OUTPUT_INVALID");
         } else if (!conclusion.path("text").isNull() || !conclusion.path("citationIds").isEmpty()
                 || !root.path("claims").isEmpty() || !root.path("ruleBasis").isEmpty()
                 || !root.path("suggestions").isEmpty()) {
             throw new InvalidOutput("OUTPUT_INVALID");
         }
-        List<String> claims = claims(root.path("claims"), snapshot, allowed, cited, supported);
-        List<String> ruleBasis = claims(root.path("ruleBasis"), snapshot, allowed, cited, supported);
+        Set<String> claimRefs = new HashSet<>(), ruleRefs = new HashSet<>();
+        List<String> claims = claims(root.path("claims"), snapshot, allowed, cited,
+            supported, summary, evidenceByFinding, claimRefs);
+        List<String> ruleBasis = claims(root.path("ruleBasis"), snapshot, allowed, cited,
+            supported, summary, evidenceByFinding, ruleRefs);
         if (supported && ruleBasis.isEmpty()) throw new InvalidOutput("OUTPUT_INVALID");
+        if (supported && summary && (!claimRefs.equals(selectedRefs) || !ruleRefs.equals(selectedRefs))) {
+            throw new InvalidOutput("OUTPUT_INVALID");
+        }
         List<AgentRequestView.Suggestion> suggestions = new ArrayList<>();
         for (JsonNode suggestion : root.path("suggestions")) {
             checkText(suggestion.path("text").asText(null));
             if (EXECUTION_DIRECTIVE.matcher(suggestion.path("text").asText()).find()) {
                 throw new InvalidOutput("OUTPUT_INVALID");
             }
+            Set<String> suggestionRefs = new HashSet<>();
+            suggestion.path("findingRefs").forEach(ref -> suggestionRefs.add(ref.asText()));
             if (!suggestion.path("requiresHumanReview").asBoolean()
-                    || suggestion.path("findingRefs").size() != 1
-                    || !snapshot.input().findingRef().equals(suggestion.path("findingRefs").get(0).asText())) {
+                    || suggestionRefs.isEmpty()
+                    || suggestionRefs.size() != suggestion.path("findingRefs").size()
+                    || !selectedRefs.containsAll(suggestionRefs)
+                    || (!summary && (suggestionRefs.size() != 1
+                        || !suggestionRefs.contains(snapshot.input().findingRef())))) {
                 throw new InvalidOutput("OUTPUT_INVALID");
             }
             checkCitations(suggestion.path("citationIds"), allowed, cited, true);
+            if (summary) checkScopedCitations(suggestion.path("citationIds"), suggestionRefs,
+                evidenceByFinding, allowed);
             suggestions.add(new AgentRequestView.Suggestion(suggestion.path("text").asText(),
                 suggestion.path("kind").asText(), true));
         }
@@ -111,17 +131,77 @@ public class AgentOutputValidator {
     }
 
     private List<String> claims(JsonNode items, AgentSnapshot snapshot, Map<String, AgentSnapshot.Candidate> allowed,
-            Set<String> cited, boolean supported) {
+            Set<String> cited, boolean supported, boolean summary,
+            Map<String, Set<String>> evidenceByFinding, Set<String> refsSeen) {
         List<String> result = new ArrayList<>();
         for (JsonNode claim : items) {
-            if (!supported || !snapshot.input().findingRef().equals(claim.path("findingRef").asText())) {
+            String ref = claim.path("findingRef").asText();
+            if (!supported || !evidenceByFinding.containsKey(ref)
+                    || (!summary && !snapshot.input().findingRef().equals(ref))) {
                 throw new InvalidOutput("OUTPUT_INVALID");
             }
             checkText(claim.path("text").asText(null));
             checkCitations(claim.path("citationIds"), allowed, cited, true);
+            if (summary) checkScopedCitations(claim.path("citationIds"), Set.of(ref),
+                evidenceByFinding, allowed);
+            refsSeen.add(ref);
             result.add(claim.path("text").asText());
         }
         return List.copyOf(result);
+    }
+
+    private Map<String, Set<String>> evidenceByFinding(AgentSnapshot snapshot,
+            Map<String, AgentSnapshot.Candidate> allowed, boolean summary) {
+        Map<String, Set<String>> result = new HashMap<>();
+        if (summary) {
+            if (snapshot.input().findings() == null
+                    || snapshot.input().findings().size() != snapshot.view().bindings().findingIds().size()) {
+                throw new InvalidOutput("OUTPUT_INVALID");
+            }
+            for (var finding : snapshot.input().findings()) {
+                if (finding.findingRef() == null || finding.evidence() == null
+                        || result.put(finding.findingRef(), evidenceIds(finding.evidence(), allowed)) != null) {
+                    throw new InvalidOutput("OUTPUT_INVALID");
+                }
+            }
+        } else {
+            result.put(snapshot.input().findingRef(), evidenceIds(snapshot.input().evidence(), allowed));
+        }
+        return result;
+    }
+
+    private Set<String> evidenceIds(List<io.github.aiarchguard.platform.agent.AgentModelPort.EvidenceInput> inputs,
+            Map<String, AgentSnapshot.Candidate> allowed) {
+        Set<String> ids = new HashSet<>();
+        for (var evidence : inputs) {
+            var candidate = allowed.get(evidence.citationId());
+            if (candidate == null || candidate.evidenceId() == null || !ids.add(evidence.citationId())) {
+                throw new InvalidOutput("CITATION_INVALID");
+            }
+        }
+        return ids;
+    }
+
+    private void checkScopedCitations(JsonNode ids, Set<String> refs,
+            Map<String, Set<String>> evidenceByFinding, Map<String, AgentSnapshot.Candidate> allowed) {
+        for (JsonNode id : ids) {
+            var candidate = allowed.get(id.asText());
+            if (candidate == null) throw new InvalidOutput("CITATION_INVALID");
+            if (candidate.evidenceId() != null && refs.stream()
+                    .noneMatch(ref -> evidenceByFinding.get(ref).contains(id.asText()))) {
+                throw new InvalidOutput("CITATION_INVALID");
+            }
+        }
+        for (String ref : refs) {
+            if (ids.valueStream().noneMatch(id -> evidenceByFinding.get(ref).contains(id.asText()))) {
+                throw new InvalidOutput("OUTPUT_INVALID");
+            }
+        }
+    }
+
+    private boolean hasEvidence(JsonNode ids, Map<String, AgentSnapshot.Candidate> allowed) {
+        for (JsonNode id : ids) if (allowed.get(id.asText()).evidenceId() != null) return true;
+        return false;
     }
 
     private void checkCitations(JsonNode ids, Map<String, AgentSnapshot.Candidate> allowed,

@@ -13,6 +13,8 @@ public interface ReportSubmissionStore {
     Optional<Stored> find(UUID projectId, UUID repositoryId, UUID id);
     Optional<UUID> latestCompletedGateForPullRequest(UUID projectId, UUID repositoryId,
                                                      String externalId, String headSha);
+    boolean matchesCompletedPrRevision(UUID projectId, UUID scanJobId, String reportSha256,
+                                       UUID prHeadRevisionId);
     boolean insert(ReportSubmissionView value, String key, UUID scanJobId,
                    String scannerVersion, String schemaVersion, UUID actorId);
     boolean complete(UUID projectId, UUID repositoryId, UUID id, UUID gateId, Instant at);

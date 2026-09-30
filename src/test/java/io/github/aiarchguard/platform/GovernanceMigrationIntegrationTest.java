@@ -126,11 +126,17 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
     }
 
     private void migrateAgentSchema(String url) {
-        Flyway agent = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
+        Flyway v9 = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
+            .locations("classpath:db/agent-migration").defaultSchema("public")
+            .table("flyway_agent_schema_history").baselineOnMigrate(true).baselineVersion("8")
+            .target(MigrationVersion.fromVersion("9")).load();
+        assertThat(v9.migrate().migrationsExecuted).isOne();
+        assertThat(v9.info().current().getVersion().getVersion()).isEqualTo("9");
+        Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
             .locations("classpath:db/agent-migration").defaultSchema("public")
             .table("flyway_agent_schema_history").baselineOnMigrate(true).baselineVersion("8").load();
-        assertThat(agent.migrate().migrationsExecuted).isOne();
-        assertThat(agent.info().current().getVersion().getVersion()).isEqualTo("9");
-        assertThat(agent.migrate().migrationsExecuted).isZero();
+        assertThat(latest.migrate().migrationsExecuted).isOne();
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("10");
+        assertThat(latest.migrate().migrationsExecuted).isZero();
     }
 }

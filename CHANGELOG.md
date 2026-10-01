@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — 4H local synthetic acceptance
+
+- Add a network-free deterministic adapter guarded by two local profiles and an explicit synthetic flag; default and real-egress behavior remain disabled.
+- Add profile/flag, fixed-output and unknown-scenario tests without changing contracts, dependencies or migrations.
+
 所有重要变更记录在此文件。版本遵循语义化版本；项目开发期从 `0.x.y` 开始。
 
 ## [Unreleased]

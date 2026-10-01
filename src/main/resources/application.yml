@@ -65,6 +65,8 @@ archguard:
   agent:
     enabled: ${ARCHGUARD_AGENT_ENABLED:false}
     provider-timeout: ${ARCHGUARD_AGENT_PROVIDER_TIMEOUT:30s}
+    synthetic-enabled: ${ARCHGUARD_AGENT_SYNTHETIC_ENABLED:false}
+    synthetic-scenario: ${ARCHGUARD_AGENT_SYNTHETIC_SCENARIO:SUPPORTED}
   github:
     webhook-secret: ${ARCHGUARD_GITHUB_WEBHOOK_SECRET:}
   repositories:

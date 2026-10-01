@@ -37,6 +37,8 @@ Platform `v0.4.0` 在 `v0.3.0` MVP 控制面之上交付持续治理闭环。当
 
 Web 4F 的[只读契约补充](docs/technical-design/v0.5-agent-4f-read-contracts.md)公开已验证的当前 PR 修订 ID，以及按不可变版本 ID 读取获授权文档的入口。先发布 Platform，再同步 Web 固定快照；缺少可信历史或 Project 授权时明确不可用，不改变门禁。
 
+4G 的[合成安全与恢复加固](docs/technical-design/v0.5-agent-4g-hardening.md)增加有界遗留请求恢复（不重试模型、不释放未知费用）、不可信用量/追溯字段校验，以及并发额度、授权撤销、审计与门禁隔离测试。真实模型仍关闭，公共契约和已发布迁移不变。
+
 前置要求：JDK 21 和已运行的 Docker。Maven 由 Wrapper 固定为 3.9.16，首次运行会下载 Maven 和项目依赖；集成测试通过 Testcontainers 启动 PostgreSQL 17.11。
 
 Windows：

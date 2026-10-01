@@ -111,6 +111,22 @@ public class JdbcAgentStore implements AgentStore {
             .param("project", projectId).query(Boolean.class).single();
     }
 
+    @Override public List<AgentSnapshot> expired(Instant cutoff, int limit) {
+        return jdbc.sql("""
+            SELECT * FROM agent.requests WHERE (state='QUEUED' AND created_at<:cutoff)
+                OR (state='RUNNING' AND updated_at<:cutoff)
+            ORDER BY updated_at, id LIMIT :limit
+            """).param("cutoff", Timestamp.from(cutoff)).param("limit", limit).query(this::map).list();
+    }
+
+    @Override public boolean expire(UUID id, Instant cutoff, AgentRequestView.AgentFailure failure, Instant at) {
+        return jdbc.sql("""
+            UPDATE agent.requests SET state='FAILED', failure=CAST(:failure AS jsonb), updated_at=:at
+            WHERE id=:id AND ((state='QUEUED' AND created_at<:cutoff) OR (state='RUNNING' AND updated_at<:cutoff))
+            """).param("id", id).param("cutoff", Timestamp.from(cutoff))
+            .param("failure", json(failure)).param("at", Timestamp.from(at)).update() == 1;
+    }
+
     private AgentSnapshot map(ResultSet rs, int row) throws SQLException {
         AgentRequestView view = new AgentRequestView(rs.getObject("id", UUID.class),
             rs.getObject("project_id", UUID.class), rs.getObject("requester_id", UUID.class),

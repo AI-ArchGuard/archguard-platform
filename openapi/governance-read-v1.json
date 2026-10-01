@@ -74,7 +74,8 @@
         "newCount": {"type": "integer"}, "existingCount": {"type": "integer"}, "resolvedCount": {"type": "integer"}
       }},
       "PullRequest": {"type": "object", "required": ["projectId", "repositoryId", "externalId", "headSha", "baseSha", "targetBranch", "eventAt"], "properties": {
-        "projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "externalId": {"type": "string"}, "headSha": {"type": "string"}, "baseSha": {"type": "string"}, "targetBranch": {"type": "string"}, "eventAt": {"type": "string", "format": "date-time"}, "currentGateEvaluationId": {"type": ["string", "null"], "format": "uuid"}
+        "projectId": {"type": "string", "format": "uuid"}, "repositoryId": {"type": "string", "format": "uuid"}, "externalId": {"type": "string"}, "headSha": {"type": "string"}, "baseSha": {"type": "string"}, "targetBranch": {"type": "string"}, "eventAt": {"type": "string", "format": "date-time"}, "currentGateEvaluationId": {"type": ["string", "null"], "format": "uuid"},
+        "currentHeadRevisionId": {"type": ["string", "null"], "format": "uuid", "description": "Exact applied, signature-verified revision for this current head. Null/absent if trusted history is missing; never infer from arbitrary delivery IDs."}
       }}
     }
   }

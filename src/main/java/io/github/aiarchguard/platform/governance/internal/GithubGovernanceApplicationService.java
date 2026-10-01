@@ -169,7 +169,7 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
         try { eventAt = Instant.parse(pr.path("updated_at").asText("")); }
         catch (RuntimeException exception) { throw new InvalidGovernanceInputException("Pull request event time is invalid"); }
         return new GithubPullRequestView(link.projectId(), link.repositoryId(), number,
-            head, base, branch, eventAt, null);
+            head, base, branch, eventAt, null, null);
     }
     private GithubWebhookResult replay(UUID id, String digest, GithubWebhookStore.Delivery previous) {
         if (!previous.payloadSha256().equals(digest)) {

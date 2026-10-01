@@ -82,17 +82,27 @@ public class JdbcGithubWebhookStore implements GithubWebhookStore {
     }
     @Override public Optional<GithubPullRequestView> pullRequest(UUID projectId, UUID repositoryId, String externalId) {
         return jdbc.sql("""
-            SELECT * FROM governance.github_pull_request_heads
-            WHERE project_id=:project AND repository_id=:repository AND external_id=:pr
+            SELECT h.*,r.delivery_id AS current_head_revision_id
+            FROM governance.github_pull_request_heads h
+            LEFT JOIN governance.github_pr_head_revisions r ON r.delivery_id=h.last_delivery_id
+              AND r.project_id=h.project_id AND r.repository_id=h.repository_id
+              AND r.external_id=h.external_id AND r.head_sha=h.head_sha
+              AND r.target_branch=h.target_branch AND r.event_at=h.event_at
+            WHERE h.project_id=:project AND h.repository_id=:repository AND h.external_id=:pr
             """).param("project", projectId).param("repository", repositoryId).param("pr", externalId)
             .query(JdbcGithubWebhookStore::map).optional();
     }
     @Override public List<GithubPullRequestView> listPullRequests(UUID projectId, UUID repositoryId,
             long offset, int limit) {
         return jdbc.sql("""
-            SELECT * FROM governance.github_pull_request_heads
-            WHERE project_id=:project AND repository_id=:repository
-            ORDER BY updated_at DESC,external_id DESC LIMIT :limit OFFSET :offset
+            SELECT h.*,r.delivery_id AS current_head_revision_id
+            FROM governance.github_pull_request_heads h
+            LEFT JOIN governance.github_pr_head_revisions r ON r.delivery_id=h.last_delivery_id
+              AND r.project_id=h.project_id AND r.repository_id=h.repository_id
+              AND r.external_id=h.external_id AND r.head_sha=h.head_sha
+              AND r.target_branch=h.target_branch AND r.event_at=h.event_at
+            WHERE h.project_id=:project AND h.repository_id=:repository
+            ORDER BY h.updated_at DESC,h.external_id DESC LIMIT :limit OFFSET :offset
             """).param("project", projectId).param("repository", repositoryId)
             .param("limit", limit).param("offset", offset)
             .query(JdbcGithubWebhookStore::map).list();
@@ -112,6 +122,7 @@ public class JdbcGithubWebhookStore implements GithubWebhookStore {
         return new GithubPullRequestView(r.getObject("project_id", UUID.class),
             r.getObject("repository_id", UUID.class), r.getString("external_id"),
             r.getString("head_sha"), r.getString("base_sha"), r.getString("target_branch"),
-            r.getTimestamp("event_at").toInstant(), r.getObject("current_gate_id", UUID.class));
+            r.getTimestamp("event_at").toInstant(), r.getObject("current_gate_id", UUID.class),
+            r.getObject("current_head_revision_id", UUID.class));
     }
 }

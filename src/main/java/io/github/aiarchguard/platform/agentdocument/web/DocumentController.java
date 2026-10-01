@@ -71,6 +71,11 @@ final class DocumentController {
         return documents.getVersion(projectId, documentId, versionId);
     }
 
+    @GetMapping("/versions/{versionId}")
+    DocumentVersionView getById(@PathVariable UUID projectId, @PathVariable UUID versionId) {
+        return documents.getVersionById(projectId, versionId);
+    }
+
     @PostMapping(value = "/search", consumes = MediaType.APPLICATION_JSON_VALUE)
     SearchResponse search(@PathVariable UUID projectId, @RequestBody String json) {
         SearchRequest request;

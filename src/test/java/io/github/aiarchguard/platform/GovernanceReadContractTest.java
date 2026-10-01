@@ -16,6 +16,8 @@ class GovernanceReadContractTest {
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
         assertThat(root.path("x-archguard-lifecycle").asText()).isEqualTo("runtime-3h");
         assertThat(root.path("paths").size()).isEqualTo(4);
+        assertThat(root.at("/components/schemas/PullRequest/properties/currentHeadRevisionId/format").asText())
+            .isEqualTo("uuid");
         List<String> refs = new ArrayList<>();
         collect(root, refs);
         for (String ref : refs) {

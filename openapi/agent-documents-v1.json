@@ -50,6 +50,15 @@
           "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
       }
     },
+    "/api/v1/projects/{projectId}/documents/versions/{versionId}": {
+      "get": {
+        "operationId": "getProjectDocumentVersionById",
+        "description": "Resolve an exact immutable citation version without enumerating documents. Rechecks current Project Viewer access; cross-Project or missing versions return 404.",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/VersionId"}],
+        "responses": {"200": {"description": "Authorized exact immutable version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DocumentVersion"}}}},
+          "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/api/v1/projects/{projectId}/documents/search": {
       "post": {
         "operationId": "searchProjectDocumentVersions",

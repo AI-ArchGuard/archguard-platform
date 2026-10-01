@@ -15,7 +15,9 @@ class AgentDocumentContractTest {
         JsonNode root = new ObjectMapper().readTree(Path.of("openapi", "agent-documents-v1.json").toFile());
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
         assertThat(root.path("info").path("version").asText()).isEqualTo("0.1.0");
-        assertThat(root.path("paths").size()).isEqualTo(4);
+        assertThat(root.path("paths").size()).isEqualTo(5);
+        assertThat(root.at("/paths/~1api~1v1~1projects~1{projectId}~1documents~1versions~1{versionId}/get/operationId").asText())
+            .isEqualTo("getProjectDocumentVersionById");
         assertThat(root.path("paths").toString()).doesNotContain("agent/requests", "gate-evaluations", "baselines");
         assertThat(root.at("/components/schemas/SearchRequest/properties/versionIds/maxItems").asInt()).isEqualTo(10);
         assertThat(root.at("/components/schemas/SearchResponse/properties/items/maxItems").asInt()).isEqualTo(4);

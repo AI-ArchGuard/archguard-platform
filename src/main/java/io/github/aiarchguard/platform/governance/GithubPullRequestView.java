@@ -5,4 +5,5 @@ import java.util.UUID;
 
 public record GithubPullRequestView(UUID projectId, UUID repositoryId, String externalId,
                                     String headSha, String baseSha, String targetBranch,
-                                    Instant eventAt, UUID currentGateEvaluationId) { }
+                                    Instant eventAt, UUID currentGateEvaluationId,
+                                    UUID currentHeadRevisionId) { }

@@ -88,16 +88,19 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .with(user(ACTOR))).andExpect(status().isOk())
             .andExpect(jsonPath("$.findings[0].classification").value("NEW"));
         mvc.perform(get(base + "/github/pull-requests").with(user(ACTOR)))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].externalId").value("7"));
+            .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].externalId").value("7"))
+            .andExpect(jsonPath("$.items[0].currentHeadRevisionId").value(firstDelivery.toString()));
         mvc.perform(get(base + "/github/pull-requests/7").with(user(ACTOR)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.headSha").value("b".repeat(40)))
+            .andExpect(jsonPath("$.currentHeadRevisionId").value(firstDelivery.toString()))
             .andExpect(jsonPath("$.currentGateEvaluationId").value(failed.path("gateEvaluationId").asText()));
         submit(fixture, "pr-violation", "b".repeat(40), "7", violation)
             .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(failedId));
 
         Instant secondAt = Instant.now().minusSeconds(1);
         byte[] secondPayload = webhook("c".repeat(40), secondAt);
-        webhook(UUID.randomUUID(), secondPayload, signature(secondPayload)).andExpect(status().isOk())
+        UUID secondDelivery = UUID.randomUUID();
+        webhook(secondDelivery, secondPayload, signature(secondPayload)).andExpect(status().isOk())
             .andExpect(jsonPath("$.disposition").value("APPLIED"));
         mvc.perform(get(base + "/github/pull-requests/7/revision-delta")
             .with(user(ACTOR)).param("ruleSetVersionId", fixture.rules().toString()))
@@ -108,6 +111,8 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
         byte[] latePayload = webhook("b".repeat(40), firstAt);
         webhook(UUID.randomUUID(), latePayload, signature(latePayload)).andExpect(status().isOk())
             .andExpect(jsonPath("$.disposition").value("STALE"));
+        mvc.perform(get(base + "/github/pull-requests/7").with(user(ACTOR)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.currentHeadRevisionId").value(secondDelivery.toString()));
         JsonNode repaired = response(submit(fixture, "pr-repair", "c".repeat(40), "7", clean)
             .andExpect(status().isAccepted()));
         mvc.perform(get(base + "/report-submissions/" + repaired.path("id").asText() + "/gate-evaluation")
@@ -172,6 +177,8 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isNotFound());
         mvc.perform(get(path(other) + "/github/pull-requests").with(user(ACTOR)))
             .andExpect(status().isNotFound());
+        mvc.perform(get(path(other) + "/github/pull-requests/7").with(user(ACTOR)))
+            .andExpect(status().isNotFound());
         mvc.perform(get(path(other) + "/github/pull-requests/7/revision-delta").with(user(ACTOR))
             .param("ruleSetVersionId", other.rules().toString())).andExpect(status().isNotFound());
         mvc.perform(get(path(other) + "/comparisons/" + UUID.randomUUID()).with(user(ACTOR)))
@@ -199,6 +206,24 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             SELECT count(*) FROM audit.audit_records
             WHERE action='governance.write.reject' AND metadata::text LIKE '%test-webhook-secret%'
             """).query(Long.class).single()).isZero();
+    }
+
+    @Test void doesNotInferRevisionFromDeliveryWithoutMatchingAppliedHistory() throws Exception {
+        Fixture fixture = fixture(true);
+        mvc.perform(put(path(fixture) + "/github/link").with(user(ACTOR)).with(csrf())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"providerRepositoryId\":\"321987\",\"ownerName\":\"AI-ArchGuard\",\"repositoryName\":\"demo\"}"))
+            .andExpect(status().isOk());
+        byte[] payload = webhook("b".repeat(40), Instant.now(), 321987);
+        webhook(UUID.randomUUID(), payload, signature(payload)).andExpect(status().isOk());
+        jdbc.sql("""
+            INSERT INTO governance.github_pull_request_heads(project_id,repository_id,external_id,head_sha,
+              base_sha,target_branch,event_at,last_delivery_id,updated_at)
+            SELECT project_id,repository_id,'8',head_sha,base_sha,target_branch,event_at,last_delivery_id,updated_at
+            FROM governance.github_pull_request_heads WHERE project_id=:project AND external_id='7'
+            """).param("project", fixture.project()).update();
+        mvc.perform(get(path(fixture) + "/github/pull-requests/8").with(user(ACTOR)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.currentHeadRevisionId").doesNotExist());
     }
 
     @Test void persistedReceivedSubmissionResumesAfterInterruptedEvaluationWithoutNewFacts() throws Exception {

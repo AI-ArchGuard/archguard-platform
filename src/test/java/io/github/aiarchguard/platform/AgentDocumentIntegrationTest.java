@@ -76,6 +76,29 @@ class AgentDocumentIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    void resolvesExactVersionByIdAndRechecksProjectAccess() throws Exception {
+        UUID project = createProject(), other = createProject();
+        JsonNode version = upload(project, OWNER, "cited-adr", "original", "Original architecture.")
+            .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString().transform(this::parse);
+        upload(project, OWNER, "cited-adr", "updated", "Updated architecture.").andExpect(status().isCreated());
+        addViewer(project);
+        String route = "/api/v1/projects/{project}/documents/versions/{version}";
+        mvc.perform(get(route, project, version.get("id").asText()).with(user(VIEWER)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.content").value("Original architecture."))
+            .andExpect(jsonPath("$.contentSha256").value(version.get("contentSha256").asText()));
+        mvc.perform(get(route, other, version.get("id").asText()).with(user(OWNER)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(route, project, version.get("id").asText()).with(user(OUTSIDER)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(route, project, UUID.randomUUID()).with(user(VIEWER)))
+            .andExpect(status().isNotFound());
+        jdbc.sql("DELETE FROM project.project_members WHERE project_id=:project AND actor_id=:actor")
+            .param("project", project).param("actor", UUID.fromString(VIEWER)).update();
+        mvc.perform(get(route, project, version.get("id").asText()).with(user(VIEWER)))
+            .andExpect(status().isNotFound());
+    }
+
+    @Test
     void concurrentReplayReturnsOneVersionAndDifferentKeysSerializeVersionNumbers() throws Exception {
         UUID project = createProject();
         CyclicBarrier barrier = new CyclicBarrier(2);

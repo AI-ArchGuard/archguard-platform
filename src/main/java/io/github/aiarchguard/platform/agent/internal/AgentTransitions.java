@@ -86,6 +86,18 @@ public class AgentTransitions {
             Map.of("costUnknown", true));
     }
 
+    @Transactional
+    public void recoverExpired(AgentSnapshot snapshot, Instant cutoff) {
+        var view = snapshot.view();
+        boolean unknownCost = "RUNNING".equals(view.state());
+        String code = unknownCost ? "INTERNAL_ERROR" : "MODEL_TIMEOUT";
+        if (store.expire(view.id(), cutoff, new AgentRequestView.AgentFailure(code,
+                AgentApplicationService.message(code)), Instant.now(clock))) {
+            record(view, "agent.request.failed", code, AuditResult.FAILURE,
+                Map.of("costUnknown", unknownCost, "recovery", true));
+        }
+    }
+
     private void record(AgentRequestView view, String action, String code, AuditResult result,
             Map<String, Object> extra) {
         java.util.HashMap<String, Object> metadata = new java.util.HashMap<>(extra);

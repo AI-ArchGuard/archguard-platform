@@ -24,6 +24,8 @@ import org.slf4j.LoggerFactory;
 @Component
 public class AgentWorker {
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentWorker.class);
+    private static final java.util.regex.Pattern PROVIDER_IDENTIFIER =
+        java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}");
     private final AgentStore store;
     private final AgentTransitions transitions;
     private final AgentModelPort model;
@@ -112,8 +114,11 @@ public class AgentWorker {
         }
         if (response == null || response.inputTokens() < 0 || response.inputTokens() > 8000
                 || response.outputTokens() < 0 || response.outputTokens() > 1500
-                || response.rawJson() == null) {
-            fail(snapshot, start, "OUTPUT_INVALID", started, inputTokens, response, false);
+                || response.latencyMs() < 0 || !safeIdentifier(response.providerResponseId())
+                || !safeIdentifier(response.actualModelId()) || response.rawJson() == null
+                || response.inputTokens() + response.outputTokens() * 2L > start.estimate()) {
+            // Invalid accounting cannot prove the charge; do not persist untrusted metadata or release its reservation.
+            fail(snapshot, start, "OUTPUT_INVALID", started, inputTokens, null, true);
             return;
         }
         try {
@@ -157,12 +162,14 @@ public class AgentWorker {
     }
 
     private AgentRequestView.AgentUsage usage(Instant started, long estimate, AgentModelPort.ModelResponse response) {
-        long actual = Math.max(0, response.inputTokens()) + Math.max(0, response.outputTokens()) * 2L;
-        if (actual > estimate) actual = estimate;
-        return new AgentRequestView.AgentUsage(Math.max(0, response.inputTokens()),
-            Math.max(0, response.outputTokens()),
+        long actual = response.inputTokens() + response.outputTokens() * 2L;
+        return new AgentRequestView.AgentUsage(response.inputTokens(), response.outputTokens(),
             Duration.between(started, Instant.now(clock)).toMillis(), response.latencyMs(), estimate, actual,
             response.providerResponseId(), response.actualModelId());
+    }
+
+    private static boolean safeIdentifier(String value) {
+        return value != null && PROVIDER_IDENTIFIER.matcher(value).matches();
     }
 
     private int inputLength(AgentModelPort.ModelInput input) {

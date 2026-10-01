@@ -9,6 +9,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 
 /** Agent schema failure must not prevent deterministic Platform routes from starting. */
 @Component
@@ -31,6 +33,7 @@ public class AgentSchemaAvailability {
     AgentSchemaAvailability(Runnable migrate) { this.migrate = migrate; }
 
     @EventListener(ApplicationReadyEvent.class)
+    @Order(Ordered.HIGHEST_PRECEDENCE)
     public void migrateOnReady() {
         try {
             migrate.run();

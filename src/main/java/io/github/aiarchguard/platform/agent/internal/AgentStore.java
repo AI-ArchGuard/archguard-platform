@@ -3,6 +3,7 @@ package io.github.aiarchguard.platform.agent.internal;
 import io.github.aiarchguard.platform.agent.AgentRequestView;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 public interface AgentStore {
@@ -16,4 +17,6 @@ public interface AgentStore {
     boolean finish(UUID requestId, AgentRequestView.AgentResult result, AgentRequestView.AgentFailure failure,
             AgentRequestView.AgentUsage usage, Instant at);
     boolean hasRequests(UUID projectId);
+    List<AgentSnapshot> expired(Instant cutoff, int limit);
+    boolean expire(UUID requestId, Instant cutoff, AgentRequestView.AgentFailure failure, Instant at);
 }

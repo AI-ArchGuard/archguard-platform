@@ -77,6 +77,8 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 ## 配置
 
+个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)与[启用记录提案 Schema](contracts/agent-personal-enablement-0.1.0.schema.json)提供 ADR-0012 的后端实现边界。当前仅增加无网络的 Responses 编解码及离线测试；没有真实出口 Bean、Project 设置运行时或 Key 配置。该设计仍待评审，真实调用继续关闭，不能据此关闭 #43 或阶段 4。
+
 4H 提供[本地合成验收适配器](docs/technical-design/v0.5-agent-4h-local-synthetic.md)：必须同时启用 `local-compose,agent-synthetic` profile、`ARCHGUARD_AGENT_SYNTHETIC_ENABLED=true` 和 Agent 开关。它没有网络调用，只返回标明合成用途的固定文本；用量与费用是测试值，不代表真实模型质量或账单。默认部署仍禁用，DeepSeek #43 关卡不变。
 
 Stage 4D/4E 的单个 Finding 解释与已选 Finding 的 PR 摘要共用异步 Agent API；4E 要求已应用的 PR head 修订和与该修订匹配的已完成报告。Docs [ADR-0011](https://github.com/AI-ArchGuard/archguard-docs/blob/main/adr/0011-deepseek-official-api-egress.md)已选择 DeepSeek 官方 API，未批准真实外发；当前只验收默认关闭的合成路径。`ARCHGUARD_AGENT_ENABLED` 默认 `false`；即使显式设为 `true`，没有获批适配器仍返回 `MODEL_UNAVAILABLE`，不会外发数据。Agent 迁移独立于主 Flyway 链，迁移失败时 Agent 路由返回 503，主 Project/Scanner/门禁仍可启动。CI 只注入确定性假模型。请求须显式调用 `POST /api/v1/projects/{projectId}/agent/requests`，之后用 GET 查询；结果不参与 Finding、基线、门禁或 CI 判断。详情见 [4D 解释设计](docs/technical-design/v0.5-agent-4d-finding-explanation.md)和 [4E 摘要设计](docs/technical-design/v0.5-agent-4e-pr-summary.md)。

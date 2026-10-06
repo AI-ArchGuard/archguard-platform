@@ -11,6 +11,8 @@
 
 ### Added
 
+- 个人 Project Agent 设置和不可变风险确认 API（0.1.0 / 输入 0.2.0）：owner + Project Maintainer、If-Match 行锁、凭据版本/短有效期、幂等撤销、失败审计及独立 V11。没有批次/费用授权或真实模型出口，扫描/门禁与旧迁移不变。
+
 - ADR-0013 个人只写 DeepSeek 凭据 API 与 AES-256-GCM 持久化；默认关闭、owner/Origin 防护，无真实模型调用或自动启用。
 
 - DeepSeek 未装配传输基础：固定 HTTPS、禁止代理/重定向、响应上限、取消与无重试的假 HTTP 回归；有界 Secret 文件读取和价格快照计算。无真实调用、模型 Bean、依赖或迁移；运行授权与持久化账本尚未接入。

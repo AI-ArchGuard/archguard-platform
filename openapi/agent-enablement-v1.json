@@ -1,0 +1,54 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "ArchGuard personal Agent settings and acknowledgements", "version": "0.1.0", "description": "Local personal management only. All responses are no-store. Writes require deployment owner AND Project Maintainer, configured Origin and local credential-management guards. Acknowledgement is not batch/fee authorization. No live adapter or network admission in this slice."},
+  "security": [{"platformIdentity": []}],
+  "x-archguard-request-body-max-bytes": 8192,
+  "paths": {
+    "/api/v1/projects/{projectId}/agent/settings": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+      "get": {"operationId": "getPersonalAgentSettings", "description": "Project Viewer; default enabled=false, revision=0. Desired switch does not enable live calls.", "responses": {"200": {"$ref": "#/components/responses/Settings"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}},
+      "put": {
+        "operationId": "updatePersonalAgentSettings",
+        "parameters": [{"$ref": "#/components/parameters/IfMatch"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SettingsUpdate"}}}},
+        "responses": {"200": {"$ref": "#/components/responses/Settings"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "412": {"$ref": "#/components/responses/Error"}, "428": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/enablements": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+      "post": {
+        "operationId": "acknowledgePersonalAgentRisk",
+        "description": "Server generates immutable ID, Project/deployment and actor/time. No automatic Project enable, Key validation request, live model call or fee authorization. References are owner assertions, not independently verified evidence.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "../contracts/agent-personal-enablement-0.2.0.schema.json"}}}},
+        "responses": {"201": {"description": "Immutable acknowledgement metadata", "headers": {"Location": {"schema": {"type": "string"}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Enablement"}}}}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/enablements/{enablementId}": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/EnablementId"}],
+      "get": {"operationId": "getPersonalAgentAcknowledgement", "description": "Project Viewer; metadata only, no account/source/check references or Key.", "responses": {"200": {"$ref": "#/components/responses/Enablement"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/projects/{projectId}/agent/enablements/{enablementId}/revoke": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/EnablementId"}],
+      "post": {"operationId": "revokePersonalAgentAcknowledgement", "description": "Empty body only. Idempotent append-only revocation; disables selected settings and advances revision once. Never deletes history.", "responses": {"200": {"$ref": "#/components/responses/Enablement"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer"}},
+    "parameters": {
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "EnablementId": {"name": "enablementId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "IfMatch": {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string", "pattern": "^\"(0|[1-9][0-9]{0,18})\"$"}, "description": "Strong single revision ETag. Missing=428, stale=412, malformed=400. Server rejects values above signed int64."}
+    },
+    "responses": {
+      "Settings": {"description": "Project settings, no-store", "headers": {"ETag": {"schema": {"type": "string"}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Settings"}}}},
+      "Enablement": {"description": "Immutable acknowledgement metadata, no-store", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Enablement"}}}},
+      "Error": {"description": "Stable sanitized error, no-store; contains no submitted input or internal exception", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}}
+    },
+    "schemas": {
+      "SettingsUpdate": {"type": "object", "additionalProperties": false, "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}, "enablementId": {"type": ["string", "null"], "format": "uuid"}}, "description": "enablementId required and valid when enabled=true; null or omitted when false. Unknown/duplicate fields, trailing JSON and scalar coercion rejected."},
+      "Settings": {"type": "object", "additionalProperties": false, "required": ["enabled", "revision", "enablementId", "modelCallsAvailable", "unavailableReason"], "properties": {"enabled": {"type": "boolean", "default": false}, "revision": {"type": "integer", "minimum": 0}, "enablementId": {"type": ["string", "null"], "format": "uuid"}, "modelCallsAvailable": {"const": false}, "unavailableReason": {"enum": ["PROJECT_DISABLED", "DEPLOYMENT_DISABLED", "LIVE_ADAPTER_NOT_READY", "DEPLOYMENT_CHANGED", "ENABLEMENT_REVOKED", "ENABLEMENT_EXPIRED", "PRICE_EXPIRED", "CREDENTIAL_CHANGED", "CREDENTIAL_UNAVAILABLE"]}}},
+      "Enablement": {"type": "object", "additionalProperties": false, "required": ["id", "projectId", "approvedBy", "approvedAt", "expiresAt", "credentialVersion", "modelAlias", "priceCatalogVersion", "priceCatalogExpiresAt", "dataScope", "revoked", "revokedAt"], "properties": {"id": {"type": "string", "format": "uuid"}, "projectId": {"type": "string", "format": "uuid"}, "approvedBy": {"type": "string", "format": "uuid"}, "approvedAt": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"}, "credentialVersion": {"type": "string", "format": "uuid"}, "modelAlias": {"const": "deepseek-flash"}, "priceCatalogVersion": {"const": "deepseek-flash-peak-usd-2026-10-06"}, "priceCatalogExpiresAt": {"type": "string", "format": "date-time"}, "dataScope": {"const": "SYNTHETIC_ACCEPTANCE"}, "revoked": {"type": "boolean"}, "revokedAt": {"type": ["string", "null"], "format": "date-time"}}},
+      "ApiError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "traceId", "details"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "traceId": {"type": "string"}, "details": {"type": "object"}}}
+    }
+  }
+}

@@ -50,6 +50,8 @@ class AgentMigrationIsolationIntegrationTest extends PostgresIntegrationTestSupp
         mvc.perform(get("/api/v1/projects/{project}/agent/requests/{request}", project, UUID.randomUUID())
             .with(user(ACTOR))).andExpect(status().isServiceUnavailable())
             .andExpect(jsonPath("$.code").value("agent.unavailable"));
+        mvc.perform(get("/api/v1/projects/{project}/agent/settings", project).with(user(ACTOR)))
+            .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("agent.unavailable"));
     }
 
     @TestConfiguration

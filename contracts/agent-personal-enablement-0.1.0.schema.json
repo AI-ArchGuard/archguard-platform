@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://archguard.dev/contracts/agent/personal-enablement/0.1.0/schema.json",
+  "title": "Personal enablement proposal; not a runtime authorization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scope", "accountRef", "deploymentRef", "projectId", "expiresAt", "sources", "unknowns", "riskAccepted", "modelAlias", "mappingSnapshot", "allowedResponseModels", "priceCatalogVersion", "priceCatalogExpiresAt", "secretCheckRef", "networkCheckRef", "dataScope", "revocationConditions"],
+  "allOf": [
+    {"properties": {"sources": {"contains": {"properties": {"kind": {"const": "TERMS"}}, "required": ["kind"]}}}},
+    {"properties": {"sources": {"contains": {"properties": {"kind": {"const": "PRIVACY"}}, "required": ["kind"]}}}},
+    {"properties": {"sources": {"contains": {"properties": {"kind": {"const": "CACHE"}}, "required": ["kind"]}}}},
+    {"properties": {"sources": {"contains": {"properties": {"kind": {"const": "MODEL_PRICE"}}, "required": ["kind"]}}}}
+  ],
+  "properties": {
+    "schemaVersion": {"const": "0.1.0"},
+    "scope": {"const": "PERSONAL"},
+    "accountRef": {"$ref": "#/$defs/ref"},
+    "deploymentRef": {"$ref": "#/$defs/ref"},
+    "projectId": {"type": "string", "format": "uuid"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "sources": {"type": "array", "minItems": 4, "maxItems": 10, "items": {"type": "object", "additionalProperties": false, "required": ["kind", "url", "version", "checkedAt"], "properties": {"kind": {"enum": ["TERMS", "PRIVACY", "CACHE", "MODEL_PRICE", "PROTOCOL"]}, "url": {"type": "string", "format": "uri", "maxLength": 512, "pattern": "^https://"}, "version": {"$ref": "#/$defs/ref"}, "checkedAt": {"type": "string", "format": "date-time"}}}},
+    "unknowns": {"type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": {"enum": ["PROCESSING_REGION", "STORAGE_REGION", "TRAINING", "HUMAN_REVIEW", "LOG_RETENTION", "CACHE_ISOLATION", "CACHE_RETENTION", "SUBPROCESSORS"]}},
+    "riskAccepted": {"const": true},
+    "modelAlias": {"const": "deepseek-flash"},
+    "mappingSnapshot": {"$ref": "#/$defs/ref"},
+    "allowedResponseModels": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/ref"}},
+    "priceCatalogVersion": {"$ref": "#/$defs/ref"},
+    "priceCatalogExpiresAt": {"type": "string", "format": "date-time"},
+    "secretCheckRef": {"$ref": "#/$defs/ref"},
+    "networkCheckRef": {"$ref": "#/$defs/ref"},
+    "dataScope": {"const": "SYNTHETIC_ACCEPTANCE"},
+    "revocationConditions": {"type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": {"enum": ["OWNER_REVOKED", "SCOPE_CHANGED", "POLICY_CHANGED", "MODEL_CHANGED", "PRICE_CHANGED", "SECRET_CHECK_INVALID", "NETWORK_CHECK_INVALID"]}}
+  },
+  "$defs": {
+    "ref": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"}
+  }
+}

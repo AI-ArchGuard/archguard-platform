@@ -31,6 +31,9 @@ class DatabaseMigrationIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(tableExists("agent_document", "document_fragments")).isTrue();
         assertThat(tableExists("agent", "requests")).isTrue();
         assertThat(tableExists("agent", "budget_usage")).isTrue();
+        assertThat(tableExists("agent", "project_settings")).isTrue();
+        assertThat(tableExists("agent", "personal_enablements")).isTrue();
+        assertThat(tableExists("agent", "enablement_revocations")).isTrue();
     }
 
     @Test

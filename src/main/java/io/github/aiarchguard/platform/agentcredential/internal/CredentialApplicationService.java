@@ -65,6 +65,8 @@ final class CredentialApplicationService implements CredentialOperations {
     }
 
     @Override public CredentialStatus status() { owner(); return operation("STATUS", false, () -> storage().status()); }
+    // No actor or plaintext escapes this module boundary; callers enforce their own Project authorization.
+    CredentialStatus internalStatus() { return storage().status(); }
     @Override public void rejectInvalidWrite() { owner(); audit("WRITE", AuditResult.FAILURE, null); }
     @Override public CredentialStatus write(String apiKey) {
         owner(); return operation("WRITE", true, () -> storage().write(apiKey, Instant.now(clock)));

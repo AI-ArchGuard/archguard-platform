@@ -77,7 +77,9 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 ## 配置
 
-个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)与[启用记录提案 Schema](contracts/agent-personal-enablement-0.1.0.schema.json)提供 ADR-0012 的后端实现边界。当前仅增加无网络的 Responses 编解码及离线测试；没有真实出口 Bean、Project 设置运行时或 Key 配置。该设计仍待评审，真实调用继续关闭，不能据此关闭 #43 或阶段 4。
+个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)与[启用记录提案 Schema](contracts/agent-personal-enablement-0.1.0.schema.json)提供 ADR-0012 的后端实现边界。设计及无网络的 Responses 编解码已通过 #48 合入且 main CI 成功；启用记录仍待实现，没有真实出口 Bean、Project 设置运行时或 Key 配置。真实调用继续关闭，不能据此关闭 #43 或阶段 4。
+
+[传输基础切片](docs/technical-design/v0.5-agent-deepseek-transport.md)提供未装配的固定 HTTPS/有界响应/取消机制、运行时 Secret 文件读取与高峰价格计算，假 HTTP 仅访问测试临时环回服务器。它仍不是可用的真实 Agent；授权记录、Project 开关、批次/事务额度、Token 上界和实际出口检查未完成，不提供 Key 或网络启用配置。
 
 4H 提供[本地合成验收适配器](docs/technical-design/v0.5-agent-4h-local-synthetic.md)：必须同时启用 `local-compose,agent-synthetic` profile、`ARCHGUARD_AGENT_SYNTHETIC_ENABLED=true` 和 Agent 开关。它没有网络调用，只返回标明合成用途的固定文本；用量与费用是测试值，不代表真实模型质量或账单。默认部署仍禁用，DeepSeek #43 关卡不变。
 

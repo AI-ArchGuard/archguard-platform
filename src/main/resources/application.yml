@@ -64,6 +64,14 @@ logging:
 archguard:
   agent:
     enabled: ${ARCHGUARD_AGENT_ENABLED:false}
+    credentials:
+      enabled: ${ARCHGUARD_CREDENTIAL_MANAGEMENT_ENABLED:false}
+      owner-id: ${ARCHGUARD_CREDENTIAL_OWNER_ID:}
+      deployment-id: ${ARCHGUARD_CREDENTIAL_DEPLOYMENT_ID:}
+      origin: ${ARCHGUARD_CREDENTIAL_UI_ORIGIN:}
+      allow-loopback-http: ${ARCHGUARD_CREDENTIAL_ALLOW_LOOPBACK_HTTP:false}
+      directory: ${ARCHGUARD_CREDENTIAL_DIRECTORY:}
+      master-file: ${ARCHGUARD_CREDENTIAL_MASTER_FILE:}
     provider-timeout: ${ARCHGUARD_AGENT_PROVIDER_TIMEOUT:30s}
     synthetic-enabled: ${ARCHGUARD_AGENT_SYNTHETIC_ENABLED:false}
     synthetic-scenario: ${ARCHGUARD_AGENT_SYNTHETIC_SCENARIO:SUPPORTED}

@@ -17,7 +17,7 @@ Platform `v0.4.0` 在 `v0.3.0` MVP 控制面之上交付持续治理闭环。当
 
 - 不实现源码、字节码或依赖图分析；这属于 `archguard-scanner`。
 - 不承担 MCP 工具发现、路由或限流；这属于 `archguard-mcp-gateway`。
-- 不保存部署密钥，也不把数据库、Redis 或内部端口暴露到公网。
+- 不把凭据明文存入业务表/Git，也不把数据库、Redis 或内部端口暴露到公网；个人凭据入口仅按 ADR-0013 加密托管。
 - 初期不拆分为微服务，不为展示技术而引入 Kafka 或 Redis。
 
 ## 依赖与契约
@@ -76,6 +76,8 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 可选的 `ARCHGUARD_OIDC_JWK_SET_URI` 用于显式指定 HTTPS JWKS 地址；省略时从 issuer discovery 获取。示例地址仅说明配置格式，不是可用租户或凭据。
 
 ## 配置
+
+个人 Key 的[只写凭据设计](docs/technical-design/v0.5-personal-credential-management.md)和[API 0.1.0](openapi/agent-credentials-v1.json)提供后端添加/替换/删除与重启后加密读取。管理默认关闭，仅在 local-compose 环回个人部署中允许配置的 owner 操作；需独立主密钥与受控目录。浏览器不保存或回显 Key；操作不检查有效性、不打开 Agent 或发起模型调用。真实出口仍未装配，此入口不是 #43/阶段完成证据。
 
 个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)与[启用记录提案 Schema](contracts/agent-personal-enablement-0.1.0.schema.json)提供 ADR-0012 的后端实现边界。设计及无网络的 Responses 编解码已通过 #48 合入且 main CI 成功；启用记录仍待实现，没有真实出口 Bean、Project 设置运行时或 Key 配置。真实调用继续关闭，不能据此关闭 #43 或阶段 4。
 

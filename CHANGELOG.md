@@ -11,6 +11,8 @@
 
 ### Added
 
+- ADR-0013 个人只写 DeepSeek 凭据 API 与 AES-256-GCM 持久化；默认关闭、owner/Origin 防护，无真实模型调用或自动启用。
+
 - DeepSeek 未装配传输基础：固定 HTTPS、禁止代理/重定向、响应上限、取消与无重试的假 HTTP 回归；有界 Secret 文件读取和价格快照计算。无真实调用、模型 Bean、依赖或迁移；运行授权与持久化账本尚未接入。
 
 - 个人 DeepSeek 接入设计、启用记录提案 Schema 和无网络 Responses codec 回归；不注册真实适配器，不新增依赖/迁移，不启用外发。后续设置、Secret/HTTP、额度结算及真实验收仍未完成。

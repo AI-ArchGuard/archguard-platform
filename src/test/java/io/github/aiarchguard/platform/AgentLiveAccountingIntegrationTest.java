@@ -40,12 +40,14 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
     static final UUID DEPLOYMENT = UUID.fromString("22222222-2222-4222-8222-222222222222");
     static final AtomicInteger DAY = new AtomicInteger();
     static final java.util.Set<String> INVENTORY = ConcurrentHashMap.newKeySet();
+    static final java.util.concurrent.atomic.AtomicReference<String> INVENTORY_SHA = new java.util.concurrent.atomic.AtomicReference<>("e".repeat(64));
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
     @Autowired AgentEnablementOperations enablements;
     @Autowired AgentStore requests;
     @Autowired LiveAccountingOperations accounting;
+    @Autowired LiveAccountingStore ledger;
     UUID project, acknowledgement, template;
     Instant now;
 
@@ -55,6 +57,7 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
         now = AgentPersonalEnablementIntegrationTest.NOW.plusSeconds(DAY.incrementAndGet() * 86400L);
         AgentPersonalEnablementIntegrationTest.TIME.set(now);
         INVENTORY.clear();
+        INVENTORY_SHA.set("e".repeat(64));
         identity(OWNER);
         ObjectNode input = mapper.valueToTree(fixture.input());
         input.put("expiresAt", now.plusSeconds(86400).toString()).put("priceCatalogExpiresAt", now.plusSeconds(86400).toString());
@@ -159,6 +162,30 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
         INVENTORY.clear();
         assertThatThrownBy(() -> accounting.reserve(project, batch.id(), template, second)).isInstanceOf(AgentEnablementInvalidStateException.class);
         assertThat(amount("PROJECT", project, "reserved_microusd")).isEqualTo(4200);
+    }
+
+    @Test void changedProvenanceDeniesNewAttemptsButCannotEraseAnIncurredCharge() {
+        var batch = batch(2, 8400); UUID first = request(batch.id(), true), second = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, first);
+        INVENTORY_SHA.set("9".repeat(64));
+        assertThatThrownBy(() -> accounting.reserve(project, batch.id(), template, second)).isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThat(accounting.settle(project, first, LiveCostPolicy.VERSION, new LiveTokenUsage(1000, 100, 500, 1100, 0)).actualMicrousd()).isEqualTo(273);
+        assertThat(ledger.batch(project, batch.id()).orElseThrow().inventoryProof().fileSha256()).isEqualTo("e".repeat(64));
+        assertThatThrownBy(() -> jdbc.sql("UPDATE agent.live_batches SET inventory_proof='{}' WHERE id=:id").param("id", batch.id()).update())
+            .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p").param("p", project).query(Integer.class).single()).isOne();
+    }
+
+    @Test void legacyBatchIsReadableButCannotAdmitAndApprovalCannotOutliveInventory() {
+        var approved = batch(1, 4200); var original = ledger.batch(project, approved.id()).orElseThrow();
+        var legacy = new LiveBatchView(UUID.randomUUID(), project, acknowledgement, OWNER, now, approved.manifestSha256(), now.plusSeconds(3600), 1, 4200, false);
+        ledger.insert(new LiveAccountingStore.Batch(legacy, DEPLOYMENT, original.inventoryId(), original.manifest(), null));
+        UUID request = request(legacy.id(), true);
+        assertThat(accounting.get(project, legacy.id())).isEqualTo(legacy);
+        assertThatThrownBy(() -> accounting.reserve(project, legacy.id(), template, request)).isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThatThrownBy(() -> accounting.approve(project, "http://localhost:8083", false,
+            new LiveBatchInput(acknowledgement, original.inventoryId(), List.of(template), approved.manifestSha256(), now.plusSeconds(3601), 1, 4200, true)))
+            .isInstanceOf(AgentInvalidException.class);
     }
 
     @Test void concurrentSettlementsWriteExactlyOneOutcomeAndCharge() throws Exception {
@@ -347,6 +374,11 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
     }
 
     @TestConfiguration static class Config {
-        @Bean @Primary SyntheticBatchInventory approvedSyntheticInventory() { return (project, inventory, hash) -> INVENTORY.contains(project + ":" + hash); }
+        @Bean @Primary SyntheticBatchInventory approvedSyntheticInventory() {
+            return (project, inventory, hash) -> INVENTORY.contains(project + ":" + hash)
+                ? java.util.Optional.of(new SyntheticBatchInventory.Proof("0.1.0", INVENTORY_SHA.get(), "synthetic-v1", "f".repeat(64),
+                    "synthetic-review", AgentPersonalEnablementIntegrationTest.TIME.get(), AgentPersonalEnablementIntegrationTest.TIME.get().plusSeconds(3600)))
+                : java.util.Optional.empty();
+        }
     }
 }

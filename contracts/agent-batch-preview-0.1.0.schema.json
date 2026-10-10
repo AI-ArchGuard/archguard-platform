@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://archguard.example/contracts/agent-batch-preview-0.1.0.schema.json",
+  "title": "Personal synthetic batch manifest preview input",
+  "description": "Read-only calculation after owner, Project Maintainer and Origin authorization. No batch, request, attempt, fee reservation or model call is created. Strict JSON, duplicate keys and trailing content are rejected; the complete HTTP body is limited to 8192 bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["templateRequestIds"],
+  "properties": {
+    "templateRequestIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {"type": "string", "format": "uuid"},
+      "description": "Existing immutable Agent request templates from the authorized Project only. Server sorts IDs and calculates the manifest; neither raw input nor citation content is returned."
+    }
+  }
+}

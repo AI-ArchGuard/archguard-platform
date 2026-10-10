@@ -72,6 +72,9 @@ archguard:
       allow-loopback-http: ${ARCHGUARD_CREDENTIAL_ALLOW_LOOPBACK_HTTP:false}
       directory: ${ARCHGUARD_CREDENTIAL_DIRECTORY:}
       master-file: ${ARCHGUARD_CREDENTIAL_MASTER_FILE:}
+    synthetic-inventory:
+      enabled: ${ARCHGUARD_AGENT_SYNTHETIC_INVENTORY_ENABLED:false}
+      file: ${ARCHGUARD_AGENT_SYNTHETIC_INVENTORY_FILE:}
     provider-timeout: ${ARCHGUARD_AGENT_PROVIDER_TIMEOUT:30s}
     synthetic-enabled: ${ARCHGUARD_AGENT_SYNTHETIC_ENABLED:false}
     synthetic-scenario: ${ARCHGUARD_AGENT_SYNTHETIC_SCENARIO:SUPPORTED}

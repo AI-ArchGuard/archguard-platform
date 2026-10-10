@@ -77,12 +77,17 @@ final class LiveAccountingService implements LiveAccountingOperations {
                     || input.expiresAt().isAfter(approval.acknowledgement().priceCatalogExpiresAt())) throw new AgentInvalidException();
             var manifest = manifest(project, input.templateRequestIds()); String hash = LiveManifest.hash(mapper, manifest);
             if (!hash.equals(input.manifestSha256())) throw new AgentInvalidException();
-            if (!inventory.accepts(project, input.syntheticInventoryId(), hash)) throw new AgentUnavailableException();
+            var proof = inventory.resolve(project, input.syntheticInventoryId(), hash).orElseThrow(AgentUnavailableException::new);
+            now = Instant.now(clock);
+            if (!input.expiresAt().isAfter(now) || input.expiresAt().isAfter(proof.expiresAt())) throw new AgentInvalidException();
+            validateApproval(approval);
             var view = new LiveBatchView(UUID.randomUUID(), project, input.enablementId(), actors.currentActor().id(), now,
                 hash, input.expiresAt(), input.maxRequests(), input.maxCostMicrousd(), false);
-            store.insert(new LiveAccountingStore.Batch(view, deployment(), input.syntheticInventoryId(), manifest));
+            store.insert(new LiveAccountingStore.Batch(view, deployment(), input.syntheticInventoryId(), manifest, proof));
             record(project, actors.currentActor().id(), "agent.batch.approved", Map.of("batchId", view.id(), "manifestSha256", hash,
-                "maxRequests", view.maxRequests(), "maxCostMicrousd", view.maxCostMicrousd())); return view;
+                "maxRequests", view.maxRequests(), "maxCostMicrousd", view.maxCostMicrousd(), "inventoryId", input.syntheticInventoryId(),
+                "inventoryFileSha256", proof.fileSha256(), "fixtureSetVersion", proof.fixtureSetVersion(),
+                "fixtureArtifactSha256", proof.fixtureArtifactSha256(), "reviewRef", proof.reviewRef())); return view;
         });
     }
     @Override public LiveBatchView get(UUID project, UUID id) {
@@ -115,10 +120,7 @@ final class LiveAccountingService implements LiveAccountingOperations {
                 if (!batchId.equals(attempt.batchId()) || !templateId.equals(attempt.templateId())) throw new AgentConflictException();
                 return new Admission(attempt.attemptId(), attempt.reservation(), false);
             }
-            if (!enabled || !settings.enabled() || !batch.view().enablementId().equals(settings.enablementId())
-                    || batch.view().revoked() || !Instant.now(clock).isBefore(batch.view().expiresAt())
-                    || !deployment().equals(batch.deploymentId())
-                    || !inventory.accepts(project, batch.inventoryId(), batch.view().manifestSha256())) throw new AgentEnablementInvalidStateException();
+            validateBatch(project, settings, batch);
             var approval = approval(project, settings.enablementId()); validateApproval(approval);
             validateRequest(snapshot, batch, templateId);
             if (projectLimit < 0 || projectLimit > 5_000_000 || deploymentLimit < 0 || deploymentLimit > 20_000_000) throw new AgentUnavailableException();
@@ -126,6 +128,9 @@ final class LiveAccountingService implements LiveAccountingOperations {
             var batchUsage = store.lockBatch(batchId);
             var deploymentUsage = store.lockBudget("DEPLOYMENT", deployment(), day);
             var projectUsage = store.lockBudget("PROJECT", project, day);
+            // Budget locks may wait while external inventory, credentials or the UTC day changes.
+            projects.requireViewer(project); validateBatch(project, settings, batch); validateApproval(approval);
+            if (!day.equals(Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate())) throw new AgentEnablementInvalidStateException();
             if (batchUsage.attempts() >= batch.view().maxRequests() || !fits(batchUsage, batch.view().maxCostMicrousd())
                     || !fits(deploymentUsage, deploymentLimit) || !fits(projectUsage, projectLimit)) throw new AgentQuotaExceededException();
             store.reserveBudget("DEPLOYMENT", deployment(), day, LiveCostPolicy.RESERVATION);
@@ -189,6 +194,13 @@ final class LiveAccountingService implements LiveAccountingOperations {
     private boolean fits(LiveAccountingStore.Usage value, long limit) {
         return value.reserved() >= 0 && value.spent() >= 0 && value.reserved() <= limit && value.spent() <= limit - value.reserved()
             && LiveCostPolicy.RESERVATION <= limit - value.reserved() - value.spent();
+    }
+    private void validateBatch(UUID project, AgentEnablementStore.Settings settings, LiveAccountingStore.Batch batch) {
+        if (!enabled || !settings.enabled() || !batch.view().enablementId().equals(settings.enablementId())
+                || batch.view().revoked() || !Instant.now(clock).isBefore(batch.view().expiresAt())
+                || !deployment().equals(batch.deploymentId()) || batch.inventoryProof() == null
+                || !inventory.resolve(project, batch.inventoryId(), batch.view().manifestSha256())
+                    .filter(batch.inventoryProof()::equals).isPresent()) throw new AgentEnablementInvalidStateException();
     }
     private void validateApproval(AgentEnablementStore.Approval value) {
         var input = value.acknowledgement(); var credential = credentials.current(); Instant now = Instant.now(clock);

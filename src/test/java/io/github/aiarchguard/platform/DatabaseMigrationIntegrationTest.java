@@ -37,6 +37,8 @@ class DatabaseMigrationIntegrationTest extends PostgresIntegrationTestSupport {
         for (String table : java.util.List.of("live_batches", "live_batch_usage", "live_batch_revocations", "live_budget_usage", "live_attempts", "live_outcomes")) {
             assertThat(tableExists("agent", table)).isTrue();
         }
+        assertThat(jdbcClient.sql("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='agent' AND table_name='live_batches' AND column_name='inventory_proof')")
+            .query(Boolean.class).single()).isTrue();
     }
 
     @Test

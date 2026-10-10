@@ -1,0 +1,124 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ArchGuard personal synthetic acceptance batch management",
+    "version": "0.1.0",
+    "description": "Local personal metadata management only. Preview, approval and revocation require deployment owner AND Project Maintainer, configured Origin and local credential-management guards before reading a body. GET requires Project Viewer. All responses, including authentication errors, are no-store. This API never sends a model request, creates an Agent request or attempt, or reserves fees. Approval requires separate operator-controlled source review and caller consent; neither a Key nor a checkbox proves synthetic provenance. Token/network admission and real adapter wiring remain separate gates."
+  },
+  "security": [{"platformIdentity": []}],
+  "x-archguard-request-body-max-bytes": 8192,
+  "x-archguard-strict-json": true,
+  "x-archguard-model-calls": false,
+  "x-archguard-cache-control": "no-store",
+  "paths": {
+    "/api/v1/projects/{projectId}/agent/batches/preview": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+      "post": {
+        "operationId": "previewPersonalSyntheticBatch",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}],
+        "x-archguard-read-only": true,
+        "description": "Owner + Project Maintainer and Origin authorization before a bounded strict parse. Computes ordered immutable request-template manifest only; returns a digest and count, never raw inputs or citation content. No records or fees are created.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "../contracts/agent-batch-preview-0.1.0.schema.json"}}}},
+        "responses": {
+          "200": {"$ref": "#/components/responses/Preview"},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/batches": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+      "post": {
+        "operationId": "approvePersonalSyntheticBatch",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}],
+        "description": "Owner + Project Maintainer and Origin authorization before body parsing. Server generates immutable ID, actor and timestamp. An active enablement bound to the current credential version, exact server manifest, operator-controlled file proof and explicit callsApproved=true are all required. Future expiry is at most 24 hours and no later than enablement, price or inventory expiry. The operator proof snapshot and file digest are bound internally, never returned. Counts/costs are bounded, with maxCostMicrousd <= maxRequests*4200. Creates batch metadata only, not a request or network permission; missing/changed source proof fails closed.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "../contracts/agent-live-batch-0.1.0.schema.json"}}}},
+        "responses": {
+          "201": {
+            "description": "Immutable batch metadata; does not open a model exit",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/NoStore"}, "Location": {"schema": {"type": "string"}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Batch"}}}
+          },
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/batches/{batchId}": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/BatchId"}],
+      "get": {
+        "operationId": "getPersonalSyntheticBatch",
+        "x-archguard-read-only": true,
+        "description": "Project Viewer; metadata only. No template payload, deployment proof, credential, secret or provider response. Historical metadata remains readable if source proof later expires or changes.",
+        "responses": {
+          "200": {"$ref": "#/components/responses/Batch"},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/batches/{batchId}/revoke": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/BatchId"}],
+      "post": {
+        "operationId": "revokePersonalSyntheticBatch",
+        "parameters": [{"$ref": "#/components/parameters/Origin"}],
+        "description": "Owner + Project Maintainer and Origin authorization before body handling. Empty body only. Idempotent append-only revocation returns original batch metadata with revoked=true; never deletes batch, attempts, outcomes or historical explanations, refunds unknown costs, or retries requests. Cannot retract an already sent provider request.",
+        "x-archguard-empty-body": true,
+        "responses": {
+          "200": {"$ref": "#/components/responses/Batch"},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer"}},
+    "parameters": {
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "BatchId": {"name": "batchId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "Origin": {"name": "Origin", "in": "header", "required": true, "schema": {"type": "string"}, "description": "Must exactly match the deployment's configured local personal Origin. Missing, null or untrusted Origin is rejected before body parsing; this value never selects a network destination."}
+    },
+    "headers": {"NoStore": {"description": "Applies to successful and rejected responses, including 401", "schema": {"type": "string", "const": "no-store"}}},
+    "responses": {
+      "Preview": {"description": "Read-only digest and count", "headers": {"Cache-Control": {"$ref": "#/components/headers/NoStore"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Preview"}}}},
+      "Batch": {"description": "Immutable batch metadata", "headers": {"Cache-Control": {"$ref": "#/components/headers/NoStore"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Batch"}}}},
+      "Error": {"description": "Stable sanitized ApiError, never submitted input or internal exception. 400=invalid body/limits, 401=authentication required, 403=identity/Project/Origin denied, 404=resource unavailable, 409=state/quota conflict, 503=Agent/source/credential unavailable.", "headers": {"Cache-Control": {"$ref": "#/components/headers/NoStore"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}}
+    },
+    "schemas": {
+      "Preview": {"type": "object", "additionalProperties": false, "required": ["schemaVersion", "manifestSha256", "templateCount"], "properties": {"schemaVersion": {"const": "0.1.0"}, "manifestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "templateCount": {"type": "integer", "minimum": 1, "maximum": 20}}},
+      "Batch": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "projectId", "enablementId", "approvedBy", "approvedAt", "manifestSha256", "expiresAt", "maxRequests", "maxCostMicrousd", "revoked"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "projectId": {"type": "string", "format": "uuid"},
+          "enablementId": {"type": "string", "format": "uuid"},
+          "approvedBy": {"type": "string", "format": "uuid"},
+          "approvedAt": {"type": "string", "format": "date-time"},
+          "manifestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "maxRequests": {"type": "integer", "minimum": 1, "maximum": 20},
+          "maxCostMicrousd": {"type": "integer", "minimum": 4200, "maximum": 84000},
+          "revoked": {"type": "boolean"}
+        }
+      },
+      "ApiError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "traceId", "details"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "traceId": {"type": "string"}, "details": {"type": "object"}}}
+    }
+  }
+}

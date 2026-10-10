@@ -79,9 +79,11 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 个人 Key 的[只写凭据设计](docs/technical-design/v0.5-personal-credential-management.md)和[API 0.1.0](openapi/agent-credentials-v1.json)提供后端添加/替换/删除与重启后加密读取。管理默认关闭，仅在 local-compose 环回个人部署中允许配置的 owner 操作；需独立主密钥与受控目录。浏览器不保存或回显 Key；操作不检查有效性、不打开 Agent 或发起模型调用。真实出口仍未装配，此入口不是 #43/阶段完成证据。
 
-个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)提供 ADR-0012 的后端实现边界；无网络 Responses 编解码已通过 #48 合入且 main CI 成功。[项目设置与不可变启用确认](docs/technical-design/v0.5-agent-personal-enablement.md)、[API 0.1.0](openapi/agent-enablement-v1.json)和[确认输入 0.2.0](contracts/agent-personal-enablement-0.2.0.schema.json)追加独立 V11，仅保存默认关闭设置、owner 风险确认及撤销历史，绑定当前加密凭据版本；不提供真实模型调用。批次/费用授权、事务账本、出口装配、Web 消费和真实验收仍未完成，不能据此关闭 Issue #43 或阶段 4。
+个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)提供 ADR-0012 的后端实现边界；无网络 Responses 编解码已通过 #48 合入且 main CI 成功。[项目设置与不可变启用确认](docs/technical-design/v0.5-agent-personal-enablement.md)、[API 0.1.0](openapi/agent-enablement-v1.json)和[确认输入 0.2.0](contracts/agent-personal-enablement-0.2.0.schema.json)追加独立 V11，仅保存默认关闭设置、owner 风险确认及撤销历史，绑定当前加密凭据版本；不提供真实模型调用。批次授权入口、出口编排、Web 消费和真实验收仍未完成，不能据此关闭 Issue #43 或阶段 4。
 
-[传输基础切片](docs/technical-design/v0.5-agent-deepseek-transport.md)提供未装配的固定 HTTPS/有界响应/取消机制、运行时 Secret 文件读取与高峰价格计算，假 HTTP 仅访问测试临时环回服务器。它仍不是可用的真实 Agent；授权记录、Project 开关、批次/事务额度、Token 上界和实际出口检查未完成，不提供 Key 或网络启用配置。
+[合成批次与费用账本基础](docs/technical-design/v0.5-agent-live-accounting.md)提供内部 Batch Input 0.1.0、独立 V12、三层事务预留、唯一 attempt 与实际用量结算；未知费用不退款或重试。生产来源清单核对默认拒绝，未新增 HTTP/Web 入口或真实模型装配，原请求/worker 防护不变。来源清单部署、Token/网络准入与端到端真实验收仍是独立后续关卡；当前 8081 运行栈不因此启用。
+
+[传输基础切片](docs/technical-design/v0.5-agent-deepseek-transport.md)提供未装配的固定 HTTPS/有界响应/取消机制、运行时 Secret 文件读取与高峰价格计算，假 HTTP 仅访问测试临时环回服务器。它仍不是可用的真实 Agent；批次来源清单、事务记账与 worker 接线、Token 上界和实际出口检查未完成，不提供 Key 或网络启用配置。
 
 4H 提供[本地合成验收适配器](docs/technical-design/v0.5-agent-4h-local-synthetic.md)：必须同时启用 `local-compose,agent-synthetic` profile、`ARCHGUARD_AGENT_SYNTHETIC_ENABLED=true` 和 Agent 开关。它没有网络调用，只返回标明合成用途的固定文本；用量与费用是测试值，不代表真实模型质量或账单。默认部署仍禁用，DeepSeek #43 关卡不变。
 

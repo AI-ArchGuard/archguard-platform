@@ -90,6 +90,9 @@ class AgentPrSummaryIntegrationTest extends PostgresIntegrationTestSupport {
         JsonNode first = create(fixture, "same-set", fixture.selected(), fixture.revision());
         JsonNode reversed = create(fixture, "same-set", fixture.selected().reversed(), fixture.revision());
         assertThat(reversed.path("id").asText()).isEqualTo(first.path("id").asText());
+        // Do not leave an asynchronous call running when the next test resets the shared fake counter.
+        assertThat(awaitTerminal(fixture.project(), first.path("id").asText()).path("state").asText()).isEqualTo("SUCCEEDED");
+        assertThat(model.calls.get()).isOne();
     }
 
     private JsonNode create(Fixture fixture, String key, List<UUID> selected, UUID revision) throws Exception {

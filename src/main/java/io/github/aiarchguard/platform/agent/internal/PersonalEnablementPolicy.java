@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 
 final class PersonalEnablementPolicy {
-    static final String PRICE_VERSION = "deepseek-flash-peak-usd-2026-10-06";
+    static final String PRICE_VERSION = io.github.aiarchguard.platform.agent.LiveCostPolicy.VERSION;
     private static final Set<String> UNKNOWNS = Set.of("PROCESSING_REGION", "STORAGE_REGION", "TRAINING", "HUMAN_REVIEW",
         "LOG_RETENTION", "CACHE_ISOLATION", "CACHE_RETENTION", "SUBPROCESSORS");
     private static final Set<String> REVOCATIONS = Set.of("OWNER_REVOKED", "SCOPE_CHANGED", "POLICY_CHANGED", "MODEL_CHANGED",

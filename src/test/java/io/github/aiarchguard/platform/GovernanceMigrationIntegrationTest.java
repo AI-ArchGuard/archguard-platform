@@ -135,8 +135,8 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
             .locations("classpath:db/agent-migration").defaultSchema("public")
             .table("flyway_agent_schema_history").baselineOnMigrate(true).baselineVersion("8").load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(2);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("11");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(3);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("12");
         assertThat(latest.migrate().migrationsExecuted).isZero();
     }
 
@@ -165,13 +165,46 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             var latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
                 .locations("classpath:db/agent-migration").defaultSchema("public").table("flyway_agent_schema_history")
                 .baselineOnMigrate(true).baselineVersion("8").load();
-            assertThat(latest.migrate().migrationsExecuted).isOne();
-            assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("11");
+            assertThat(latest.migrate().migrationsExecuted).isEqualTo(2);
+            assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("12");
             assertThat(latest.migrate().migrationsExecuted).isZero();
             try (var rows = statement.executeQuery("SELECT row_to_json(r)::text FROM agent.requests r")) { rows.next(); assertThat(rows.getString(1)).isEqualTo(before); }
             assertThatThrownBy(() -> statement.execute("UPDATE agent.requests SET trace_id='" + "c".repeat(32) + "'"))
                 .isInstanceOf(java.sql.SQLException.class);
             assertThatThrownBy(() -> statement.execute("DELETE FROM agent.requests")).isInstanceOf(java.sql.SQLException.class);
+        }
+    }
+
+    @Test void upgradesV11WithoutChangingAcknowledgementsOrSettings() throws Exception {
+        String database = "archguard_live_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try (var connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+                var statement = connection.createStatement()) { statement.execute("CREATE DATABASE " + database); }
+        String url = "jdbc:postgresql://" + POSTGRES.getHost() + ":" + POSTGRES.getMappedPort(5432) + "/" + database;
+        Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load().migrate();
+        var previous = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
+            .locations("classpath:db/agent-migration").defaultSchema("public").table("flyway_agent_schema_history")
+            .baselineOnMigrate(true).baselineVersion("8").target(MigrationVersion.fromVersion("11")).load();
+        assertThat(previous.migrate().migrationsExecuted).isEqualTo(3);
+        try (var connection = DriverManager.getConnection(url, POSTGRES.getUsername(), POSTGRES.getPassword());
+                var statement = connection.createStatement()) {
+            UUID project = UUID.randomUUID(), acknowledgement = UUID.randomUUID();
+            statement.execute("INSERT INTO project.projects(id,project_key,name,created_at,created_by) VALUES ('" + project
+                + "','synthetic-live-upgrade','Synthetic upgrade',NOW(),'" + project + "')");
+            statement.execute("INSERT INTO agent.personal_enablements(id,project_id,deployment_id,approved_by,approved_at,expires_at,credential_version,acknowledgement) VALUES ('"
+                + acknowledgement + "','" + project + "','" + project + "','" + project + "',NOW(),NOW()+INTERVAL '1 day','" + project + "','{}')");
+            statement.execute("INSERT INTO agent.project_settings(project_id,enabled,revision,enablement_id) VALUES ('" + project + "',true,7,'" + acknowledgement + "')");
+            String before;
+            try (var rows = statement.executeQuery("SELECT row_to_json(e)::text FROM agent.personal_enablements e")) { rows.next(); before = rows.getString(1); }
+            var latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
+                .locations("classpath:db/agent-migration").defaultSchema("public").table("flyway_agent_schema_history").load();
+            assertThat(latest.migrate().migrationsExecuted).isOne();
+            assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("12");
+            assertThat(latest.migrate().migrationsExecuted).isZero();
+            try (var rows = statement.executeQuery("SELECT row_to_json(e)::text FROM agent.personal_enablements e")) { rows.next(); assertThat(rows.getString(1)).isEqualTo(before); }
+            try (var rows = statement.executeQuery("SELECT enabled,revision,enablement_id FROM agent.project_settings")) {
+                rows.next(); assertThat(rows.getBoolean(1)).isTrue(); assertThat(rows.getLong(2)).isEqualTo(7); assertThat(rows.getObject(3, UUID.class)).isEqualTo(acknowledgement);
+            }
+            assertThatThrownBy(() -> statement.execute("DELETE FROM agent.personal_enablements")).isInstanceOf(java.sql.SQLException.class);
         }
     }
 }

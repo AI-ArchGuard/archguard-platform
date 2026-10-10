@@ -34,6 +34,9 @@ class DatabaseMigrationIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(tableExists("agent", "project_settings")).isTrue();
         assertThat(tableExists("agent", "personal_enablements")).isTrue();
         assertThat(tableExists("agent", "enablement_revocations")).isTrue();
+        for (String table : java.util.List.of("live_batches", "live_batch_usage", "live_batch_revocations", "live_budget_usage", "live_attempts", "live_outcomes")) {
+            assertThat(tableExists("agent", table)).isTrue();
+        }
     }
 
     @Test

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://archguard.example/contracts/agent-synthetic-inventory-0.1.0.schema.json",
+  "title": "Operator-controlled synthetic fixture review inventory",
+  "description": "A bounded local operator review record, not mathematical proof that data is synthetic and not caller consent or permission to send a model request. No HTTP inventory write endpoint. Runtime requires a controlled regular file of at most 32768 bytes, strict JSON, matching deployment, unique inventory IDs and a valid future expiry no more than 24 hours after reviewedAt. Missing, malformed, changed or expired proof fails closed; every change invalidates previously bound batch proof. No URL or arbitrary path is supplied in the file.",
+  "x-archguard-file-max-bytes": 32768,
+  "x-archguard-entry-max-lifetime-seconds": 86400,
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "deploymentId", "entries"],
+  "properties": {
+    "schemaVersion": {"const": "0.1.0"},
+    "deploymentId": {"$ref": "#/$defs/Uuid"},
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/Entry"},
+      "description": "Duplicate inventoryId values are rejected at runtime even when the remaining entry fields differ. Every entry must pass validation, not only the selected one."
+    }
+  },
+  "$defs": {
+    "Uuid": {"type": "string", "format": "uuid", "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", "description": "Canonical lowercase UUID; shortened or uppercase representations are rejected."},
+    "Sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "ShortReference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?![sS][kK]-|[gG][hH][pP]_|[gG][iI][tT][hH][uU][bB]_[pP][aA][tT]_)[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "description": "Non-sensitive ASCII review/version reference only, never an account identifier, URL, path or credential. Secret-like sk-, ghp_ and github_pat_ prefixes are rejected case-insensitively."
+    },
+    "Entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inventoryId", "projectId", "manifestSha256", "sourceKind", "fixtureSetVersion", "fixtureArtifactSha256", "reviewRef", "reviewedAt", "expiresAt"],
+      "properties": {
+        "inventoryId": {"$ref": "#/$defs/Uuid"},
+        "projectId": {"$ref": "#/$defs/Uuid"},
+        "manifestSha256": {"$ref": "#/$defs/Sha256"},
+        "sourceKind": {"const": "CONTROLLED_SYNTHETIC_FIXTURES"},
+        "fixtureSetVersion": {"$ref": "#/$defs/ShortReference"},
+        "fixtureArtifactSha256": {"$ref": "#/$defs/Sha256"},
+        "reviewRef": {"$ref": "#/$defs/ShortReference"},
+        "reviewedAt": {"type": "string", "format": "date-time", "description": "Must not be in the future. Runtime validates every entry against the current UTC clock."},
+        "expiresAt": {"type": "string", "format": "date-time", "description": "After reviewedAt and current UTC time, at most 24 hours after reviewedAt. Batch expiry cannot exceed this expiry."}
+      }
+    }
+  }
+}

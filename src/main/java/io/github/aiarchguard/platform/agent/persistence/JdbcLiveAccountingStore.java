@@ -6,6 +6,7 @@ import io.github.aiarchguard.platform.agent.LiveBatchView;
 import io.github.aiarchguard.platform.agent.LiveTokenUsage;
 import io.github.aiarchguard.platform.agent.internal.LiveAccountingStore;
 import io.github.aiarchguard.platform.agent.internal.LiveManifest;
+import io.github.aiarchguard.platform.agent.internal.SyntheticBatchInventory;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -23,12 +24,13 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
         var view = value.view();
         jdbc.sql("""
             INSERT INTO agent.live_batches(id,project_id,enablement_id,deployment_id,inventory_id,approved_by,approved_at,
-                expires_at,manifest_sha256,manifest,max_requests,max_cost_microusd)
-            VALUES (:id,:p,:e,:d,:inventory,:actor,:at,:expires,:sha,CAST(:manifest AS jsonb),:count,:cost)
+                expires_at,manifest_sha256,manifest,max_requests,max_cost_microusd,inventory_proof)
+            VALUES (:id,:p,:e,:d,:inventory,:actor,:at,:expires,:sha,CAST(:manifest AS jsonb),:count,:cost,CAST(:proof AS jsonb))
             """).param("id", view.id()).param("p", view.projectId()).param("e", view.enablementId()).param("d", value.deploymentId())
             .param("inventory", value.inventoryId()).param("actor", view.approvedBy()).param("at", Timestamp.from(view.approvedAt()))
             .param("expires", Timestamp.from(view.expiresAt())).param("sha", view.manifestSha256()).param("manifest", json(value.manifest()))
-            .param("count", view.maxRequests()).param("cost", view.maxCostMicrousd()).update();
+            .param("count", view.maxRequests()).param("cost", view.maxCostMicrousd())
+            .param("proof", value.inventoryProof() == null ? null : json(value.inventoryProof())).update();
         jdbc.sql("INSERT INTO agent.live_batch_usage(batch_id) VALUES (:id)").param("id", view.id()).update();
     }
     @Override public Optional<Batch> batch(UUID project, UUID id) {
@@ -37,12 +39,17 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
             LEFT JOIN agent.live_batch_revocations r ON r.batch_id=b.id WHERE b.project_id=:p AND b.id=:id
             """).param("p", project).param("id", id).query((rs, row) -> {
                 LiveManifest manifest;
-                try { manifest = mapper.readValue(rs.getString("manifest"), LiveManifest.class); }
+                SyntheticBatchInventory.Proof proof;
+                try {
+                    manifest = mapper.readValue(rs.getString("manifest"), LiveManifest.class);
+                    String raw = rs.getString("inventory_proof");
+                    proof = raw == null ? null : mapper.readValue(raw, SyntheticBatchInventory.Proof.class);
+                }
                 catch (com.fasterxml.jackson.core.JsonProcessingException unavailable) { throw new AgentUnavailableException(); }
                 return new Batch(new LiveBatchView(id, project, rs.getObject("enablement_id", UUID.class), rs.getObject("approved_by", UUID.class),
                     rs.getTimestamp("approved_at").toInstant(), rs.getString("manifest_sha256"), rs.getTimestamp("expires_at").toInstant(),
                     rs.getInt("max_requests"), rs.getLong("max_cost_microusd"), rs.getBoolean("revoked")), rs.getObject("deployment_id", UUID.class),
-                    rs.getObject("inventory_id", UUID.class), manifest);
+                    rs.getObject("inventory_id", UUID.class), manifest, proof);
             }).optional();
     }
     @Override public Usage lockBatch(UUID id) {

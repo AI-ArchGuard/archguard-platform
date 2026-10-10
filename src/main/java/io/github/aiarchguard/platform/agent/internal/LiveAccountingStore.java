@@ -8,7 +8,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface LiveAccountingStore {
-    record Batch(LiveBatchView view, UUID deploymentId, UUID inventoryId, LiveManifest manifest) { }
+    record Batch(LiveBatchView view, UUID deploymentId, UUID inventoryId, LiveManifest manifest,
+            SyntheticBatchInventory.Proof inventoryProof) { }
     record Usage(long reserved, long spent, int attempts) { }
     record Attempt(UUID requestId, UUID projectId, UUID batchId, UUID templateId, UUID attemptId,
             UUID deploymentId, LocalDate day, String priceVersion, long reservation, String outcome, Long actual) { }

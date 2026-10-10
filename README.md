@@ -79,9 +79,9 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 个人 Key 的[只写凭据设计](docs/technical-design/v0.5-personal-credential-management.md)和[API 0.1.0](openapi/agent-credentials-v1.json)提供后端添加/替换/删除与重启后加密读取。管理默认关闭，仅在 local-compose 环回个人部署中允许配置的 owner 操作；需独立主密钥与受控目录。浏览器不保存或回显 Key；操作不检查有效性、不打开 Agent 或发起模型调用。真实出口仍未装配，此入口不是 #43/阶段完成证据。
 
-个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)提供 ADR-0012 的后端实现边界；无网络 Responses 编解码已通过 #48 合入且 main CI 成功。[项目设置与不可变启用确认](docs/technical-design/v0.5-agent-personal-enablement.md)、[API 0.1.0](openapi/agent-enablement-v1.json)和[确认输入 0.2.0](contracts/agent-personal-enablement-0.2.0.schema.json)追加独立 V11，仅保存默认关闭设置、owner 风险确认及撤销历史，绑定当前加密凭据版本；不提供真实模型调用。批次授权入口、出口编排、Web 消费和真实验收仍未完成，不能据此关闭 Issue #43 或阶段 4。
+个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)提供 ADR-0012 的后端实现边界；无网络 Responses 编解码已通过 #48 合入且 main CI 成功。[项目设置与不可变启用确认](docs/technical-design/v0.5-agent-personal-enablement.md)、[API 0.1.0](openapi/agent-enablement-v1.json)和[确认输入 0.2.0](contracts/agent-personal-enablement-0.2.0.schema.json)追加独立 V11，仅保存默认关闭设置、owner 风险确认及撤销历史，绑定当前加密凭据版本；不提供真实模型调用。出口编排、Web 消费和真实验收仍未完成，不能据此关闭 Issue #43 或阶段 4。
 
-[合成批次与费用账本基础](docs/technical-design/v0.5-agent-live-accounting.md)提供内部 Batch Input 0.1.0、独立 V12、三层事务预留、唯一 attempt 与实际用量结算；未知费用不退款或重试。生产来源清单核对默认拒绝，未新增 HTTP/Web 入口或真实模型装配，原请求/worker 防护不变。来源清单部署、Token/网络准入与端到端真实验收仍是独立后续关卡；当前 8081 运行栈不因此启用。
+[合成批次与费用账本基础](docs/technical-design/v0.5-agent-live-accounting.md)提供 Batch Input 0.1.0、独立 V12、三层事务预留、唯一 attempt 与实际用量结算；未知费用不退款或重试。[受控来源与批次管理](docs/technical-design/v0.5-agent-synthetic-batches.md)追加 API 0.1.0 与 V13：独立默认关闭的操作员来源清单、不可变证明、预览/批准/读取/撤销元数据，不提供发送、预留或结算 HTTP 接口。原请求/worker 防护不变；来源清单部署、Token/网络准入、Web 和真实验收仍是独立后续关卡，当前 8081 栈不因此启用。
 
 [传输基础切片](docs/technical-design/v0.5-agent-deepseek-transport.md)提供未装配的固定 HTTPS/有界响应/取消机制、运行时 Secret 文件读取与高峰价格计算，假 HTTP 仅访问测试临时环回服务器。它仍不是可用的真实 Agent；批次来源清单、事务记账与 worker 接线、Token 上界和实际出口检查未完成，不提供 Key 或网络启用配置。
 
@@ -103,6 +103,8 @@ Stage 4D/4E 的单个 Finding 解释与已选 Finding 的 PR 摘要共用异步 
 | `ARCHGUARD_OIDC_JWK_SET_URI` | 无 | 可选 HTTPS JWKS 地址；省略时执行 issuer discovery。 |
 | `ARCHGUARD_AGENT_ENABLED` | `false` | Agent 解释和 PR 摘要入口开关；本阶段无真实模型适配器，开启后仍不能真实外发。 |
 | `ARCHGUARD_AGENT_PROVIDER_TIMEOUT` | `30s` | 单次模型调用超时；仅可下调，不可超过 30 秒。 |
+| `ARCHGUARD_AGENT_SYNTHETIC_INVENTORY_ENABLED` | `false` | 仅 local-compose 的受控来源核验；不启用模型调用。 |
+| `ARCHGUARD_AGENT_SYNTHETIC_INVENTORY_FILE` | 空 | 操作员只读挂载的规范绝对清单路径；不得存放 Key 或原文。 |
 | `ARCHGUARD_OIDC_ALLOW_HTTP` | `false` | 仅 `local-compose` profile 可设为 `true`。 |
 | `ARCHGUARD_SOURCE_ROOT` | `./sources` | Repository 可注册的唯一受控源码根。 |
 | `ARCHGUARD_SCANNER_JAR` | `/opt/archguard/scanner.jar` | 固定的 Scanner `v0.2.1` JAR。 |

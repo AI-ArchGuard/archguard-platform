@@ -16,7 +16,7 @@ final class EnablementNoStoreFilter extends OncePerRequestFilter {
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
             FilterChain chain) throws ServletException, IOException {
         String path = request.getRequestURI().substring(request.getContextPath().length());
-        if (path.matches("/api/v1/projects/[^/]+/agent/(settings|enablements(?:/.*)?)")) {
+        if (path.matches("/api/v1/projects/[^/]+/agent/(settings|enablements(?:/.*)?|batches(?:/.*)?)")) {
             response.setHeader("Cache-Control", "no-store"); response.setHeader("Pragma", "no-cache");
         }
         chain.doFilter(request, response);

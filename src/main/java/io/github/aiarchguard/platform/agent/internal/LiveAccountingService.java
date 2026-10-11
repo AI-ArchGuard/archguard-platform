@@ -144,6 +144,26 @@ final class LiveAccountingService implements LiveAccountingOperations {
             return new Admission(attempt.attemptId(), attempt.reservation(), true);
         });
     }
+    @Override public SendApproval checkBeforeSend(UUID project, UUID batchId, UUID templateId, UUID requestId) {
+        return write(project, "agent.live.send_check", () -> {
+            projects.requireViewer(project); schema.requireReady();
+            var snapshot = request(project, requestId); sameActor(snapshot);
+            var settings = enablements.lockSettings(project); var batch = batch(project, batchId); store.lockBatch(batchId);
+            var attempt = store.attempt(project, requestId).orElseThrow(AgentEnablementInvalidStateException::new);
+            var binding = store.reservationBinding(project, requestId);
+            if (!batchId.equals(attempt.batchId()) || !templateId.equals(attempt.templateId()) || attempt.outcome() != null
+                    || !deployment().equals(attempt.deploymentId()) || !LiveCostPolicy.VERSION.equals(attempt.priceVersion())
+                    || attempt.reservation() != LiveCostPolicy.RESERVATION || settings.revision() != binding.settingsRevision()
+                    || !batch.view().enablementId().equals(binding.enablementId())
+                    || !attempt.day().equals(Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate())) throw new AgentEnablementInvalidStateException();
+            // Read again after lock waits: recovery may already have terminalized the request.
+            snapshot = request(project, requestId); sameActor(snapshot); projects.requireViewer(project);
+            validateBatch(project, settings, batch); validateRequest(snapshot, batch, templateId);
+            var approval = approval(project, settings.enablementId()); validateApproval(approval);
+            if (!binding.credentialVersion().equals(approval.acknowledgement().credentialVersion())) throw new AgentEnablementInvalidStateException();
+            return new SendApproval(binding.credentialVersion(), new HashSet<>(approval.acknowledgement().allowedResponseModels()));
+        });
+    }
     @Override public Outcome settle(UUID project, UUID request, String price, LiveTokenUsage usage) { return finish(project, request, price, usage); }
     @Override public Outcome unknown(UUID project, UUID request) { return finish(project, request, null, null); }
     private Outcome finish(UUID project, UUID id, String price, LiveTokenUsage usage) {

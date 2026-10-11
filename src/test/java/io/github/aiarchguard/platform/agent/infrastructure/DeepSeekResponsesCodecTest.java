@@ -50,6 +50,27 @@ class DeepSeekResponsesCodecTest {
         assertThat(decoded.toString()).doesNotContain("unverified");
     }
 
+    @Test void validatesAccountingIndependentlyOfRejectedBusinessTextButKeepsStrictDecode() throws Exception {
+        for (String raw : List.of("not-json private-secret", "[1,2]", "null", "{\"x\":1,\"x\":2}", "{} {}")) {
+            var root = valid(); ((ObjectNode) root.at("/output/0/content/0")).put("text", raw);
+            byte[] bytes = mapper.writeValueAsBytes(root);
+            var accounting = codec.decodeAccounting(bytes, Set.of("deepseek-flash"));
+            assertThat(accounting.inputTokens()).isEqualTo(100);
+            assertThat(accounting.outputTokens()).isEqualTo(20);
+            assertThat(accounting.cachedInputTokens()).isEqualTo(40);
+            assertThat(accounting.responseId()).isEqualTo("resp-synthetic-1");
+            assertThat(accounting.toString()).doesNotContain("private-secret", raw);
+            assertThatThrownBy(() -> codec.decodeOutput(accounting))
+                .hasMessage("Invalid DeepSeek wire payload").hasNoCause();
+            assertThatThrownBy(() -> codec.decode(bytes, Set.of("deepseek-flash")))
+                .hasMessage("Invalid DeepSeek wire payload").hasNoCause();
+        }
+        var refusal = valid(); ((ObjectNode) refusal.at("/output/0/content/0")).put("type", "refusal");
+        var accounting = codec.decodeAccounting(mapper.writeValueAsBytes(refusal), Set.of("deepseek-flash"));
+        assertThat(accounting.inputTokens()).isEqualTo(100);
+        assertThatThrownBy(() -> codec.decodeOutput(accounting)).hasMessage("Invalid DeepSeek wire payload");
+    }
+
     @Test void rejectsUnknownDuplicateTrailingAndNonJsonPayloadsWithoutLeakingBodies() throws Exception {
         for (String raw : List.of("not-json private-secret", valid().toString() + " {}",
                 valid().toString().replace("\"status\":\"completed\"", "\"status\":\"completed\",\"status\":\"completed\""),

@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ConcurrentHashMap;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -41,6 +42,7 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
     static final AtomicInteger DAY = new AtomicInteger();
     static final java.util.Set<String> INVENTORY = ConcurrentHashMap.newKeySet();
     static final java.util.concurrent.atomic.AtomicReference<String> INVENTORY_SHA = new java.util.concurrent.atomic.AtomicReference<>("e".repeat(64));
+    static final java.util.concurrent.atomic.AtomicReference<Instant> INVENTORY_REVIEWED_AT = new java.util.concurrent.atomic.AtomicReference<>();
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
@@ -48,6 +50,8 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
     @Autowired AgentStore requests;
     @Autowired LiveAccountingOperations accounting;
     @Autowired LiveAccountingStore ledger;
+    @Autowired AgentTransitions transitions;
+    @Autowired DataSource dataSource;
     UUID project, acknowledgement, template;
     Instant now;
 
@@ -58,6 +62,7 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
         AgentPersonalEnablementIntegrationTest.TIME.set(now);
         INVENTORY.clear();
         INVENTORY_SHA.set("e".repeat(64));
+        INVENTORY_REVIEWED_AT.set(now);
         identity(OWNER);
         ObjectNode input = mapper.valueToTree(fixture.input());
         input.put("expiresAt", now.plusSeconds(86400).toString()).put("priceCatalogExpiresAt", now.plusSeconds(86400).toString());
@@ -124,6 +129,250 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
             .param("p", project).query(String.class).single();
         assertThat(mapper.readTree(metadata).path("cachedInputTokens").asInt()).isEqualTo(500);
         assertThat(metadata).doesNotContain("Synthetic evidence");
+    }
+
+    @Test void sendCheckRequiresReservationAndReturnsItsFrozenCredentialWithoutChargingAgain() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThat(ledger.attempt(project, id)).isEmpty();
+        var admission = accounting.reserve(project, batch.id(), template, id);
+        var approval = accounting.checkBeforeSend(project, batch.id(), template, id);
+        assertThat(approval.credentialVersion()).isEqualTo(AgentPersonalEnablementIntegrationTest.CREDENTIAL);
+        assertThat(approval.allowedResponseModels()).containsExactly("deepseek-flash");
+        assertThat(accounting.checkBeforeSend(project, batch.id(), template, id)).isEqualTo(approval);
+        assertThat(ledger.attempt(project, id).orElseThrow().attemptId()).isEqualTo(admission.attemptId());
+        assertThat(ledger.reservationBinding(project, id)).isEqualTo(new LiveAccountingStore.ReservationBinding(
+            acknowledgement, AgentPersonalEnablementIntegrationTest.CREDENTIAL, 1));
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(1);
+    }
+
+    @Test void revokedBatchCannotSendAnAlreadyReservedAttempt() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        accounting.revoke(project, batch.id(), "http://localhost:8083", false);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThat(accounting.reserve(project, batch.id(), template, id).newAttempt()).isFalse();
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(1);
+    }
+
+    @Test void revokedPersonalApprovalCannotSendAnAlreadyReservedAttempt() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        enablements.revoke(project, acknowledgement);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(1);
+    }
+
+    @Test void settingsRevisionChangeCannotBeUndoneByReenablingTheSameApproval() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        enablements.update(project, 1, new AgentSettingsUpdate(false, null));
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        var enabled = enablements.update(project, 2, new AgentSettingsUpdate(true, acknowledgement));
+        assertThat(enabled.enabled()).isTrue();
+        assertThat(enabled.enablementId()).isEqualTo(acknowledgement);
+        assertThat(enabled.revision()).isEqualTo(3);
+        assertThat(ledger.reservationBinding(project, id).settingsRevision()).isEqualTo(1);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(2);
+    }
+
+    @Test void credentialRotationAndClearingEachRejectReservedSendChecks() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE.set(
+            new io.github.aiarchguard.platform.agentcredential.CredentialStatus(true, UUID.randomUUID(), now));
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        // Restore only the fake metadata to isolate clearing from the preceding version mismatch.
+        AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE.set(new io.github.aiarchguard.platform.agentcredential.CredentialStatus(
+            true, AgentPersonalEnablementIntegrationTest.CREDENTIAL, now));
+        assertThat(accounting.checkBeforeSend(project, batch.id(), template, id).credentialVersion())
+            .isEqualTo(AgentPersonalEnablementIntegrationTest.CREDENTIAL);
+        AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE.set(io.github.aiarchguard.platform.agentcredential.CredentialStatus.absent());
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(2);
+    }
+
+    @Test void withdrawnOrChangedInventoryProofRejectsReservedSendWithoutRewritingProof() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        var frozenProof = ledger.batch(project, batch.id()).orElseThrow().inventoryProof();
+        INVENTORY.clear();
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        INVENTORY.add(project + ":" + batch.manifestSha256());
+        assertThat(accounting.checkBeforeSend(project, batch.id(), template, id).credentialVersion())
+            .isEqualTo(AgentPersonalEnablementIntegrationTest.CREDENTIAL);
+        INVENTORY_SHA.set("9".repeat(64));
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThat(ledger.batch(project, batch.id()).orElseThrow().inventoryProof()).isEqualTo(frozenProof);
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(2);
+    }
+
+    @Test void expiredBatchCannotSendAnAlreadyReservedAttempt() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        AgentPersonalEnablementIntegrationTest.TIME.set(batch.expiresAt());
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(1);
+    }
+
+    @Test void utcRolloverRejectsSendEvenWhileBatchApprovalAndProofRemainValid() {
+        now = now.atZone(java.time.ZoneOffset.UTC).toLocalDate().atTime(23, 59, 50).toInstant(java.time.ZoneOffset.UTC);
+        AgentPersonalEnablementIntegrationTest.TIME.set(now);
+        INVENTORY_REVIEWED_AT.set(now);
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        Instant nextDay = now.plusSeconds(20);
+        AgentPersonalEnablementIntegrationTest.TIME.set(nextDay);
+        assertThat(batch.expiresAt()).isAfter(nextDay);
+        assertThat(enablements.get(project, acknowledgement).expiresAt()).isAfter(nextDay);
+        assertThat(ledger.batch(project, batch.id()).orElseThrow().inventoryProof().expiresAt()).isAfter(nextDay);
+        assertThat(requests.find(project, id).orElseThrow().view().state()).isEqualTo("RUNNING");
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertPendingReservation(batch.id(), id);
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_budget_usage WHERE scope='PROJECT' AND scope_id=:p AND utc_day=:day")
+            .param("p", project).param("day", nextDay.atZone(java.time.ZoneOffset.UTC).toLocalDate()).query(Integer.class).single()).isZero();
+        assertSendRejectionCount(1);
+    }
+
+    @Test void recoveredTerminalRequestCannotSendButItsIncurredUsageCanStillSettle() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        AgentPersonalEnablementIntegrationTest.TIME.set(now.plusSeconds(61));
+        transitions.recoverExpired(requests.find(project, id).orElseThrow(), now.plusSeconds(1));
+        var recovered = requests.find(project, id).orElseThrow().view();
+        assertThat(recovered.state()).isEqualTo("FAILED");
+        assertThat(recovered.failure().code()).isEqualTo("INTERNAL_ERROR");
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertPendingReservation(batch.id(), id);
+        assertThat(accounting.settle(project, id, LiveCostPolicy.VERSION, new LiveTokenUsage(1, 1, 0, 2, 0)).actualMicrousd()).isEqualTo(2);
+        assertThat(requests.find(project, id).orElseThrow().view()).isEqualTo(recovered);
+        assertThat(amount("PROJECT", project, "reserved_microusd")).isZero();
+        assertThat(amount("PROJECT", project, "spent_microusd")).isEqualTo(2);
+        assertSendRejectionCount(1);
+    }
+
+    @Test void knownAndUnknownOutcomesEachDenyResendEvenIfRequestIsStillRunning() {
+        var batch = batch(2, 8400); UUID unknown = request(batch.id(), true), settled = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, unknown);
+        accounting.reserve(project, batch.id(), template, settled);
+        accounting.unknown(project, unknown);
+        accounting.settle(project, settled, LiveCostPolicy.VERSION, new LiveTokenUsage(1, 1, 0, 2, 0));
+        for (UUID id : List.of(unknown, settled)) {
+            assertThat(requests.find(project, id).orElseThrow().view().state()).isEqualTo("RUNNING");
+            assertThat(accounting.reserve(project, batch.id(), template, id).newAttempt()).isFalse();
+            assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+                .isInstanceOf(AgentEnablementInvalidStateException.class);
+        }
+        assertThat(ledger.attempt(project, unknown).orElseThrow().outcome()).isEqualTo("UNKNOWN");
+        assertThat(ledger.attempt(project, settled).orElseThrow().outcome()).isEqualTo("SETTLED");
+        assertThat(amount("PROJECT", project, "reserved_microusd")).isEqualTo(4200);
+        assertThat(amount("PROJECT", project, "spent_microusd")).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p").param("p", project).query(Integer.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_outcomes o JOIN agent.live_attempts a USING(request_id) WHERE a.project_id=:p")
+            .param("p", project).query(Integer.class).single()).isEqualTo(2);
+        assertSendRejectionCount(2);
+    }
+
+    @Test void sendCheckRejectsWrongProjectRequestBatchAndTemplateBindings() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        var differentBatch = batch(1, 4200);
+        UUID unreservedRequest = request(batch.id(), true), differentTemplate = request(null, false);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, differentBatch.id(), template, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), differentTemplate, id))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, unreservedRequest))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, UUID.randomUUID()))
+            .isInstanceOf(AgentNotFoundException.class);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, UUID.randomUUID(), template, id))
+            .isInstanceOf(AgentNotFoundException.class);
+        UUID otherProject = UUID.randomUUID();
+        jdbc.sql("INSERT INTO project.projects(id,project_key,name,created_by,created_at) VALUES (:id,:key,'Synthetic binding',:a,NOW())")
+            .param("id", otherProject).param("key", "p" + otherProject.toString().replace("-", "").substring(0, 12)).param("a", OWNER).update();
+        jdbc.sql("INSERT INTO project.project_members(project_id,actor_id,role,created_at) VALUES (:p,:a,'MAINTAINER',NOW())")
+            .param("p", otherProject).param("a", OWNER).update();
+        assertThatThrownBy(() -> accounting.checkBeforeSend(otherProject, batch.id(), template, id))
+            .isInstanceOf(AgentNotFoundException.class);
+        assertThat(ledger.attempt(otherProject, id)).isEmpty();
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(5);
+    }
+
+    @Test void anotherViewerAndRemovedMembershipCannotSendTheOwnersReservedAttempt() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        UUID other = UUID.randomUUID();
+        jdbc.sql("INSERT INTO project.project_members(project_id,actor_id,role,created_at) VALUES (:p,:a,'VIEWER',NOW())")
+            .param("p", project).param("a", other).update();
+        identity(other);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(io.github.aiarchguard.platform.project.ProjectPermissionDeniedException.class);
+        identity(OWNER);
+        jdbc.sql("DELETE FROM project.project_members WHERE project_id=:p AND actor_id=:a").param("p", project).param("a", OWNER).update();
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
+            .isInstanceOf(io.github.aiarchguard.platform.project.ProjectNotFoundException.class);
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(2);
+    }
+
+    @Test void sendCheckRereadsTheRequestAfterAnActualPostgresLockWait() throws Exception {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true);
+        accounting.reserve(project, batch.id(), template, id);
+        var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (var blocker = dataSource.getConnection()) {
+            blocker.setAutoCommit(false);
+            try {
+                int blockerPid;
+                try (var statement = blocker.createStatement()) {
+                    statement.setQueryTimeout(10);
+                    try (var result = statement.executeQuery("SELECT pg_backend_pid()")) {
+                        assertThat(result.next()).isTrue(); blockerPid = result.getInt(1);
+                    }
+                }
+                try (var statement = blocker.prepareStatement("SELECT batch_id FROM agent.live_batch_usage WHERE batch_id=? FOR UPDATE")) {
+                    statement.setQueryTimeout(10); statement.setObject(1, batch.id());
+                    try (var result = statement.executeQuery()) { assertThat(result.next()).isTrue(); }
+                }
+                var sendCheck = executor.submit(() -> {
+                    identity(OWNER);
+                    try { accounting.checkBeforeSend(project, batch.id(), template, id); return (RuntimeException) null; }
+                    catch (RuntimeException rejected) { return rejected; }
+                    finally { SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId"); }
+                });
+                awaitSendCheckLockWait(blockerPid, sendCheck);
+                AgentPersonalEnablementIntegrationTest.TIME.set(now.plusSeconds(61));
+                transitions.recoverExpired(requests.find(project, id).orElseThrow(), now.plusSeconds(1));
+                assertThat(requests.find(project, id).orElseThrow().view().state()).isEqualTo("FAILED");
+                blocker.commit();
+                assertThat(sendCheck.get(10, java.util.concurrent.TimeUnit.SECONDS)).isInstanceOf(AgentEnablementInvalidStateException.class);
+            } finally { blocker.rollback(); }
+        } finally {
+            executor.shutdownNow(); assertThat(executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        }
+        assertPendingReservation(batch.id(), id);
+        assertSendRejectionCount(1);
     }
 
     @Test void databaseRejectsIncompleteSettlementWithoutWritingAnOutcome() {
@@ -356,6 +605,42 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
         jdbc.sql("INSERT INTO agent.live_budget_usage(scope,scope_id,utc_day,spent_microusd) VALUES (:s,:id,:day,:spent)")
             .param("s", scope).param("id", scopeId).param("day", now.atZone(java.time.ZoneOffset.UTC).toLocalDate()).param("spent", spent).update();
     }
+    void assertPendingReservation(UUID batchId, UUID requestId) {
+        var attempt = ledger.attempt(project, requestId).orElseThrow();
+        assertThat(attempt.batchId()).isEqualTo(batchId);
+        assertThat(attempt.reservation()).isEqualTo(4200);
+        assertThat(attempt.outcome()).isNull();
+        assertThat(attempt.actual()).isNull();
+        assertThat(amount("PROJECT", project, "reserved_microusd")).isEqualTo(4200);
+        assertThat(amount("PROJECT", project, "spent_microusd")).isZero();
+        assertThat(amount("DEPLOYMENT", DEPLOYMENT, "reserved_microusd")).isEqualTo(4200);
+        assertThat(jdbc.sql("SELECT attempts FROM agent.live_batch_usage WHERE batch_id=:b").param("b", batchId).query(Integer.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT reserved_microusd FROM agent.live_batch_usage WHERE batch_id=:b").param("b", batchId).query(Long.class).single()).isEqualTo(4200);
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p").param("p", project).query(Integer.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_outcomes WHERE request_id=:id").param("id", requestId).query(Integer.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM audit.audit_records WHERE project_id=:p AND action='agent.live.reserved'")
+            .param("p", project).query(Integer.class).single()).isOne();
+    }
+    void assertSendRejectionCount(int count) {
+        assertThat(jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records WHERE project_id=:p AND action='agent.live.write_rejected'
+                AND metadata->>'operation'='agent.live.send_check'
+            """).param("p", project).query(Integer.class).single()).isEqualTo(count);
+    }
+    void awaitSendCheckLockWait(int blockerPid, java.util.concurrent.Future<?> sendCheck) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            assertThat(sendCheck.isDone()).as("Send check must reach the held batch-usage row").isFalse();
+            int waiting = jdbc.sql("""
+                SELECT count(*) FROM pg_stat_activity a WHERE a.datname=current_database()
+                    AND a.wait_event_type='Lock' AND :blocker=ANY(pg_blocking_pids(a.pid))
+                """).param("blocker", blockerPid).query(Integer.class).single();
+            if (waiting > 0) return;
+            java.util.concurrent.locks.LockSupport.parkNanos(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(10));
+            if (Thread.currentThread().isInterrupted()) throw new AssertionError("Lock-state observation was interrupted");
+        }
+        throw new AssertionError("Send check did not enter the expected PostgreSQL lock wait within 10 seconds");
+    }
     boolean quotaResult(UUID p, UUID b, UUID t, UUID r) {
         try { return accounting.reserve(p, b, t, r).newAttempt(); } catch (AgentQuotaExceededException exhausted) { return false; }
     }
@@ -377,7 +662,7 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
         @Bean @Primary SyntheticBatchInventory approvedSyntheticInventory() {
             return (project, inventory, hash) -> INVENTORY.contains(project + ":" + hash)
                 ? java.util.Optional.of(new SyntheticBatchInventory.Proof("0.1.0", INVENTORY_SHA.get(), "synthetic-v1", "f".repeat(64),
-                    "synthetic-review", AgentPersonalEnablementIntegrationTest.TIME.get(), AgentPersonalEnablementIntegrationTest.TIME.get().plusSeconds(3600)))
+                    "synthetic-review", INVENTORY_REVIEWED_AT.get(), INVENTORY_REVIEWED_AT.get().plusSeconds(3600)))
                 : java.util.Optional.empty();
         }
     }

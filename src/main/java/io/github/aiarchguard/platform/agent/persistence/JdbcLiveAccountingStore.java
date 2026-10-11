@@ -83,6 +83,11 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
                 rs.getObject("utc_day", LocalDate.class), rs.getString("price_version"), rs.getLong("reserved_microusd"), rs.getString("state"),
                 (Long) rs.getObject("actual_microusd"))).optional();
     }
+    @Override public ReservationBinding reservationBinding(UUID project, UUID request) {
+        return jdbc.sql("SELECT enablement_id,credential_version,settings_revision FROM agent.live_attempts WHERE project_id=:p AND request_id=:id")
+            .param("p", project).param("id", request).query((rs, row) -> new ReservationBinding(rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class), rs.getLong(3))).optional().orElseThrow(AgentUnavailableException::new);
+    }
     @Override public void insertAttempt(Attempt value, UUID enablement, UUID credential, long revision, Instant now) {
         jdbc.sql("""
             INSERT INTO agent.live_attempts(request_id,project_id,batch_id,template_id,attempt_id,deployment_id,enablement_id,

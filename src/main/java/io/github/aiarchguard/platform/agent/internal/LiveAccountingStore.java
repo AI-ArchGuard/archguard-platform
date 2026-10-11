@@ -21,6 +21,8 @@ public interface LiveAccountingStore {
     void reserveBudget(String scope, UUID scopeId, LocalDate day, long reservation);
     void reserveBatch(UUID batch, long reservation);
     Optional<Attempt> attempt(UUID project, UUID request);
+    ReservationBinding reservationBinding(UUID project, UUID request);
+    record ReservationBinding(UUID enablementId, UUID credentialVersion, long settingsRevision) { }
     void insertAttempt(Attempt attempt, UUID enablement, UUID credential, long revision, Instant now);
     void finish(Attempt attempt, LiveTokenUsage usage, Long cost, Instant now);
 }

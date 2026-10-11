@@ -60,6 +60,13 @@ final class DeepSeekResponsesCodec {
     }
 
     Decoded decode(byte[] bytes, Set<String> approvedResponseModels) {
+        var accounting = decodeAccounting(bytes, approvedResponseModels);
+        return new Decoded(decodeOutput(accounting), accounting.inputTokens(), accounting.outputTokens(),
+            accounting.cachedInputTokens(), accounting.responseId(), accounting.actualModelId());
+    }
+
+    /** Valid billable usage is independent of whether the untrusted business text can be accepted. */
+    Accounting decodeAccounting(byte[] bytes, Set<String> approvedResponseModels) {
         if (bytes == null || bytes.length == 0 || bytes.length > MAX_RESPONSE_BYTES
                 || approvedResponseModels == null || approvedResponseModels.isEmpty()) throw invalid();
         try {
@@ -75,7 +82,26 @@ final class DeepSeekResponsesCodec {
             if (root.has("store") && (!root.get("store").isBoolean() || root.get("store").booleanValue())) throw invalid();
             if (root.has("tools") && (!root.get("tools").isArray() || !root.get("tools").isEmpty())) throw invalid();
             if (root.has("background") && (!root.get("background").isBoolean() || root.get("background").booleanValue())) throw invalid();
-            JsonNode output = root.path("output");
+            JsonNode usage = root.path("usage");
+            fields(usage, Set.of("input_tokens", "output_tokens", "total_tokens", "input_tokens_details", "output_tokens_details"));
+            int input = count(usage, "input_tokens", 8000), out = count(usage, "output_tokens", 1500);
+            if (count(usage, "total_tokens", 9500) != input + out) throw invalid();
+            JsonNode inputDetails = usage.path("input_tokens_details"), outputDetails = usage.path("output_tokens_details");
+            fields(inputDetails, Set.of("cached_tokens"));
+            fields(outputDetails, Set.of("reasoning_tokens"));
+            int cached = count(inputDetails, "cached_tokens", input);
+            if (count(outputDetails, "reasoning_tokens", 0) != 0) throw invalid();
+            return new Accounting(root, input, out, cached, id, model);
+        } catch (Exception failure) {
+            // No cause: parser/provider text can contain secrets or complete untrusted bodies.
+            throw invalid();
+        }
+    }
+
+    String decodeOutput(Accounting accounting) {
+        try {
+            if (accounting == null) throw invalid();
+            JsonNode output = accounting.root().path("output");
             if (!output.isArray() || output.size() != 1) throw invalid();
             JsonNode message = output.get(0);
             fields(message, Set.of("id", "type", "role", "status", "content"));
@@ -91,16 +117,7 @@ final class DeepSeekResponsesCodec {
             }
             String raw = text(item, "text");
             if (!mapper.readTree(raw).isObject()) throw invalid();
-            JsonNode usage = root.path("usage");
-            fields(usage, Set.of("input_tokens", "output_tokens", "total_tokens", "input_tokens_details", "output_tokens_details"));
-            int input = count(usage, "input_tokens", 8000), out = count(usage, "output_tokens", 1500);
-            if (count(usage, "total_tokens", 9500) != input + out) throw invalid();
-            JsonNode inputDetails = usage.path("input_tokens_details"), outputDetails = usage.path("output_tokens_details");
-            fields(inputDetails, Set.of("cached_tokens"));
-            fields(outputDetails, Set.of("reasoning_tokens"));
-            int cached = count(inputDetails, "cached_tokens", input);
-            if (count(outputDetails, "reasoning_tokens", 0) != 0) throw invalid();
-            return new Decoded(raw, input, out, cached, id, model);
+            return raw;
         } catch (Exception failure) {
             // No cause: parser/provider text can contain secrets or complete untrusted bodies.
             throw invalid();
@@ -131,5 +148,11 @@ final class DeepSeekResponsesCodec {
     record Decoded(String rawJson, int inputTokens, int outputTokens, int cachedInputTokens,
             String responseId, String actualModelId) {
         @Override public String toString() { return "DeepSeek decoded response [body omitted]"; }
+    }
+
+    /** Internal parsed envelope only; never placed in public results, exceptions, logs or audit. */
+    record Accounting(JsonNode root, int inputTokens, int outputTokens, int cachedInputTokens,
+            String responseId, String actualModelId) {
+        @Override public String toString() { return "DeepSeek accounting response [body omitted]"; }
     }
 }

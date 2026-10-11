@@ -17,8 +17,13 @@ public interface LiveAccountingOperations {
     LiveBatchView revoke(UUID project, UUID batch, String origin, boolean secure);
     String requestDigest(UUID project, UUID batch, UUID template);
     Admission reserve(UUID project, UUID batch, UUID template, UUID request);
+    /** Fresh, non-mutating admission after a unique reservation; not a Token/network permit. */
+    SendApproval checkBeforeSend(UUID project, UUID batch, UUID template, UUID request);
     Outcome settle(UUID project, UUID request, String priceVersion, LiveTokenUsage usage);
     Outcome unknown(UUID project, UUID request);
     record Admission(UUID attemptId, long reservedMicrousd, boolean newAttempt) { }
     record Outcome(String state, Long actualMicrousd) { }
+    record SendApproval(UUID credentialVersion, java.util.Set<String> allowedResponseModels) {
+        public SendApproval { allowedResponseModels = java.util.Set.copyOf(allowedResponseModels); }
+    }
 }

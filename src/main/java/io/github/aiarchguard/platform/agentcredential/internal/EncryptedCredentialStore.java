@@ -13,17 +13,20 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.UUID;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
-/** One process, one fixed deployment slot. No runtime model port consumes this store yet. */
+/** One process, one fixed deployment slot; final callbacks serialize with replacement and deletion. */
 final class EncryptedCredentialStore {
     private static final int MAGIC = 0x41474301;
     private final Path directory;
     private final Path master;
     private final byte[] aad;
     private final SecureRandom random = new SecureRandom();
+    private boolean consuming;
 
     EncryptedCredentialStore(Path directory, Path master, UUID deployment) {
         this.directory = directory; this.master = master;
@@ -31,6 +34,7 @@ final class EncryptedCredentialStore {
     }
 
     synchronized CredentialStatus status() {
+        rejectReentry();
         byte[] key = null;
         try { key = master(); return current(key); }
         catch (Exception failure) { throw PrivateCredentialFiles.unavailable(); }
@@ -38,6 +42,7 @@ final class EncryptedCredentialStore {
     }
 
     synchronized CredentialStatus write(String apiKey, Instant now) {
+        rejectReentry();
         if (!valid(apiKey)) throw new CredentialFailure(CredentialFailure.Kind.INVALID);
         byte[] key = null; byte[] plain = null; Path pending = null;
         try {
@@ -70,10 +75,34 @@ final class EncryptedCredentialStore {
     }
 
     synchronized CredentialStatus delete() {
+        rejectReentry();
         byte[] key = null;
         try { key = master(); current(key); Files.deleteIfExists(file()); return CredentialStatus.absent(); }
         catch (Exception failure) { throw PrivateCredentialFiles.unavailable(); }
         finally { wipe(key); }
+    }
+
+    synchronized void consume(UUID expectedVersion, Consumer<String> finalOperation) {
+        rejectReentry();
+        if (expectedVersion == null || finalOperation == null) throw PrivateCredentialFiles.unavailable();
+        byte[] key = null;
+        try {
+            key = master();
+            withCurrent(key, (status, apiKey) -> {
+                if (!status.configured() || !expectedVersion.equals(status.credentialVersion())) {
+                    throw PrivateCredentialFiles.unavailable();
+                }
+                consuming = true;
+                try { finalOperation.accept(apiKey); }
+                finally { consuming = false; }
+                return null;
+            });
+        } catch (Exception failure) { throw PrivateCredentialFiles.unavailable(); }
+        finally { wipe(key); }
+    }
+
+    private void rejectReentry() {
+        if (consuming) throw PrivateCredentialFiles.unavailable();
     }
 
     private byte[] master() throws Exception {
@@ -84,7 +113,11 @@ final class EncryptedCredentialStore {
     }
 
     private CredentialStatus current(byte[] key) throws Exception {
-        if (Files.notExists(file(), LinkOption.NOFOLLOW_LINKS)) return CredentialStatus.absent();
+        return withCurrent(key, (status, apiKey) -> status);
+    }
+
+    private <T> T withCurrent(byte[] key, BiFunction<CredentialStatus, String, T> operation) throws Exception {
+        if (Files.notExists(file(), LinkOption.NOFOLLOW_LINKS)) return operation.apply(CredentialStatus.absent(), null);
         PrivateCredentialFiles.check(file(), false);
         byte[] envelope = bounded(file(), 33, 512); byte[] plain = null;
         try {
@@ -95,7 +128,7 @@ final class EncryptedCredentialStore {
             plain = cipher(Cipher.DECRYPT_MODE, key, nonce).doFinal(encrypted);
             String[] values = new String(plain, StandardCharsets.UTF_8).split("\n", -1);
             if (values.length != 3 || !valid(values[2])) throw PrivateCredentialFiles.unavailable();
-            return new CredentialStatus(true, UUID.fromString(values[0]), Instant.parse(values[1]));
+            return operation.apply(new CredentialStatus(true, UUID.fromString(values[0]), Instant.parse(values[1])), values[2]);
         } finally { wipe(plain); }
     }
 

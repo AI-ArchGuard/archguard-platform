@@ -14,6 +14,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
@@ -27,6 +28,7 @@ final class CredentialApplicationService implements CredentialOperations {
     private final TraceIdProvider traces;
     private final Clock clock;
     private EncryptedCredentialStore store;
+    private final ThreadLocal<Boolean> inCredentialUse = new ThreadLocal<>();
 
     CredentialApplicationService(Environment environment, CurrentActorProvider actors, AuditRecorder audits,
             TraceIdProvider traces, Clock clock) {
@@ -65,8 +67,20 @@ final class CredentialApplicationService implements CredentialOperations {
     }
 
     @Override public CredentialStatus status() { owner(); return operation("STATUS", false, () -> storage().status()); }
-    // No actor or plaintext escapes this module boundary; callers enforce their own Project authorization.
-    CredentialStatus internalStatus() { return storage().status(); }
+    // Metadata only; callers enforce their own Project authorization.
+    CredentialStatus internalStatus() { rejectReentry(); return storage().status(); }
+    void internalConsume(UUID expectedVersion, Consumer<String> finalOperation) {
+        owner();
+        if (expectedVersion == null || finalOperation == null) throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE);
+        EncryptedCredentialStore currentStore = storage();
+        // Audit intent BEFORE acquiring the store lock. Live accounting/result audits record the outcome after release.
+        audit("USE_REQUESTED", AuditResult.SUCCESS, expectedVersion);
+        currentStore.consume(expectedVersion, apiKey -> {
+            inCredentialUse.set(true);
+            try { finalOperation.accept(apiKey); }
+            finally { inCredentialUse.remove(); }
+        });
+    }
     @Override public void rejectInvalidWrite() { owner(); audit("WRITE", AuditResult.FAILURE, null); }
     @Override public CredentialStatus write(String apiKey) {
         owner(); return operation("WRITE", true, () -> storage().write(apiKey, Instant.now(clock)));
@@ -87,6 +101,7 @@ final class CredentialApplicationService implements CredentialOperations {
     }
 
     private void owner() {
+        rejectReentry();
         UUID owner;
         try { owner = UUID.fromString(required("owner-id")); }
         catch (RuntimeException failure) { throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE); }
@@ -94,6 +109,10 @@ final class CredentialApplicationService implements CredentialOperations {
             audit("AUTHORIZE", AuditResult.DENIED, null);
             throw new CredentialFailure(CredentialFailure.Kind.DENIED);
         }
+    }
+
+    private void rejectReentry() {
+        if (Boolean.TRUE.equals(inCredentialUse.get())) throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE);
     }
 
     private CredentialStatus operation(String action, boolean mutation, Supplier<CredentialStatus> operation) {

@@ -58,7 +58,8 @@ class LiveExecutionCoordinatorTest {
         return new LiveResultTransitions(requests, audit::add, Clock.fixed(NOW, ZoneOffset.UTC), new MemoryTransactions());
     }
     LiveExecutionCoordinator core(Consumer<AgentSnapshot> resources) {
-        return new LiveExecutionCoordinator(requests, accounting, resources, provider, (version, operation) -> {
+        return new LiveExecutionCoordinator(requests, accounting, resources, provider, (version, preflight, operation) -> {
+            preflight.run();
             assertThat(version).isEqualTo(accounting.credential); credentialReads.incrementAndGet();
             return operation.apply("synthetic-placeholder-not-a-key");
         }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
@@ -70,7 +71,7 @@ class LiveExecutionCoordinatorTest {
         var resources = new LiveResourceAuthorizer(unusedPort(ProjectAuthorization.class),
             unusedPort(ScanJobOperations.class), unusedPort(FindingOperations.class),
             unusedPort(DocumentOperations.class), unusedPort(ReportSubmissionOperations.class));
-        var core = new LiveExecutionCoordinator(requests, accounting, resources, provider, (version, operation) -> {
+        var core = new LiveExecutionCoordinator(requests, accounting, resources, provider, (version, preflight, operation) -> {
             credentialReads.incrementAndGet(); throw new AssertionError("Credential must not be consumed");
         }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()));
         assertThatThrownBy(() -> execute(core)).isInstanceOf(AgentUnavailableException.class)
@@ -184,7 +185,9 @@ class LiveExecutionCoordinatorTest {
             throw new IllegalStateException("private audit detail");
         }, Clock.fixed(NOW, ZoneOffset.UTC), new RollbackResultTransactions(requests));
         var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
-            (version, operation) -> operation.apply("synthetic-placeholder-not-a-key"), failingWriter,
+            (version, preflight, operation) -> {
+                preflight.run(); return operation.apply("synthetic-placeholder-not-a-key");
+            }, failingWriter,
             new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
         assertThatThrownBy(() -> execute(core)).isInstanceOf(AgentUnavailableException.class).hasNoCause();
         assertThat(accounting.settled.get()).isOne(); assertThat(accounting.unknown.get()).isZero();
@@ -193,10 +196,41 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().result()).isNull(); assertThat(audit).isEmpty();
     }
 
-    @Test void withdrawalAfterReservationAndInsideCredentialCallbackPreventsHttp() {
+    @Test void withdrawalAfterReservationAndDuringFreshPreflightPreventsHttp() {
         accounting.rejectCheck = 2;
         execute(core(validResources()));
         assertThat(accounting.unknown.get()).isOne(); assertThat(accounting.settled.get()).isZero(); assertThat(provider.sends.get()).isZero();
+    }
+
+    @Test void freshPreflightNeverEntersAnotherModuleWhileCredentialCallbackHoldsStoreLock() {
+        var credentialLockHeld = new AtomicBoolean();
+        accounting.onCheck = () -> assertThat(credentialLockHeld.get())
+            .as("Accounting/settings checks must precede the credential store lock").isFalse();
+        requests.onFind = () -> assertThat(credentialLockHeld.get())
+            .as("RUNNING state reads must precede the credential store lock").isFalse();
+        provider.onSend = () -> assertThat(credentialLockHeld.get())
+            .as("Only the final send callback holds the credential store lock").isTrue();
+        var core = new LiveExecutionCoordinator(requests, accounting, snapshot -> {
+            assertThat(credentialLockHeld.get()).as("Resource authorization must precede the credential store lock").isFalse();
+            resourceChecks.incrementAndGet();
+        }, provider, (version, preflight, operation) -> {
+            preflight.run();
+            assertThat(version).isEqualTo(accounting.credential);
+            credentialReads.incrementAndGet();
+            credentialLockHeld.set(true);
+            try { return operation.apply("synthetic-placeholder-not-a-key"); }
+            finally { credentialLockHeld.set(false); }
+        }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {
+            assertThat(credentialLockHeld.get()).as("Token/network policy must precede the credential store lock").isFalse();
+        }, nanos::get);
+
+        execute(core);
+
+        assertThat(requests.value.view().state()).isEqualTo("SUCCEEDED");
+        assertThat(accounting.checks.get()).isEqualTo(2);
+        assertThat(resourceChecks.get()).isEqualTo(4);
+        assertThat(credentialReads.get()).isOne();
+        assertThat(provider.sends.get()).isOne();
     }
 
     @Test void invalidUsageAndProviderFailureKeepReservationAndNeverRetry() {
@@ -273,7 +307,7 @@ class LiveExecutionCoordinatorTest {
     }
 
     @Test void wrongActorCannotReadSecretSendOrMutateRequest() {
-        var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider, (version, operation) -> {
+        var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider, (version, preflight, operation) -> {
             throw new AssertionError();
         }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(UUID.randomUUID(), Set.of()), body -> {}, nanos::get);
         assertThatThrownBy(() -> execute(core)).isInstanceOf(ProjectPermissionDeniedException.class);
@@ -281,10 +315,147 @@ class LiveExecutionCoordinatorTest {
     }
 
     @Test void credentialConsumerCannotSendTwice() {
-        var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider, (version, operation) -> {
+        var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider, (version, preflight, operation) -> {
+            preflight.run();
             operation.apply("synthetic-placeholder-not-a-key"); return operation.apply("synthetic-placeholder-not-a-key");
         }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
-        execute(core); assertThat(provider.sends.get()).isOne(); assertThat(accounting.unknown.get()).isOne();
+        execute(core); assertKnownReplyPreservedWithoutOutput();
+    }
+
+    @Test void skippedPreflightCannotReachHttp() {
+        execute(coreWithCredentials((version, preflight, operation) -> operation.apply("synthetic-placeholder-not-a-key")));
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.settled.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne(); assertThat(accounting.checks.get()).isOne();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    @Test void swallowedPreflightFailureStillCannotReachHttp() {
+        accounting.rejectCheck = 2;
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            assertThatThrownBy(preflight::run).isInstanceOf(AgentEnablementInvalidStateException.class);
+            return operation.apply("synthetic-placeholder-not-a-key");
+        }));
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.settled.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne(); assertThat(accounting.checks.get()).isEqualTo(2);
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    @Test void repeatedPreflightCannotBeSwallowedToPermitHttp() {
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            preflight.run();
+            assertThatThrownBy(preflight::run).isInstanceOf(LiveResponsePort.CallFailure.class);
+            return operation.apply("synthetic-placeholder-not-a-key");
+        }));
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.settled.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne(); assertThat(accounting.checks.get()).isEqualTo(2);
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    @Test void consumerCannotReturnBillableReplyWithoutRunningFinalSend() {
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            preflight.run(); return provider.reply;
+        }));
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.settled.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne(); assertThat(requests.value.view().usage()).isNull();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    @Test void consumerFailureAfterFinalSendPreservesKnownUsageAndFailsOutput() {
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            preflight.run(); operation.apply("synthetic-placeholder-not-a-key");
+            throw new IllegalStateException("private credential cleanup detail");
+        }));
+        assertKnownReplyPreservedWithoutOutput();
+    }
+
+    @Test void repeatedPreflightAfterFinalSendPreservesKnownUsageAndFailsOutput() {
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            preflight.run(); var reply = operation.apply("synthetic-placeholder-not-a-key");
+            assertThatThrownBy(preflight::run).isInstanceOf(LiveResponsePort.CallFailure.class);
+            return reply;
+        }));
+        assertKnownReplyPreservedWithoutOutput();
+    }
+
+    @Test void alteredConsumerReturnCannotReplaceActualSentReplyUsageOrMetadata() {
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            preflight.run(); operation.apply("synthetic-placeholder-not-a-key");
+            return new LiveResponsePort.Reply(INSUFFICIENT, null,
+                new LiveTokenUsage(1, 1, 0, 2, 0), "resp-altered", "deepseek-flash");
+        }));
+        assertKnownReplyPreservedWithoutOutput();
+    }
+
+    @Test void cachedFinalCallbackCannotSendAfterConsumerReturnedAndExecutionFailed() {
+        var cached = new AtomicReference<java.util.function.Function<String, LiveResponsePort.Reply>>();
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            preflight.run(); cached.set(operation); return null;
+        }));
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+        assertThatThrownBy(() -> cached.get().apply("synthetic-placeholder-not-a-key"))
+            .isInstanceOf(LiveResponsePort.CallFailure.class);
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.unknown.get()).isOne();
+        assertThat(accounting.settled.get()).isZero();
+    }
+
+    @Test void anotherThreadCannotRunFinalCallbackEvenWhileConsumerIsActive() {
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            preflight.run();
+            try (var executor = Executors.newSingleThreadExecutor()) {
+                var failure = catchThrowable(() -> executor.submit(() -> operation.apply("synthetic-placeholder-not-a-key"))
+                    .get(5, TimeUnit.SECONDS));
+                assertThat(failure).isInstanceOf(ExecutionException.class).cause().isInstanceOf(LiveResponsePort.CallFailure.class);
+            }
+            return null;
+        }));
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.unknown.get()).isOne();
+        assertThat(accounting.settled.get()).isZero();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    @Test void anotherThreadCannotRunPreflightEvenWhileConsumerIsActive() {
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            try (var executor = Executors.newSingleThreadExecutor()) {
+                var failure = catchThrowable(() -> executor.submit(preflight).get(5, TimeUnit.SECONDS));
+                assertThat(failure).isInstanceOf(ExecutionException.class).cause().isInstanceOf(LiveResponsePort.CallFailure.class);
+            }
+            return null;
+        }));
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.unknown.get()).isOne();
+        assertThat(accounting.checks.get()).isOne(); assertThat(accounting.settled.get()).isZero();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    private void assertKnownReplyPreservedWithoutOutput() {
+        assertThat(provider.sends.get()).isOne(); assertThat(accounting.settled.get()).isOne();
+        assertThat(accounting.unknown.get()).isZero();
+        assertThat(requests.value.view().failure()).isNotNull();
+        assertThat(requests.value.view().failure().code()).isEqualTo("OUTPUT_INVALID");
+        assertThat(requests.value.view().result()).isNull();
+        assertThat(requests.value.view().usage().inputTokens()).isEqualTo(1_000);
+        assertThat(requests.value.view().usage().outputTokens()).isEqualTo(100);
+        assertThat(requests.value.view().usage().actualCostMicrousd()).isEqualTo(273);
+        assertThat(requests.value.view().usage().providerResponseId()).isEqualTo("resp-synthetic");
+        assertThat(requests.value.view().usage().actualModelId()).isEqualTo("deepseek-flash");
+    }
+
+    @Test void credentialLockWaitExhaustsDeadlineAfterFreshPreflightAndBeforeHttp() {
+        execute(coreWithCredentials((version, preflight, operation) -> {
+            preflight.run();
+            // Simulates time spent waiting for the slot monitor, without resetting the execution deadline.
+            nanos.set(Duration.ofSeconds(30).toNanos());
+            credentialReads.incrementAndGet();
+            return operation.apply("synthetic-placeholder-not-a-key");
+        }));
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.settled.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne(); assertThat(accounting.checks.get()).isEqualTo(2);
+        assertThat(credentialReads.get()).isOne();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_TIMEOUT");
+    }
+
+    private LiveExecutionCoordinator coreWithCredentials(LiveExecutionCoordinator.CredentialUse credentials) {
+        return new LiveExecutionCoordinator(requests, accounting, validResources(), provider, credentials,
+            writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
     }
 
     private void assertConcurrentPreflightFailure(LiveResponsePort replayResponses,
@@ -297,7 +468,7 @@ class LiveExecutionCoordinatorTest {
             catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new AssertionError(interrupted); }
         };
         var replay = new LiveExecutionCoordinator(requests, accounting, replayResources, replayResponses,
-            (version, operation) -> { throw new AssertionError("Replay must not consume credentials"); },
+            (version, preflight, operation) -> { throw new AssertionError("Replay must not consume credentials"); },
             writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
             replayPolicy, nanos::get);
         try (var executor = Executors.newSingleThreadExecutor()) {
@@ -341,9 +512,10 @@ class LiveExecutionCoordinatorTest {
     static final class Ledger implements LiveAccountingOperations {
         final UUID credential = UUID.randomUUID(); final AtomicBoolean owns = new AtomicBoolean();
         final AtomicInteger reserves = new AtomicInteger(), settled = new AtomicInteger(), unknown = new AtomicInteger(), checks = new AtomicInteger();
-        Runnable onReserve = () -> {}, onSettle = () -> {}; int rejectCheck;
+        Runnable onReserve = () -> {}, onSettle = () -> {}, onCheck = () -> {}; int rejectCheck;
         public Admission reserve(UUID p, UUID b, UUID t, UUID r) { reserves.incrementAndGet(); onReserve.run(); return new Admission(r, 4200, owns.compareAndSet(false, true)); }
         public SendApproval checkBeforeSend(UUID p, UUID b, UUID t, UUID r) {
+            onCheck.run();
             if (checks.incrementAndGet() == rejectCheck) throw new AgentEnablementInvalidStateException();
             return new SendApproval(credential, Set.of("deepseek-flash"));
         }
@@ -357,8 +529,9 @@ class LiveExecutionCoordinatorTest {
     }
     static final class MemoryRequests implements AgentStore {
         volatile AgentSnapshot value;
+        Runnable onFind = () -> {};
         MemoryRequests(AgentSnapshot value) { this.value = value; }
-        public Optional<AgentSnapshot> find(UUID p, UUID r) { return value.view().projectId().equals(p) && value.view().id().equals(r) ? Optional.of(value) : Optional.empty(); }
+        public Optional<AgentSnapshot> find(UUID p, UUID r) { onFind.run(); return value.view().projectId().equals(p) && value.view().id().equals(r) ? Optional.of(value) : Optional.empty(); }
         public synchronized boolean finish(UUID r, AgentRequestView.AgentResult result, AgentRequestView.AgentFailure failure, AgentRequestView.AgentUsage usage, Instant at) {
             var v = value.view(); if (!v.id().equals(r) || !"RUNNING".equals(v.state())) return false;
             value = new AgentSnapshot(new AgentRequestView(v.id(), v.projectId(), v.requesterId(), v.traceId(), v.purpose(), result == null ? "FAILED" : "SUCCEEDED",

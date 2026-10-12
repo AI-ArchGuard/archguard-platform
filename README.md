@@ -83,7 +83,7 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 [合成批次与费用账本基础](docs/technical-design/v0.5-agent-live-accounting.md)提供 Batch Input 0.1.0、独立 V12、三层事务预留、唯一 attempt 与实际用量结算；未知费用不退款或重试。[受控来源与批次管理](docs/technical-design/v0.5-agent-synthetic-batches.md)追加 API 0.1.0 与 V13：独立默认关闭的操作员来源清单、不可变证明、预览/批准/读取/撤销元数据，不提供发送、预留或结算 HTTP 接口。原请求/worker 防护不变；来源清单部署、Token/网络准入、Web 和真实验收仍是独立后续关卡，当前 8081 栈不因此启用。
 
-[默认关闭的真实响应执行核心](docs/technical-design/v0.5-agent-live-execution-core.md)串接唯一 attempt、发送前锁后复核、公开领域资源核验、独立 usage 结算、输出/引用校验与结果事务。只在测试中使用假 HTTP；公开构造器始终拒绝准入，不注册真实客户端/worker，也不读取加密 Key。重复预检失败不能终结原执行者，成功写入在行锁后复核期限，已结算费用不随输出失败撤销。同步数据库等待的硬取消、凭据消费固定锁序、请求创建/调度、Token 上界和 Web 真实入口仍须后续交付；本切片不部署、不调用模型、不关闭阶段。
+[默认关闭的真实响应执行核心](docs/technical-design/v0.5-agent-live-execution-core.md)串接唯一 attempt、发送前锁后复核、公开领域资源核验、独立 usage 结算、输出/引用校验与结果事务。只在测试中使用假 HTTP；公开构造器始终拒绝准入，不注册真实客户端/worker。重复预检失败不能终结原执行者，成功写入在行锁后复核期限，已结算费用不随输出失败撤销。[版本绑定的凭据消费基础](docs/technical-design/v0.5-agent-version-bound-credentials.md)补齐同一存储实例的当前版本回调、替换/删除串行、重入拒绝及锁外 preflight；桥接未注册，不改变运行中的出口。同步等待的硬取消、请求创建/调度、Token 上界和 Web 真实入口仍须后续交付；本切片不部署、不调用模型、不关闭阶段。
 
 [传输基础切片](docs/technical-design/v0.5-agent-deepseek-transport.md)提供未装配的固定 HTTPS/有界响应/取消机制、运行时 Secret 文件读取与高峰价格计算，假 HTTP 仅访问测试临时环回服务器。它仍不是可用的真实 Agent；批次来源清单、事务记账与 worker 接线、Token 上界和实际出口检查未完成，不提供 Key 或网络启用配置。
 

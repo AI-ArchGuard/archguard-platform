@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -67,20 +68,57 @@ public final class LiveExecutionCoordinator {
             var approval = accounting.checkBeforeSend(project, batch, template, request);
             resources.accept(snapshot); policy.require(body.clone()); requireRunning(project, request); remaining(started);
             AtomicBoolean sent = new AtomicBoolean();
+            AtomicBoolean preflightStarted = new AtomicBoolean(), preflightCompleted = new AtomicBoolean();
+            AtomicBoolean consumerActive = new AtomicBoolean(true), consumerViolated = new AtomicBoolean();
+            AtomicReference<LiveResponsePort.Reply> received = new AtomicReference<>();
+            Thread caller = Thread.currentThread();
             AtomicLong providerLatency = new AtomicLong();
-            var reply = credentials.use(approval.credentialVersion(), key -> {
-                remaining(started);
-                var fresh = accounting.checkBeforeSend(project, batch, template, request);
-                if (!fresh.equals(approval)) throw new AgentEnablementInvalidStateException();
-                resources.accept(snapshot); policy.require(body.clone()); requireRunning(project, request);
-                Duration timeout = remaining(started);
-                if (!sent.compareAndSet(false, true)) throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
-                long providerStarted = nanos.getAsLong();
-                var response = responses.send(body, key, timeout, approval.allowedResponseModels());
-                // Freeze provider time before credential cleanup, ledger waits or output validation.
-                providerLatency.set(elapsedMs(providerStarted));
-                return response;
-            });
+            LiveResponsePort.Reply consumerReply = null;
+            boolean consumerFailed = false;
+            try {
+                consumerReply = credentials.use(approval.credentialVersion(), () -> {
+                    if (!consumerActive.get() || Thread.currentThread() != caller || !preflightStarted.compareAndSet(false, true)) {
+                        consumerViolated.set(true);
+                        throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
+                    }
+                    remaining(started);
+                    var fresh = accounting.checkBeforeSend(project, batch, template, request);
+                    if (!fresh.equals(approval)) throw new AgentEnablementInvalidStateException();
+                    resources.accept(snapshot); policy.require(body.clone()); requireRunning(project, request);
+                    remaining(started);
+                    preflightCompleted.set(true);
+                }, key -> {
+                    // This callback may hold the credential slot lock. Never enter another module here.
+                    if (!consumerActive.get() || Thread.currentThread() != caller || !preflightCompleted.get() || consumerViolated.get()) {
+                        consumerViolated.set(true);
+                        throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
+                    }
+                    Duration timeout = remaining(started);
+                    if (!sent.compareAndSet(false, true)) {
+                        consumerViolated.set(true);
+                        throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
+                    }
+                    long providerStarted = nanos.getAsLong();
+                    var response = responses.send(body, key, timeout, approval.allowedResponseModels());
+                    // Capture the actual transport reply before any consumer cleanup or return handling.
+                    received.set(response);
+                    // Freeze provider time before credential cleanup, ledger waits or output validation.
+                    providerLatency.set(elapsedMs(providerStarted));
+                    return response;
+                });
+            } catch (RuntimeException failure) {
+                if (received.get() == null) throw failure;
+                consumerFailed = true;
+            } finally {
+                // A retained callback is unusable after this synchronous consumption scope closes.
+                consumerActive.set(false);
+            }
+            var reply = received.get();
+            if (reply == null) throw new LiveResponsePort.CallFailure(sent.get() ? "OUTPUT_INVALID" : "MODEL_UNAVAILABLE");
+            if (consumerFailed || consumerViolated.get() || !preflightCompleted.get() || consumerReply != reply) {
+                // Interface failure cannot replace an actual reply or erase independently billable usage.
+                reply = new LiveResponsePort.Reply(null, "OUTPUT_INVALID", reply.usage(), reply.providerResponseId(), reply.actualModelId());
+            }
             validateAccounting(reply, approval.allowedResponseModels());
             var outcome = accounting.settle(project, request, LiveCostPolicy.VERSION, reply.usage());
             finalized = true;
@@ -155,8 +193,13 @@ public final class LiveExecutionCoordinator {
     }
 
     @FunctionalInterface interface SendPolicy { void require(byte[] encodedRequest); }
-    /** No runtime implementation yet. Must atomically bind the active slot version; no plaintext return. */
+    /**
+     * On the calling thread, run preflight once before acquiring a credential slot lock, then
+     * bind the active version atomically while invoking only finalSend once and returning its
+     * exact reply. Both callbacks expire when use returns. Do not return plaintext or enter
+     * other modules from finalSend. There is no production egress assembly in this core.
+     */
     @FunctionalInterface public interface CredentialUse {
-        LiveResponsePort.Reply use(UUID expectedVersion, Function<String, LiveResponsePort.Reply> operation);
+        LiveResponsePort.Reply use(UUID expectedVersion, Runnable preflight, Function<String, LiveResponsePort.Reply> finalSend);
     }
 }

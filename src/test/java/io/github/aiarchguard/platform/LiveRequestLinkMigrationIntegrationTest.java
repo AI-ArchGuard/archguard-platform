@@ -8,6 +8,7 @@ import io.github.aiarchguard.platform.agent.AgentRequestView;
 import io.github.aiarchguard.platform.agent.LiveCostPolicy;
 import io.github.aiarchguard.platform.agent.internal.AgentSnapshot;
 import io.github.aiarchguard.platform.agent.internal.AgentStore;
+import io.github.aiarchguard.platform.agent.internal.AgentTransitions;
 import io.github.aiarchguard.platform.agent.internal.LiveAccountingOperations;
 import io.github.aiarchguard.platform.agent.internal.LiveRequestStore;
 import java.sql.Connection;
@@ -32,6 +33,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
     private static final Instant NOW = Instant.parse("2026-10-12T00:00:00Z");
     @Autowired LiveRequestStore links;
     @Autowired AgentStore requests;
+    @Autowired AgentTransitions transitions;
     @Autowired JdbcClient jdbc;
 
     @Test void emptyDatabaseMigratesThroughV14AndSecondMigrationDoesNothing() throws Exception {
@@ -140,7 +142,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
     @Test void syntheticClaimCannotTakeLiveOrAssociatedWorkButStillClaimsNormalSyntheticWork() throws Exception {
         Fixture fixture;
         try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
-        UUID live = routedRequest(fixture, true), associated = routedRequest(fixture, false), synthetic = routedRequest(fixture, false);
+        UUID live = routedRequest(fixture.project(), true), associated = routedRequest(fixture.project(), false), synthetic = routedRequest(fixture.project(), false);
         links.insert(link(fixture, associated, fixture.template(), fixture.batch(), fixture.approval(), 7));
 
         assertThat(requests.claim(live, NOW)).isFalse();
@@ -152,7 +154,34 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
         assertThat(requests.claim(synthetic, NOW)).isFalse();
     }
 
-    private UUID routedRequest(Fixture fixture, boolean live) {
+    @Test void generatedQueuedFixtureCanRecoverWithAuditAndWithoutChangingAnyBudget() throws Exception {
+        Fixture fixture;
+        try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
+        UUID request = newRequest(fixture.project());
+        String liveBudgetBefore = jdbc.sql("""
+            SELECT jsonb_agg(to_jsonb(b) ORDER BY scope)::text FROM agent.live_budget_usage b WHERE scope_id=:project
+            """).param("project", fixture.project()).query(String.class).single();
+
+        transitions.recoverExpired(requests.find(fixture.project(), request).orElseThrow(), NOW.plusSeconds(1));
+
+        var recovered = requests.find(fixture.project(), request).orElseThrow().view();
+        assertThat(recovered.state()).isEqualTo("FAILED");
+        assertThat(recovered.failure().code()).isEqualTo("MODEL_TIMEOUT");
+        assertThat(jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records WHERE project_id=:project AND action='agent.request.failed'
+                AND metadata->>'requestId'=:request AND metadata->>'failureCode'='MODEL_TIMEOUT'
+                AND metadata->>'recovery'='true'
+            """).param("project", fixture.project()).param("request", request.toString()).query(Integer.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.budget_usage WHERE scope_id=:project")
+            .param("project", fixture.project()).query(Integer.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE request_id=:request")
+            .param("request", request).query(Integer.class).single()).isZero();
+        assertThat(jdbc.sql("""
+            SELECT jsonb_agg(to_jsonb(b) ORDER BY scope)::text FROM agent.live_budget_usage b WHERE scope_id=:project
+            """).param("project", fixture.project()).query(String.class).single()).isEqualTo(liveBudgetBefore);
+    }
+
+    private UUID routedRequest(UUID project, boolean live) {
         UUID request = UUID.randomUUID();
         String prompt = live ? LiveAccountingOperations.EXPLANATION_PROMPT : "finding-explanation-0.1.0";
         var bindings = new AgentRequestView.VersionBindings(UUID.randomUUID(), "a".repeat(64), null, List.of(UUID.randomUUID()),
@@ -161,7 +190,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
             live ? LiveCostPolicy.VERSION : "synthetic-0.1.0", "b".repeat(64));
         var input = new AgentModelPort.ModelInput("FINDING_EXPLANATION", "0.1.0", prompt, "c-" + UUID.randomUUID(),
             "synthetic.rule", "0.1.0", "high", "Synthetic migration fixture", "synthetic.module", List.of(), List.of(), null);
-        var view = new AgentRequestView(request, fixture.project(), fixture.project(), "c".repeat(32), input.purpose(),
+        var view = new AgentRequestView(request, project, project, "c".repeat(32), input.purpose(),
             "QUEUED", bindings, null, null, null, NOW, NOW);
         assertThat(requests.insert(new AgentSnapshot(view, input, List.of()), request.toString())).isTrue();
         return request;
@@ -172,13 +201,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
     }
 
     private UUID newRequest(UUID project) {
-        UUID request = UUID.randomUUID();
-        jdbc.sql("""
-            INSERT INTO agent.requests(id,project_id,requester_id,idempotency_key,input_digest,trace_id,purpose,state,
-                bindings,created_at,updated_at) VALUES (:id,:p,:p,:key,:digest,:trace,'FINDING_EXPLANATION','QUEUED','{}',:at,:at)
-            """).param("id", request).param("p", project).param("key", request.toString()).param("digest", "a".repeat(64))
-            .param("trace", "b".repeat(32)).param("at", java.sql.Timestamp.from(NOW)).update();
-        return request;
+        return routedRequest(project, false);
     }
 
     private Fixture seedHistory(Connection connection) throws SQLException {

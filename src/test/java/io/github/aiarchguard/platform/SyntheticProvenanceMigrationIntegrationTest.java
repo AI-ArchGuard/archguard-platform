@@ -31,7 +31,7 @@ class SyntheticProvenanceMigrationIntegrationTest extends PostgresIntegrationTes
                 + batch + "','" + project + "','" + approval + "','" + project + "','" + project + "','" + project + "',NOW(),NOW()+INTERVAL '1 hour','" + "a".repeat(64) + "','{}',1,4200)");
             String before;
             try (var rows = statement.executeQuery("SELECT row_to_json(b)::text FROM agent.live_batches b")) { rows.next(); before = rows.getString(1); }
-            var latest = migration(url).load();
+            var latest = migration(url).target(MigrationVersion.fromVersion("13")).load();
             assertThat(latest.migrate().migrationsExecuted).isOne();
             assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("13");
             assertThat(latest.migrate().migrationsExecuted).isZero();

@@ -35,13 +35,16 @@ public class AgentWorker {
     private final ObjectMapper mapper;
     private final Clock clock;
     private final Duration providerTimeout;
+    private final AgentRequestRouting routing;
 
     AgentWorker(AgentStore store, AgentTransitions transitions, AgentModelPort model,
             AgentOutputValidator validator, ProjectAuthorization projects,
             ReportSubmissionOperations reports, ObjectMapper mapper, Clock clock,
+            AgentRequestRouting routing,
             @Value("${archguard.agent.provider-timeout:30s}") Duration providerTimeout) {
         this.store = store; this.transitions = transitions; this.model = model; this.validator = validator;
         this.projects = projects; this.reports = reports; this.mapper = mapper; this.clock = clock;
+        this.routing = routing;
         if (providerTimeout.isZero() || providerTimeout.isNegative()
                 || providerTimeout.compareTo(Duration.ofSeconds(30)) > 0) {
             throw new IllegalArgumentException("Agent provider timeout must be within (0, 30s]");
@@ -57,7 +60,7 @@ public class AgentWorker {
                 var snapshot = store.find(projectId, requestId);
                 LOGGER.error("Agent worker failed requestId={} traceId={} errorType={}", requestId,
                     snapshot.map(s -> s.view().traceId()).orElse("unknown"), unexpected.getClass().getSimpleName());
-                snapshot.ifPresent(transitions::failUnknown);
+                snapshot.filter(routing::synthetic).ifPresent(transitions::failUnknown);
             }
             catch (RuntimeException persistenceUnavailable) {
                 LOGGER.error("Agent failure could not be persisted requestId={} traceId=unknown errorType={}", requestId,
@@ -68,7 +71,7 @@ public class AgentWorker {
 
     private void processOnce(UUID projectId, UUID requestId) {
         AgentSnapshot snapshot = store.find(projectId, requestId).orElse(null);
-        if (snapshot == null || !"QUEUED".equals(snapshot.view().state())) return;
+        if (!routing.synthetic(snapshot) || !"QUEUED".equals(snapshot.view().state())) return;
         if (Duration.between(snapshot.view().createdAt(), Instant.now(clock)).toSeconds() > 60) {
             transitions.failQueued(snapshot, "MODEL_TIMEOUT");
             return;
@@ -147,7 +150,8 @@ public class AgentWorker {
     }
 
     public void failQueued(UUID projectId, UUID requestId, String code) {
-        store.find(projectId, requestId).ifPresent(snapshot -> transitions.failQueued(snapshot, code));
+        store.find(projectId, requestId).filter(routing::synthetic)
+            .ifPresent(snapshot -> transitions.failQueued(snapshot, code));
     }
 
     private void fail(AgentSnapshot snapshot, AgentTransitions.Start start, String code, Instant started,

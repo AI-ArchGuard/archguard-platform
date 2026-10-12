@@ -48,6 +48,7 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
     @Autowired JdbcClient jdbc;
     @Autowired AgentEnablementOperations enablements;
     @Autowired AgentStore requests;
+    @Autowired LiveRequestStore links;
     @Autowired LiveAccountingOperations accounting;
     @Autowired LiveAccountingStore ledger;
     @Autowired AgentTransitions transitions;
@@ -77,6 +78,9 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
         SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(actor.toString(), null, List.of()));
     }
     UUID request(UUID batch, boolean live) {
+        return request(batch, live, true);
+    }
+    UUID request(UUID batch, boolean live, boolean linked) {
         UUID id = UUID.randomUUID();
         var input = new AgentModelPort.ModelInput("FINDING_EXPLANATION", "0.1.0", "finding-explanation-0.1.0",
             "f1", "synthetic.rule", "0.1.0", "high", "Synthetic evidence", "synthetic.module", List.of(), List.of(), null);
@@ -95,6 +99,8 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
         var view = new AgentRequestView(id, project, OWNER, "c".repeat(32), input.purpose(), live ? "RUNNING" : "FAILED", bindings, null,
             live ? null : new AgentRequestView.AgentFailure("MODEL_DISABLED", "Synthetic template"), null, now, now);
         assertThat(requests.insert(new AgentSnapshot(view, input, List.of()), id.toString())).isTrue();
+        if (live && linked) links.insert(new LiveRequestStore.Link(id, project, batch, template, acknowledgement,
+            AgentPersonalEnablementIntegrationTest.CREDENTIAL, enablements.settings(project).revision(), now));
         return id;
     }
     LiveBatchView batch(int count, long cost) {
@@ -129,6 +135,48 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
             .param("p", project).query(String.class).single();
         assertThat(mapper.readTree(metadata).path("cachedInputTokens").asInt()).isEqualTo(500);
         assertThat(metadata).doesNotContain("Synthetic evidence");
+    }
+
+    @Test void unlinkedLiveSnapshotCannotReserveAndStaleCreationRevisionCannotBeReenabled() {
+        var batch = batch(2, 8400); UUID unlinked = request(batch.id(), true, false), linked = request(batch.id(), true);
+        assertThatThrownBy(() -> accounting.reserve(project, batch.id(), template, unlinked)).isInstanceOf(AgentEnablementInvalidStateException.class);
+        enablements.update(project, 1, new AgentSettingsUpdate(false, null));
+        enablements.update(project, 2, new AgentSettingsUpdate(true, acknowledgement));
+        assertThatThrownBy(() -> accounting.reserve(project, batch.id(), template, linked)).isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThat(ledger.attempt(project, unlinked)).isEmpty(); assertThat(ledger.attempt(project, linked)).isEmpty();
+        assertThat(amount("PROJECT", project, "reserved_microusd")).isZero();
+    }
+
+    @Test void legacyUnlinkedAttemptCanReplayAndSettleButCannotSend() {
+        var batch = batch(1, 4200); UUID id = request(batch.id(), true, false);
+        var day = now.atZone(java.time.ZoneOffset.UTC).toLocalDate();
+        ledger.lockBudget("DEPLOYMENT", DEPLOYMENT, day); ledger.lockBudget("PROJECT", project, day);
+        ledger.reserveBudget("DEPLOYMENT", DEPLOYMENT, day, 4200); ledger.reserveBudget("PROJECT", project, day, 4200);
+        ledger.reserveBatch(batch.id(), 4200);
+        ledger.insertAttempt(new LiveAccountingStore.Attempt(id, project, batch.id(), template, UUID.randomUUID(), DEPLOYMENT, day,
+            LiveCostPolicy.VERSION, 4200, null, null), acknowledgement, AgentPersonalEnablementIntegrationTest.CREDENTIAL, 1, now);
+        assertThat(accounting.reserve(project, batch.id(), template, id).newAttempt()).isFalse();
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id)).isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThat(accounting.settle(project, id, LiveCostPolicy.VERSION, new LiveTokenUsage(1, 1, 0, 2, 0)).actualMicrousd()).isEqualTo(2);
+        assertThat(links.find(project, id)).isEmpty();
+        assertThat(amount("PROJECT", project, "spent_microusd")).isEqualTo(2);
+    }
+
+    @Test void linkBatchTemplateEnablementAndCredentialMustMatchTheFrozenRequest() throws Exception {
+        var batch = batch(4, 16800); var other = batch(1, 4200);
+        UUID otherTemplate = request(null, false);
+        String acknowledged = jdbc.sql("SELECT acknowledgement::text FROM agent.personal_enablements WHERE id=:id")
+            .param("id", acknowledgement).query(String.class).single();
+        UUID otherApproval = enablements.approve(project, mapper.readValue(acknowledged, PersonalEnablementInput.class)).id();
+        for (int mismatch = 0; mismatch < 4; mismatch++) {
+            UUID id = request(batch.id(), true, false);
+            links.insert(new LiveRequestStore.Link(id, project, mismatch == 0 ? other.id() : batch.id(),
+                mismatch == 1 ? otherTemplate : template, mismatch == 2 ? otherApproval : acknowledgement,
+                mismatch == 3 ? UUID.randomUUID() : AgentPersonalEnablementIntegrationTest.CREDENTIAL, 1, now));
+            assertThatThrownBy(() -> accounting.reserve(project, batch.id(), template, id)).isInstanceOf(AgentEnablementInvalidStateException.class);
+            assertThat(ledger.attempt(project, id)).isEmpty();
+        }
+        assertThat(amount("PROJECT", project, "reserved_microusd")).isZero();
     }
 
     @Test void sendCheckRequiresReservationAndReturnsItsFrozenCredentialWithoutChargingAgain() {
@@ -469,11 +517,12 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
         accounting.revoke(project, batch.id(), "http://localhost:8083", false);
         assertThatThrownBy(() -> accounting.reserve(project, batch.id(), template, id)).isInstanceOf(AgentEnablementInvalidStateException.class);
         var fresh = batch(1, 4200);
+        UUID freshRequest = request(fresh.id(), true);
         AgentPersonalEnablementIntegrationTest.TIME.set(now.plusSeconds(3600));
-        assertThatThrownBy(() -> accounting.reserve(project, fresh.id(), template, id)).isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThatThrownBy(() -> accounting.reserve(project, fresh.id(), template, freshRequest)).isInstanceOf(AgentEnablementInvalidStateException.class);
         AgentPersonalEnablementIntegrationTest.TIME.set(now);
         AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE.set(new io.github.aiarchguard.platform.agentcredential.CredentialStatus(true, UUID.randomUUID(), now));
-        assertThatThrownBy(() -> accounting.reserve(project, fresh.id(), template, id)).isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThatThrownBy(() -> accounting.reserve(project, fresh.id(), template, freshRequest)).isInstanceOf(AgentEnablementInvalidStateException.class);
         assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p").param("p", project).query(Integer.class).single()).isZero();
     }
 

@@ -44,6 +44,7 @@ class AgentLiveResultIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired JdbcClient jdbc;
     @Autowired AgentEnablementOperations enablements;
     @Autowired AgentStore requests;
+    @Autowired LiveRequestStore links;
     @Autowired LiveAccountingOperations accounting;
     @Autowired LiveAccountingStore ledger;
     @Autowired AuditRecorder audit;
@@ -59,7 +60,7 @@ class AgentLiveResultIntegrationTest extends PostgresIntegrationTestSupport {
     @BeforeEach void prepare() throws Exception {
         fixture = new AgentLiveAccountingIntegrationTest();
         fixture.mvc = mvc; fixture.mapper = mapper; fixture.jdbc = jdbc; fixture.enablements = enablements;
-        fixture.requests = requests; fixture.accounting = accounting; fixture.ledger = ledger; fixture.prepare();
+        fixture.requests = requests; fixture.links = links; fixture.accounting = accounting; fixture.ledger = ledger; fixture.prepare();
         var batch = fixture.batch(1, 4200);
         UUID request = fixture.request(batch.id(), true);
         accounting.reserve(fixture.project, batch.id(), fixture.template, request);

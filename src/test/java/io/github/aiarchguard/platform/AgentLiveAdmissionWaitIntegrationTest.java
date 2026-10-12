@@ -53,6 +53,7 @@ class AgentLiveAdmissionWaitIntegrationTest extends PostgresIntegrationTestSuppo
     @Autowired JdbcClient jdbc;
     @Autowired AgentEnablementOperations enablements;
     @Autowired AgentStore requests;
+    @Autowired io.github.aiarchguard.platform.agent.internal.LiveRequestStore links;
     @Autowired LiveAccountingOperations accounting;
     @Autowired LiveAccountingStore ledger;
     @Autowired DataSource dataSource;
@@ -61,7 +62,7 @@ class AgentLiveAdmissionWaitIntegrationTest extends PostgresIntegrationTestSuppo
     @BeforeEach void prepare() throws Exception {
         fixture = new AgentLiveAccountingIntegrationTest();
         fixture.mvc = mvc; fixture.mapper = mapper; fixture.jdbc = jdbc; fixture.enablements = enablements;
-        fixture.requests = requests; fixture.accounting = accounting; fixture.ledger = ledger;
+        fixture.requests = requests; fixture.links = links; fixture.accounting = accounting; fixture.ledger = ledger;
         fixture.prepare(); reviewAt(fixture.now);
     }
     @AfterEach void clear() {
@@ -78,6 +79,15 @@ class AgentLiveAdmissionWaitIntegrationTest extends PostgresIntegrationTestSuppo
         deniedAfterBudgetWait(() -> AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE
             .set(new CredentialStatus(true, UUID.randomUUID(), fixture.now)));
     }
+    @Test void terminalizedRequestWhileWaitingCannotWriteAnAttemptOrCharge() throws Exception {
+        deniedAfterBudgetWait(id -> {
+            Instant expired = fixture.now.plusSeconds(61);
+            AgentPersonalEnablementIntegrationTest.TIME.set(expired);
+            assertThat(requests.expire(id, fixture.now.plusSeconds(1),
+                new io.github.aiarchguard.platform.agent.AgentRequestView.AgentFailure("INTERNAL_ERROR", "Synthetic recovery"), expired)).isTrue();
+            assertThat(requests.find(fixture.project, id).orElseThrow().view().state()).isEqualTo("FAILED");
+        });
+    }
     @Test void utcRolloverWhileWaitingFailsEvenWhenAllApprovalsRemainValid() throws Exception {
         fixture.now = fixture.now.atZone(ZoneOffset.UTC).toLocalDate().atTime(LocalTime.of(23, 59, 59)).toInstant(ZoneOffset.UTC);
         AgentPersonalEnablementIntegrationTest.TIME.set(fixture.now); reviewAt(fixture.now);
@@ -90,6 +100,9 @@ class AgentLiveAdmissionWaitIntegrationTest extends PostgresIntegrationTestSuppo
     }
 
     private void deniedAfterBudgetWait(Runnable invalidate) throws Exception {
+        deniedAfterBudgetWait(id -> invalidate.run());
+    }
+    private void deniedAfterBudgetWait(java.util.function.Consumer<UUID> invalidate) throws Exception {
         var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
         LocalDate day = fixture.now.atZone(ZoneOffset.UTC).toLocalDate();
         fixture.seedBudget("DEPLOYMENT", AgentLiveAccountingIntegrationTest.DEPLOYMENT, 0);
@@ -120,7 +133,7 @@ class AgentLiveAdmissionWaitIntegrationTest extends PostgresIntegrationTestSuppo
                     finally { SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId"); }
                 });
                 awaitActualBlock(blockerPid, attempt);
-                invalidate.run(); blocker.commit();
+                invalidate.accept(request); blocker.commit();
                 assertThat(attempt.get(10, TimeUnit.SECONDS)).isInstanceOf(AgentEnablementInvalidStateException.class);
             } finally { blocker.rollback(); }
         } finally {

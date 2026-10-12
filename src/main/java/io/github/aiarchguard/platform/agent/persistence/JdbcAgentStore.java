@@ -64,7 +64,24 @@ public class JdbcAgentStore implements AgentStore {
 
     @Override
     public boolean claim(UUID id, Instant at) {
-        return jdbc.sql("UPDATE agent.requests SET state='RUNNING', updated_at=:at WHERE id=:id AND state='QUEUED'")
+        return jdbc.sql("""
+            UPDATE agent.requests r SET state='RUNNING', updated_at=:at
+            WHERE r.id=:id AND r.state='QUEUED'
+                AND r.bindings->>'modelProfileVersion'='disabled-or-test-fake-0.1.0'
+                AND r.bindings->>'modelProtocolVersion'='responses-v1-restricted'
+                AND r.bindings->>'modelId'='deterministic-fake-or-disabled'
+                AND r.bindings->>'priceCatalogVersion'='synthetic-0.1.0'
+                AND r.bindings->>'outputSchemaVersion'='0.1.0'
+                AND r.model_input->>'schemaVersion'='0.1.0'
+                AND r.model_input->>'purpose'=r.purpose
+                AND ((r.purpose='FINDING_EXPLANATION'
+                        AND r.bindings->>'promptVersion'='finding-explanation-0.1.0'
+                        AND r.model_input->>'promptVersion'='finding-explanation-0.1.0')
+                    OR (r.purpose='PR_SUMMARY'
+                        AND r.bindings->>'promptVersion'='pr-summary-0.1.0'
+                        AND r.model_input->>'promptVersion'='pr-summary-0.1.0'))
+                AND NOT EXISTS (SELECT 1 FROM agent.live_request_links l WHERE l.request_id=r.id)
+            """)
             .param("id", id).param("at", Timestamp.from(at)).update() == 1;
     }
 

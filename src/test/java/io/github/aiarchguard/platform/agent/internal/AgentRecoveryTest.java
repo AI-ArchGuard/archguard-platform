@@ -28,7 +28,13 @@ class AgentRecoveryTest {
     private final AgentSchemaAvailability schema = new AgentSchemaAvailability(() -> {});
     private final Clock clock = Clock.fixed(Instant.parse("2026-10-01T00:00:00Z"), ZoneOffset.UTC);
     private final AgentRecovery recovery = new AgentRecovery(store,
-        new AgentTransitions(store, null, event -> { throw new AssertionError("Unexpected audit write"); }, clock), schema, clock);
+        new AgentTransitions(store, null, event -> { throw new AssertionError("Unexpected audit write"); }, clock,
+            new AgentRequestRouting(new LiveRequestStore() {
+                public void insert(Link link) { throw new AssertionError("Recovery cannot write links"); }
+                public java.util.Optional<Link> find(java.util.UUID project, java.util.UUID request) {
+                    throw new AssertionError("Recovery does not filter routing");
+                }
+            })), schema, clock);
 
     @Test void schemaFailureSkipsRecoveryAndDatabaseFailureDoesNotEscape() {
         recovery.recoverExpired();

@@ -19,13 +19,16 @@ public class AgentTransitions {
     private final AgentBudgetStore budgets;
     private final AuditRecorder audit;
     private final Clock clock;
+    private final AgentRequestRouting routing;
 
-    AgentTransitions(AgentStore store, AgentBudgetStore budgets, AuditRecorder audit, Clock clock) {
+    AgentTransitions(AgentStore store, AgentBudgetStore budgets, AuditRecorder audit, Clock clock, AgentRequestRouting routing) {
         this.store = store; this.budgets = budgets; this.audit = audit; this.clock = clock;
+        this.routing = routing;
     }
 
     @Transactional
     public Start start(AgentSnapshot snapshot, long estimate) {
+        if (!routing.synthetic(snapshot)) return null;
         AgentRequestView view = snapshot.view();
         if (!store.claim(view.id(), Instant.now(clock))) return null;
         LocalDate day = LocalDate.now(clock.withZone(ZoneOffset.UTC));
@@ -45,6 +48,7 @@ public class AgentTransitions {
     @Transactional
     public void finish(AgentSnapshot snapshot, Start start, AgentRequestView.AgentResult result,
             AgentRequestView.AgentFailure failure, AgentRequestView.AgentUsage usage, boolean costUnknown) {
+        if (!routing.synthetic(snapshot)) return;
         AgentRequestView view = snapshot.view();
         if (!store.finish(view.id(), result, failure, usage, Instant.now(clock))) return;
         if (!costUnknown) {
@@ -68,6 +72,7 @@ public class AgentTransitions {
 
     @Transactional
     public void failQueued(AgentSnapshot snapshot, String code) {
+        if (!routing.synthetic(snapshot)) return;
         AgentRequestView view = snapshot.view();
         if (store.failQueued(view.id(), new AgentRequestView.AgentFailure(code,
                 AgentApplicationService.message(code)), Instant.now(clock))) {
@@ -77,6 +82,7 @@ public class AgentTransitions {
 
     @Transactional
     public void failUnknown(AgentSnapshot snapshot) {
+        if (!routing.synthetic(snapshot)) return;
         AgentRequestView view = snapshot.view();
         var failure = new AgentRequestView.AgentFailure("INTERNAL_ERROR",
             AgentApplicationService.message("INTERNAL_ERROR"));

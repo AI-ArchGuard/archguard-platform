@@ -3,6 +3,10 @@ package io.github.aiarchguard.platform.agent.internal;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.aiarchguard.platform.agent.*;
 import io.github.aiarchguard.platform.agentcredential.CredentialVersionSource;
+import io.github.aiarchguard.platform.agentdocument.DocumentOperations;
+import io.github.aiarchguard.platform.finding.FindingOperations;
+import io.github.aiarchguard.platform.governance.ReportSubmissionOperations;
+import io.github.aiarchguard.platform.scanjob.ScanJobOperations;
 import io.github.aiarchguard.platform.audit.AuditEvent;
 import io.github.aiarchguard.platform.audit.AuditRecorder;
 import io.github.aiarchguard.platform.audit.AuditResult;
@@ -25,12 +29,15 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
-final class LiveAccountingService implements LiveAccountingOperations {
+final class LiveAccountingService implements LiveAccountingOperations, LiveRequestOperations {
     private final ProjectAuthorization projects;
     private final AgentEnablementOperations controls;
     private final AgentEnablementStore enablements;
     private final CredentialVersionSource credentials;
     private final AgentStore requests;
+    private final LiveRequestStore links;
+    private final LiveResourceAuthorizer resources;
+    private final AgentRequestRouting routing;
     private final LiveAccountingStore store;
     private final SyntheticBatchInventory inventory;
     private final AgentSchemaAvailability schema;
@@ -45,7 +52,9 @@ final class LiveAccountingService implements LiveAccountingOperations {
     private final long projectLimit, deploymentLimit;
 
     LiveAccountingService(ProjectAuthorization projects, AgentEnablementOperations controls, AgentEnablementStore enablements,
-            CredentialVersionSource credentials, AgentStore requests, LiveAccountingStore store, SyntheticBatchInventory inventory,
+            CredentialVersionSource credentials, AgentStore requests, LiveRequestStore links, LiveAccountingStore store, SyntheticBatchInventory inventory,
+            ScanJobOperations jobs, FindingOperations findings, DocumentOperations documents, ReportSubmissionOperations reports,
+            AgentRequestRouting routing,
             AgentSchemaAvailability schema, AuditRecorder audit, CurrentActorProvider actors, TraceIdProvider traces, ObjectMapper mapper,
             Clock clock, PlatformTransactionManager transactions,
             @Value("${archguard.agent.credentials.deployment-id:}") String deploymentId,
@@ -54,6 +63,7 @@ final class LiveAccountingService implements LiveAccountingOperations {
             @Value("${archguard.agent.live-accounting.deployment-day-limit-microusd:20000000}") long deploymentLimit) {
         this.projects = projects; this.controls = controls; this.enablements = enablements; this.credentials = credentials;
         this.requests = requests; this.store = store; this.inventory = inventory; this.schema = schema; this.audit = audit;
+        this.links = links; this.resources = new LiveResourceAuthorizer(projects, jobs, findings, documents, reports); this.routing = routing;
         this.actors = actors; this.traces = traces; this.mapper = mapper; this.clock = clock; this.deploymentId = deploymentId;
         this.enabled = enabled; this.projectLimit = projectLimit; this.deploymentLimit = deploymentLimit;
         transaction = new TransactionTemplate(transactions);
@@ -109,6 +119,55 @@ final class LiveAccountingService implements LiveAccountingOperations {
         return AgentApplicationService.sha256(batch.view().manifestSha256() + "|" + templateId + "|" + batchId + "|"
             + approval.id() + "|" + approval.acknowledgement().credentialVersion() + "|" + prompt + "|" + MODEL_PROFILE + "|" + LiveCostPolicy.VERSION);
     }
+    @Override public AgentRequestView create(UUID project, UUID batchId, UUID templateId, String key, String origin, boolean secure) {
+        return write(project, "agent.live.request.created", () -> {
+            controls.authorizeWrite(project, origin, secure); schema.requireReady();
+            if (batchId == null || templateId == null || key == null || key.isBlank() || key.length() > 128
+                    || key.chars().anyMatch(c -> c < 33 || c > 126)) throw new AgentInvalidException();
+            var settings = enablements.lockSettings(project);
+            var batch = batch(project, batchId); store.lockBatch(batchId);
+            template(batch, templateId);
+            UUID actor = actors.currentActor().id();
+            String digest = requestDigest(project, batchId, templateId);
+            var replay = requests.findByKey(project, actor, key);
+            if (replay.isPresent()) return replay(replay.orElseThrow(), batchId, templateId, digest);
+            validateBatch(project, settings, batch);
+            var approval = approval(project, settings.enablementId()); validateApproval(approval);
+            var source = request(project, templateId);
+            if (!("FAILED".equals(source.view().state()) || "SUCCEEDED".equals(source.view().state()))
+                    || !routing.synthetic(source)) throw new AgentEnablementInvalidStateException();
+            var old = source.view().bindings(); var input = source.input();
+            String prompt = "PR_SUMMARY".equals(source.view().purpose()) ? SUMMARY_PROMPT : EXPLANATION_PROMPT;
+            var liveInput = new AgentModelPort.ModelInput(input.purpose(), input.schemaVersion(), prompt, input.findingRef(),
+                input.ruleId(), input.ruleVersion(), input.severity(), input.message(), input.subject(), input.evidence(), input.documents(), input.findings());
+            var bindings = new AgentRequestView.VersionBindings(old.scanJobId(), old.reportSha256(), old.prHeadRevisionId(),
+                List.copyOf(old.findingIds()), List.copyOf(old.documentVersions()), prompt, MODEL_PROFILE,
+                "responses-v1-restricted", "deepseek-flash", old.outputSchemaVersion(), LiveCostPolicy.VERSION, digest);
+            Instant now = Instant.now(clock);
+            var view = new AgentRequestView(UUID.randomUUID(), project, actor, traces.currentTraceId(), source.view().purpose(),
+                "QUEUED", bindings, null, null, null, now, now);
+            var snapshot = new AgentSnapshot(view, liveInput, List.copyOf(source.candidates()));
+            validateRequest(snapshot, batch, templateId, "QUEUED"); resources.validate(snapshot);
+            // Public domain checks can take time; inventory, credential metadata and expiry are fresh at commit.
+            projects.requireViewer(project); validateBatch(project, settings, batch); validateApproval(approval);
+            if (!requests.insert(snapshot, key)) return replay(requests.findByKey(project, actor, key).orElseThrow(), batchId, templateId, digest);
+            links.insert(new LiveRequestStore.Link(view.id(), project, batchId, templateId, approval.id(),
+                approval.acknowledgement().credentialVersion(), settings.revision(), now));
+            record(project, actor, view.traceId(), "agent.live.request.created", Map.of("requestId", view.id(),
+                "batchId", batchId, "templateId", templateId, "enablementId", approval.id(),
+                "credentialVersion", approval.acknowledgement().credentialVersion(), "settingsRevision", settings.revision(),
+                "inputDigest", digest, "modelProfileVersion", MODEL_PROFILE));
+            // No afterCommit hook: dispatch, Token admission and bounded trusted identity are separate gates.
+            return view;
+        });
+    }
+    private AgentRequestView replay(AgentSnapshot snapshot, UUID batch, UUID template, String digest) {
+        var link = links.find(snapshot.view().projectId(), snapshot.view().id()).orElseThrow(AgentConflictException::new);
+        if (!batch.equals(link.batchId()) || !template.equals(link.templateId())
+                || !MODEL_PROFILE.equals(snapshot.view().bindings().modelProfileVersion())
+                || !digest.equals(snapshot.view().bindings().inputDigest())) throw new AgentConflictException();
+        return snapshot.view();
+    }
     @Override public Admission reserve(UUID project, UUID batchId, UUID templateId, UUID requestId) {
         return write(project, "agent.live.reserved", () -> {
             projects.requireViewer(project); schema.requireReady();
@@ -122,7 +181,7 @@ final class LiveAccountingService implements LiveAccountingOperations {
             }
             validateBatch(project, settings, batch);
             var approval = approval(project, settings.enablementId()); validateApproval(approval);
-            validateRequest(snapshot, batch, templateId);
+            validateRequest(snapshot, batch, templateId, "RUNNING"); validateLink(snapshot, batch, templateId, settings, approval);
             if (projectLimit < 0 || projectLimit > 5_000_000 || deploymentLimit < 0 || deploymentLimit > 20_000_000) throw new AgentUnavailableException();
             LocalDate day = Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate();
             var batchUsage = store.lockBatch(batchId);
@@ -130,6 +189,8 @@ final class LiveAccountingService implements LiveAccountingOperations {
             var projectUsage = store.lockBudget("PROJECT", project, day);
             // Budget locks may wait while external inventory, credentials or the UTC day changes.
             projects.requireViewer(project); validateBatch(project, settings, batch); validateApproval(approval);
+            snapshot = request(project, requestId); sameActor(snapshot);
+            validateRequest(snapshot, batch, templateId, "RUNNING"); validateLink(snapshot, batch, templateId, settings, approval);
             if (!day.equals(Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate())) throw new AgentEnablementInvalidStateException();
             if (batchUsage.attempts() >= batch.view().maxRequests() || !fits(batchUsage, batch.view().maxCostMicrousd())
                     || !fits(deploymentUsage, deploymentLimit) || !fits(projectUsage, projectLimit)) throw new AgentQuotaExceededException();
@@ -158,8 +219,9 @@ final class LiveAccountingService implements LiveAccountingOperations {
                     || !attempt.day().equals(Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate())) throw new AgentEnablementInvalidStateException();
             // Read again after lock waits: recovery may already have terminalized the request.
             snapshot = request(project, requestId); sameActor(snapshot); projects.requireViewer(project);
-            validateBatch(project, settings, batch); validateRequest(snapshot, batch, templateId);
+            validateBatch(project, settings, batch); validateRequest(snapshot, batch, templateId, "RUNNING");
             var approval = approval(project, settings.enablementId()); validateApproval(approval);
+            validateLink(snapshot, batch, templateId, settings, approval);
             if (!binding.credentialVersion().equals(approval.acknowledgement().credentialVersion())) throw new AgentEnablementInvalidStateException();
             return new SendApproval(binding.credentialVersion(), new HashSet<>(approval.acknowledgement().allowedResponseModels()));
         });
@@ -199,10 +261,10 @@ final class LiveAccountingService implements LiveAccountingOperations {
             return new LiveManifest.Template(id, LiveManifest.selection(snapshot), LiveManifest.payload(mapper, snapshot), LiveManifest.hash(mapper, snapshot.candidates()));
         }).toList(); return new LiveManifest("0.1.0", project, templates);
     }
-    private void validateRequest(AgentSnapshot snapshot, LiveAccountingStore.Batch batch, UUID templateId) {
+    private void validateRequest(AgentSnapshot snapshot, LiveAccountingStore.Batch batch, UUID templateId, String state) {
         var expected = template(batch, templateId); var bindings = snapshot.view().bindings();
         String prompt = "PR_SUMMARY".equals(snapshot.view().purpose()) ? SUMMARY_PROMPT : EXPLANATION_PROMPT;
-        if (!"RUNNING".equals(snapshot.view().state()) || !MODEL_PROFILE.equals(bindings.modelProfileVersion())
+        if (!state.equals(snapshot.view().state()) || !MODEL_PROFILE.equals(bindings.modelProfileVersion())
                 || !"deepseek-flash".equals(bindings.modelId()) || !"responses-v1-restricted".equals(bindings.modelProtocolVersion())
                 || !LiveCostPolicy.VERSION.equals(bindings.priceCatalogVersion()) || !prompt.equals(bindings.promptVersion())
                 || !prompt.equals(snapshot.input().promptVersion())
@@ -210,6 +272,13 @@ final class LiveAccountingService implements LiveAccountingOperations {
                 || !expected.selection().equals(LiveManifest.selection(snapshot))
                 || !expected.payloadSha256().equals(LiveManifest.payload(mapper, snapshot))
                 || !expected.candidatesSha256().equals(LiveManifest.hash(mapper, snapshot.candidates()))) throw new AgentEnablementInvalidStateException();
+    }
+    private void validateLink(AgentSnapshot snapshot, LiveAccountingStore.Batch batch, UUID template,
+            AgentEnablementStore.Settings settings, AgentEnablementStore.Approval approval) {
+        var link = links.find(snapshot.view().projectId(), snapshot.view().id()).orElseThrow(AgentEnablementInvalidStateException::new);
+        if (!batch.view().id().equals(link.batchId()) || !template.equals(link.templateId())
+                || !approval.id().equals(link.enablementId()) || settings.revision() != link.settingsRevision()
+                || !approval.acknowledgement().credentialVersion().equals(link.credentialVersion())) throw new AgentEnablementInvalidStateException();
     }
     private boolean fits(LiveAccountingStore.Usage value, long limit) {
         return value.reserved() >= 0 && value.spent() >= 0 && value.reserved() <= limit && value.spent() <= limit - value.reserved()

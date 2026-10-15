@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — personal context-cost policy
+
+- Add explicit ADR-0014 context-based reservation (316,373 microUSD), acknowledgement 0.3.0, batch 0.2.0 and metadata APIs 0.2.0 without upgrading legacy approvals, 4,200 reservations, schemas or accounting history.
+- Append Agent V15 policy constraints and immutable batch stops; settle independently billable input above the 8,000 post-call threshold, stop on failure/unknown, and require validated explanation success plus settlement before the summary. Fixed request bytes/output, daily limits and default-closed egress remain unchanged; no model/account calls, deployment, release or stage-exit claim.
+
 - Agent：增加默认拒绝且未装配的独立 live 领取/审计、提交后调度与单次 OIDC/trace 作用域；不保留 Token，不启用真实调用、Web 或部署，公共契约和迁移不变。
 
 ## Unreleased — 4H local synthetic acceptance

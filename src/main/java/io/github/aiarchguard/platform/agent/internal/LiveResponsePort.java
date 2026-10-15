@@ -9,6 +9,11 @@ import java.util.Set;
 public interface LiveResponsePort {
     byte[] prepare(AgentModelPort.ModelInput input);
     Reply send(byte[] body, String apiKey, Duration remaining, Set<String> approvedModelIds);
+    /** An old transport cannot silently accept a new accounting/admission policy. */
+    default Reply send(byte[] body, String apiKey, Duration remaining, Set<String> approvedModelIds, String priceVersion) {
+        if (!io.github.aiarchguard.platform.agent.LiveCostPolicy.VERSION.equals(priceVersion)) throw new CallFailure("MODEL_UNAVAILABLE");
+        return send(body, apiKey, remaining, approvedModelIds);
+    }
 
     /** A rejected business output may still carry independently validated billable usage. */
     record Reply(String rawJson, String outputFailureCode, LiveTokenUsage usage,

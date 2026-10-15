@@ -12,7 +12,10 @@ import io.github.aiarchguard.platform.agent.AgentModelPort;
 import io.github.aiarchguard.platform.agent.AgentNotFoundException;
 import io.github.aiarchguard.platform.agent.AgentRequestView;
 import io.github.aiarchguard.platform.agent.AgentUnavailableException;
+import io.github.aiarchguard.platform.agent.LiveBatchInput;
+import io.github.aiarchguard.platform.agent.LiveBatchView;
 import io.github.aiarchguard.platform.agent.LiveCostPolicy;
+import io.github.aiarchguard.platform.agent.LiveTokenUsage;
 import io.github.aiarchguard.platform.audit.AuditEvent;
 import io.github.aiarchguard.platform.common.TraceTaskScope;
 import io.github.aiarchguard.platform.identity.AuthenticatedTaskScope;
@@ -40,6 +43,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -245,6 +249,116 @@ class LiveRequestDispatcherTest {
         assertSafeLogCode("INTERNAL_ERROR");
     }
 
+    @Test void compatibilityConstructorCannotClaimContextRequestWithoutBatchStopAndBoundedCleanup() {
+        fixture.useContextPolicy(); fixture.executionFailure = privateFailure();
+        fixture.dispatcher().dispatch(fixture.project, fixture.request); fixture.queue.runNext();
+        assertThat(fixture.links.claims).isZero(); assertThat(fixture.executions).isEmpty();
+        assertThat(fixture.requests.finishes).isZero();
+        assertThat(fixture.requests.value.view().state()).isEqualTo("QUEUED");
+        assertThat(fixture.audit).isEmpty();
+        assertSafeLogCode("MODEL_UNAVAILABLE");
+    }
+
+    @Test void contextPreflightFailureStopsBatchBeforeBoundedResultWithoutCreatingOrRefundingAnAttempt() {
+        fixture.useContextPolicy(); fixture.executionFailure = privateFailure();
+        var accounting = new StopOnlyAccounting(fixture); var database = new CleanupDatabase(fixture, accounting.events);
+        var dispatcher = fixture.dispatcher(fixture.boundedTransitions(accounting, database));
+        dispatcher.dispatch(fixture.project, fixture.request); dispatcher.dispatch(fixture.project, fixture.request);
+        fixture.queue.runNext(); fixture.queue.runNext();
+        assertThat(accounting.stops).containsExactly("INTERNAL_ERROR");
+        assertThat(accounting.events).containsExactly("stop", "cleanup");
+        assertThat(database.cleanups).isOne(); assertThat(fixture.requests.finishes).isOne();
+        assertThat(fixture.requests.value.view().state()).isEqualTo("FAILED");
+        assertThat(fixture.requests.value.view().failure().code()).isEqualTo("INTERNAL_ERROR");
+        assertThat(fixture.executions).hasSize(1); assertThat(fixture.links.claims).isOne();
+        assertThat(fixture.queue.tasks).isEmpty();
+        assertThat(fixture.audit).extracting(AuditEvent::action)
+            .containsExactly("agent.live.request.running", "agent.live.result_failed");
+        assertThat(fixture.audit.toString()).doesNotContain(PRIVATE_DETAIL, "private cause");
+    }
+
+    @Test void contextScopeExpiryAfterCommittedClaimStopsWithoutEverEnteringCoreOrModel() {
+        fixture.useContextPolicy();
+        var accounting = new StopOnlyAccounting(fixture); var database = new CleanupDatabase(fixture, accounting.events);
+        fixture.transactions.afterCommit = () -> fixture.scope.rejectChecks = true;
+        fixture.dispatcher(fixture.boundedTransitions(accounting, database)).dispatch(fixture.project, fixture.request);
+        fixture.queue.runNext();
+        assertThat(fixture.links.claims).isOne(); assertThat(fixture.executions).isEmpty();
+        assertThat(accounting.stops).containsExactly("AUTHORIZATION_REVOKED");
+        assertThat(accounting.events).containsExactly("stop", "cleanup");
+        assertThat(fixture.requests.value.view().state()).isEqualTo("FAILED");
+        assertThat(fixture.requests.value.view().failure().code()).isEqualTo("AUTHORIZATION_REVOKED");
+        assertThat(database.cleanups).isOne(); assertThat(fixture.requests.finishes).isOne();
+        assertSafeLogCode("AUTHORIZATION_REVOKED");
+    }
+
+    @Test void contextStopPersistenceFailureCannotWriteResultRefundRetryOrLeakItsCause() {
+        fixture.useContextPolicy(); fixture.executionFailure = privateFailure();
+        var accounting = new StopOnlyAccounting(fixture); accounting.failure = privateFailure();
+        var database = new CleanupDatabase(fixture, accounting.events);
+        fixture.dispatcher(fixture.boundedTransitions(accounting, database)).dispatch(fixture.project, fixture.request);
+        assertThatCode(fixture.queue::runNext).doesNotThrowAnyException();
+        assertThat(accounting.stops).containsExactly("INTERNAL_ERROR");
+        assertThat(accounting.events).containsExactly("stop"); assertThat(database.cleanups).isZero();
+        assertThat(fixture.requests.finishes).isZero(); assertThat(fixture.requests.value.view().state()).isEqualTo("RUNNING");
+        assertThat(fixture.requests.value.view().failure()).isNull();
+        assertThat(fixture.audit).extracting(AuditEvent::action).containsExactly("agent.live.request.running");
+        assertThat(fixture.executions).hasSize(1); assertThat(fixture.queue.tasks).isEmpty();
+        assertSafeLogCode("MODEL_UNAVAILABLE");
+    }
+
+    @Test void contextResultFailureCannotUndoTheAlreadyPersistedStopOrRetryExecution() {
+        fixture.useContextPolicy(); fixture.executionFailure = privateFailure(); fixture.requests.finishFailure = privateFailure();
+        var accounting = new StopOnlyAccounting(fixture); var database = new CleanupDatabase(fixture, accounting.events);
+        fixture.dispatcher(fixture.boundedTransitions(accounting, database)).dispatch(fixture.project, fixture.request);
+        assertThatCode(fixture.queue::runNext).doesNotThrowAnyException();
+        assertThat(accounting.stops).containsExactly("INTERNAL_ERROR");
+        assertThat(accounting.events).containsExactly("stop", "cleanup");
+        assertThat(database.cleanups).isOne(); assertThat(fixture.requests.finishes).isOne();
+        assertThat(fixture.requests.value.view().state()).isEqualTo("RUNNING");
+        assertThat(fixture.audit).extracting(AuditEvent::action).containsExactly("agent.live.request.running");
+        assertThat(fixture.executions).hasSize(1); assertThat(fixture.queue.tasks).isEmpty();
+        assertSafeLogCode("MODEL_UNAVAILABLE");
+    }
+
+    @Test void contextLosingClaimCannotStopOrFinalizeTheWinningExecutor() {
+        fixture.useContextPolicy(); fixture.links.wins = false;
+        var accounting = new StopOnlyAccounting(fixture); var database = new CleanupDatabase(fixture, accounting.events);
+        fixture.dispatcher(fixture.boundedTransitions(accounting, database)).dispatch(fixture.project, fixture.request);
+        fixture.queue.runNext();
+        assertThat(fixture.links.claims).isOne(); assertThat(fixture.executions).isEmpty();
+        assertThat(accounting.stops).isEmpty(); assertThat(database.cleanups).isZero();
+        assertThat(fixture.requests.finishes).isZero(); assertThat(fixture.audit).isEmpty();
+    }
+
+    @Test void foreignOrMissingClaimIsRejectedBeforeAnyContextStopOrFailureWrite() {
+        fixture.useContextPolicy();
+        var accounting = new StopOnlyAccounting(fixture); var database = new CleanupDatabase(fixture, accounting.events);
+        var owner = fixture.boundedTransitions(accounting, database);
+        var other = fixture.boundedTransitions(accounting, database);
+        var claim = new AtomicReference<LiveDispatchTransitions.Claim>();
+        fixture.scope.capture(fixture.owner, new TraceTaskScope().wrap(TRACE,
+            () -> claim.set(owner.start(fixture.project, fixture.request)))).run();
+        assertThat(claim.get()).isNotNull();
+        assertUnavailable(() -> other.fail(claim.get(), "MODEL_TIMEOUT"));
+        assertUnavailable(() -> other.fail(null, "MODEL_TIMEOUT"));
+        assertThat(accounting.stops).isEmpty(); assertThat(database.cleanups).isZero();
+        assertThat(fixture.requests.finishes).isZero();
+        assertThat(fixture.requests.value.view().state()).isEqualTo("RUNNING");
+        assertThat(fixture.audit).extracting(AuditEvent::action).containsExactly("agent.live.request.running");
+    }
+
+    @Test void newConstructorUsesBoundedFailureCleanupForLegacyWithoutApplyingContextStopPolicy() {
+        fixture.executionFailure = privateFailure();
+        var accounting = new StopOnlyAccounting(fixture); var database = new CleanupDatabase(fixture, accounting.events);
+        fixture.dispatcher(fixture.boundedTransitions(accounting, database)).dispatch(fixture.project, fixture.request);
+        fixture.queue.runNext();
+        assertThat(accounting.stops).isEmpty(); assertThat(accounting.events).containsExactly("cleanup");
+        assertThat(database.cleanups).isOne(); assertThat(fixture.requests.finishes).isOne();
+        assertThat(fixture.requests.value.view().state()).isEqualTo("FAILED");
+        assertThat(fixture.requests.value.view().failure().code()).isEqualTo("INTERNAL_ERROR");
+    }
+
     @Test void capturedScopeEntryRejectionNeverStartsOrFailsTheRequest() {
         fixture.scope.entryFailure = new InactiveAuthenticatedTaskException();
         fixture.dispatcher().dispatch(fixture.project, fixture.request);
@@ -358,19 +472,25 @@ class LiveRequestDispatcherTest {
         final FakeScope scope = new FakeScope(currentActor);
         final ManualQueue queue = new ManualQueue();
         final MemoryTransactions transactions = new MemoryTransactions(requests, audit);
-        final LiveDispatchTransitions transitions = new LiveDispatchTransitions(requests, links, new ProjectAuthorization() {
+        final ProjectAuthorization projects = new ProjectAuthorization() {
             public ProjectAccessView requireViewer(UUID id) {
                 assertThat(id).isEqualTo(project);
                 return new ProjectAccessView(project, "synthetic-project", "Synthetic project", ProjectMemberRole.VIEWER);
             }
             public ProjectAccessView requireMaintainer(UUID id) { throw new AssertionError("Dispatch does not request Maintainer"); }
             public ProjectAccessView requireViewerForActor(UUID id, UUID actor) { throw new AssertionError("No self-reported worker actor"); }
-        }, actors, scope, () -> MDC.get("traceId"), audit::add, Clock.fixed(NOW, ZoneOffset.UTC), transactions);
+        };
+        final LiveDispatchTransitions transitions = new LiveDispatchTransitions(requests, links, projects,
+            actors, scope, () -> MDC.get("traceId"), audit::add, Clock.fixed(NOW, ZoneOffset.UTC), transactions);
         RuntimeException executionFailure;
 
         LiveRequestDispatcher dispatcher() { return dispatcher(() -> {}); }
         LiveRequestDispatcher dispatcher(Runnable admission) {
-            return new LiveRequestDispatcher(requests, links, actors, scope, new TraceTaskScope(), transitions,
+            return dispatcher(transitions, admission);
+        }
+        LiveRequestDispatcher dispatcher(LiveDispatchTransitions boundary) { return dispatcher(boundary, () -> {}); }
+        LiveRequestDispatcher dispatcher(LiveDispatchTransitions boundary, Runnable admission) {
+            return new LiveRequestDispatcher(requests, links, actors, scope, new TraceTaskScope(), boundary,
                 (p, b, t, r) -> {
                     assertThat(currentActor.get().id()).isEqualTo(owner);
                     assertThat(scope.active.get()).isTrue();
@@ -381,6 +501,11 @@ class LiveRequestDispatcherTest {
                     if (executionFailure != null) throw executionFailure;
                 }, queue, admission);
         }
+
+        LiveDispatchTransitions boundedTransitions(LiveAccountingOperations accounting, LiveDatabaseWork database) {
+            return new LiveDispatchTransitions(requests, links, projects, actors, scope, () -> MDC.get("traceId"),
+                audit::add, Clock.fixed(NOW, ZoneOffset.UTC), transactions, accounting, database);
+        }
         AgentSnapshot snapshot() {
             var input = new AgentModelPort.ModelInput("FINDING_EXPLANATION", "0.1.0", LiveAccountingOperations.EXPLANATION_PROMPT,
                 "synthetic-finding", "synthetic.rule", "0.1.0", "high", "Synthetic evidence", "synthetic.module", List.of(), List.of(), null);
@@ -389,6 +514,57 @@ class LiveRequestDispatcherTest {
                 "responses-v1-restricted", "deepseek-flash", "0.1.0", LiveCostPolicy.VERSION, "b".repeat(64));
             return new AgentSnapshot(new AgentRequestView(request, project, owner, TRACE, input.purpose(), "QUEUED", bindings,
                 null, null, null, NOW, NOW), input, List.of());
+        }
+
+        void useContextPolicy() {
+            var snapshot = requests.value; var view = snapshot.view(); var old = view.bindings();
+            var bindings = new AgentRequestView.VersionBindings(old.scanJobId(), old.reportSha256(), old.prHeadRevisionId(),
+                old.findingIds(), old.documentVersions(), old.promptVersion(), LiveCostPolicy.CONTEXT_MODEL_PROFILE,
+                old.modelProtocolVersion(), old.modelId(), old.outputSchemaVersion(), LiveCostPolicy.CONTEXT_VERSION, old.inputDigest());
+            requests.value = new AgentSnapshot(new AgentRequestView(view.id(), view.projectId(), view.requesterId(), view.traceId(),
+                view.purpose(), view.state(), bindings, view.result(), view.failure(), view.usage(), view.createdAt(), view.updatedAt()),
+                snapshot.input(), snapshot.candidates());
+        }
+    }
+
+    /** There is no attempt, budget, credential or HTTP implementation in this failure-only fixture. */
+    private static final class StopOnlyAccounting implements LiveAccountingOperations {
+        final Fixture fixture;
+        final List<String> stops = new ArrayList<>(), events = new ArrayList<>();
+        RuntimeException failure;
+        StopOnlyAccounting(Fixture fixture) { this.fixture = fixture; }
+        public void stopBatch(UUID project, UUID batch, UUID request, String code) {
+            assertThat(project).isEqualTo(fixture.project); assertThat(batch).isEqualTo(fixture.batch);
+            assertThat(request).isEqualTo(fixture.request); assertThat(fixture.currentActor.get().id()).isEqualTo(fixture.owner);
+            assertThat(fixture.requests.value.view().state()).isEqualTo("RUNNING");
+            assertThat(fixture.requests.finishes).isZero();
+            events.add("stop"); stops.add(code);
+            if (failure != null) throw failure;
+        }
+        public String preview(UUID project, List<UUID> templates) { throw forbidden(); }
+        public LiveBatchView approve(UUID project, String origin, boolean secure, LiveBatchInput input) { throw forbidden(); }
+        public LiveBatchView get(UUID project, UUID batch) { throw forbidden(); }
+        public LiveBatchView revoke(UUID project, UUID batch, String origin, boolean secure) { throw forbidden(); }
+        public String requestDigest(UUID project, UUID batch, UUID template) { throw forbidden(); }
+        public Admission reserve(UUID project, UUID batch, UUID template, UUID request) { throw forbidden(); }
+        public SendApproval checkBeforeSend(UUID project, UUID batch, UUID template, UUID request) { throw forbidden(); }
+        public Outcome settle(UUID project, UUID request, String price, LiveTokenUsage usage) { throw forbidden(); }
+        public Outcome unknown(UUID project, UUID request) { throw forbidden(); }
+        private AssertionError forbidden() { return new AssertionError("Claim failure cannot reserve, refund, settle, send or retry"); }
+    }
+
+    private static final class CleanupDatabase implements LiveDatabaseWork {
+        final TransactionTemplate transaction;
+        final List<String> events;
+        int cleanups;
+        CleanupDatabase(Fixture fixture, List<String> events) {
+            transaction = new TransactionTemplate(fixture.transactions);
+            transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            this.events = events;
+        }
+        @Override public <T> T cleanup(Supplier<T> action) {
+            cleanups++; events.add("cleanup");
+            return transaction.execute(status -> action.get());
         }
     }
 

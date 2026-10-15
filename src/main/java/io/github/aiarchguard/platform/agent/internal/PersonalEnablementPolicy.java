@@ -10,6 +10,7 @@ import java.util.Set;
 
 final class PersonalEnablementPolicy {
     static final String PRICE_VERSION = io.github.aiarchguard.platform.agent.LiveCostPolicy.VERSION;
+    static final String CONTEXT_PRICE_VERSION = io.github.aiarchguard.platform.agent.LiveCostPolicy.CONTEXT_VERSION;
     private static final Set<String> UNKNOWNS = Set.of("PROCESSING_REGION", "STORAGE_REGION", "TRAINING", "HUMAN_REVIEW",
         "LOG_RETENTION", "CACHE_ISOLATION", "CACHE_RETENTION", "SUBPROCESSORS");
     private static final Set<String> REVOCATIONS = Set.of("OWNER_REVOKED", "SCOPE_CHANGED", "POLICY_CHANGED", "MODEL_CHANGED",
@@ -23,10 +24,9 @@ final class PersonalEnablementPolicy {
     private PersonalEnablementPolicy() { }
 
     static void validate(PersonalEnablementInput value, Instant now) {
-        if (value == null || !"0.2.0".equals(value.schemaVersion()) || !"PERSONAL".equals(value.scope())
+        if (value == null || !profile(value) || !"PERSONAL".equals(value.scope())
                 || !Boolean.TRUE.equals(value.riskAccepted()) || !"SYNTHETIC_ACCEPTANCE".equals(value.dataScope())
-                || !"deepseek-flash".equals(value.modelAlias()) || !PRICE_VERSION.equals(value.priceCatalogVersion())
-                || !"deepseek-v4.1-flash-2026-10-06".equals(value.mappingSnapshot())
+                || !"deepseek-flash".equals(value.modelAlias())
                 || value.credentialVersion() == null || value.allowedResponseModels() == null
                 || !value.allowedResponseModels().equals(java.util.List.of("deepseek-flash"))
                 || !ref(value.accountRef()) || !ref(value.deploymentRef()) || !ref(value.secretCheckRef()) || !ref(value.networkCheckRef())
@@ -45,6 +45,13 @@ final class PersonalEnablementPolicy {
                     || source.checkedAt().isBefore(now.minus(Duration.ofDays(7)))) invalid();
         }
         if (!kinds.containsAll(Set.of("TERMS", "PRIVACY", "CACHE", "MODEL_PRICE"))) invalid();
+    }
+    private static boolean profile(PersonalEnablementInput value) {
+        // A schema version is explicit risk acceptance; matching the model alias alone cannot upgrade it.
+        return ("0.2.0".equals(value.schemaVersion()) && PRICE_VERSION.equals(value.priceCatalogVersion())
+                && "deepseek-v4.1-flash-2026-10-06".equals(value.mappingSnapshot()))
+            || ("0.3.0".equals(value.schemaVersion()) && CONTEXT_PRICE_VERSION.equals(value.priceCatalogVersion())
+                && "deepseek-v4.1-flash-2026-10-15".equals(value.mappingSnapshot()));
     }
     private static boolean ref(String value) {
         return value != null && value.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}") && !value.startsWith("sk-");

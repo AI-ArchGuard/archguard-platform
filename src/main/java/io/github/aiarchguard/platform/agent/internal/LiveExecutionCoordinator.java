@@ -72,7 +72,8 @@ public final class LiveExecutionCoordinator {
         boolean ownsAttempt = false, finalized = false;
         AgentRequestView.AgentUsage usage = null;
         try {
-            if (!LiveAccountingOperations.MODEL_PROFILE.equals(snapshot.view().bindings().modelProfileVersion())) throw new AgentEnablementInvalidStateException();
+            String price = snapshot.view().bindings().priceCatalogVersion();
+            if (!LiveCostPolicy.modelProfile(price).equals(snapshot.view().bindings().modelProfileVersion())) throw new AgentEnablementInvalidStateException();
             byte[] body = responses.prepare(snapshot.input());
             remaining(started); policy.require(body.clone()); validateResources(snapshot, remaining);
             remaining(started);
@@ -116,7 +117,7 @@ public final class LiveExecutionCoordinator {
                         throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
                     }
                     long providerStarted = nanos.getAsLong();
-                    var response = responses.send(body, key, timeout, approval.allowedResponseModels());
+                    var response = responses.send(body, key, timeout, approval.allowedResponseModels(), price);
                     // Capture the actual transport reply before any consumer cleanup or return handling.
                     received.set(response);
                     // Freeze provider time before credential cleanup, ledger waits or output validation.
@@ -136,14 +137,17 @@ public final class LiveExecutionCoordinator {
                 // Interface failure cannot replace an actual reply or erase independently billable usage.
                 reply = new LiveResponsePort.Reply(null, "OUTPUT_INVALID", reply.usage(), reply.providerResponseId(), reply.actualModelId());
             }
-            validateAccounting(reply, approval.allowedResponseModels());
-            var outcome = accounting.settle(project, request, LiveCostPolicy.VERSION, reply.usage());
+            validateAccounting(reply, approval.allowedResponseModels(), price);
+            var outcome = accounting.settle(project, request, price, reply.usage());
             finalized = true;
             if (!"SETTLED".equals(outcome.state()) || outcome.actualMicrousd() == null) throw new LiveResponsePort.CallFailure("OUTPUT_INVALID");
             usage = new AgentRequestView.AgentUsage(reply.usage().inputTokens(), reply.usage().outputTokens(), elapsedMs(started),
                 providerLatency.get(), admission.reservedMicrousd(), outcome.actualMicrousd(), reply.providerResponseId(), reply.actualModelId());
             // Late but billable replies are settled, never displayed as successful results.
             remaining(started);
+            if (LiveCostPolicy.isContext(price) && reply.usage().inputTokens() > LiveCostPolicy.POSTCALL_INPUT_THRESHOLD) {
+                throw new AgentOutputValidator.InvalidOutput("OUTPUT_INVALID");
+            }
             if (reply.outputFailureCode() != null) throw new AgentOutputValidator.InvalidOutput("OUTPUT_INVALID");
             var result = validator.validate(reply.rawJson(), snapshot);
             validateResources(snapshot, remaining); remaining(started);
@@ -153,6 +157,10 @@ public final class LiveExecutionCoordinator {
             // Preflight denial (including a concurrent replay) never owns a shared RUNNING row.
             // Only the call awarded newAttempt=true may persist its outcome or terminalize work.
             if (!ownsAttempt) throw preflightFailure(failure);
+            if (LiveCostPolicy.isContext(snapshot.view().bindings().priceCatalogVersion())) {
+                try { accounting.stopBatch(project, batch, request, failureCode(failure)); }
+                catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
+            }
             if (!finalized) {
                 // Audit/accounting failure must not refund a possibly incurred charge or trigger a retry.
                 try { accounting.unknown(project, request); }
@@ -194,11 +202,11 @@ public final class LiveExecutionCoordinator {
             usage.providerLatencyMs(), usage.estimatedCostMicrousd(), usage.actualCostMicrousd(),
             usage.providerResponseId(), usage.actualModelId());
     }
-    private void validateAccounting(LiveResponsePort.Reply reply, Set<String> models) {
+    private void validateAccounting(LiveResponsePort.Reply reply, Set<String> models, String price) {
         if (reply == null || reply.providerResponseId() == null || !reply.providerResponseId().matches("[A-Za-z0-9._:-]{1,128}")
                 || reply.actualModelId() == null || !reply.actualModelId().matches("[A-Za-z0-9._:-]{1,128}")
                 || !models.contains(reply.actualModelId())) throw new LiveResponsePort.CallFailure("OUTPUT_INVALID");
-        try { LiveCostPolicy.cost(reply.usage()); }
+        try { LiveCostPolicy.cost(price, reply.usage()); }
         catch (AgentInvalidException invalid) { throw new LiveResponsePort.CallFailure("OUTPUT_INVALID"); }
     }
     private String failureCode(RuntimeException failure) {

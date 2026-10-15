@@ -58,11 +58,11 @@ class LiveExecutionCoordinatorTest {
         return new LiveResultTransitions(requests, audit::add, Clock.fixed(NOW, ZoneOffset.UTC), new MemoryTransactions());
     }
     LiveExecutionCoordinator core(Consumer<AgentSnapshot> resources) {
-        return new LiveExecutionCoordinator(requests, accounting, resources, provider, (version, preflight, operation) -> {
+        return new LiveExecutionCoordinator(requests, accounting, resources, provider, boundedFake((version, preflight, operation) -> {
             preflight.run();
             assertThat(version).isEqualTo(accounting.credential); credentialReads.incrementAndGet();
             return operation.apply("synthetic-placeholder-not-a-key");
-        }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
+        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
     }
     void execute(LiveExecutionCoordinator core) { core.execute(project, batch, template, request); }
     Consumer<AgentSnapshot> validResources() { return snapshot -> resourceChecks.incrementAndGet(); }
@@ -91,6 +91,83 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.input()).isSameAs(original.input()); assertThat(requests.value.view().bindings()).isSameAs(original.view().bindings());
         assertThat(audit).hasSize(1); assertThat(audit.getFirst().action()).isEqualTo("agent.live.result_succeeded");
         assertThat(audit.toString()).doesNotContain("Synthetic evidence", "synthetic-placeholder", INSUFFICIENT);
+    }
+
+    @Test void legacyCredentialConsumerWithoutBoundedSupportCannotReadKeyOrSend() {
+        var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
+            (version, preflight, operation) -> {
+                preflight.run();
+                credentialReads.incrementAndGet();
+                return operation.apply("synthetic-placeholder-not-a-key");
+            }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
+            body -> {}, nanos::get);
+        execute(core);
+        assertThat(credentialReads.get()).isZero();
+        assertThat(provider.sends.get()).isZero();
+        assertThat(accounting.settled.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    @Test void defaultBoundedMethodRejectsEvenAConstantPositiveBudgetWithoutLegacyFallback() {
+        LiveExecutionCoordinator.CredentialUse legacy = (version, preflight, operation) -> {
+            credentialReads.incrementAndGet(); return operation.apply("synthetic-placeholder-not-a-key");
+        };
+        assertThatThrownBy(() -> legacy.use(accounting.credential, () -> Duration.ofSeconds(30).toNanos(),
+                () -> {}, key -> { provider.sends.incrementAndGet(); return provider.reply; }))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("MODEL_UNAVAILABLE").hasNoCause();
+        assertThat(credentialReads.get()).isZero(); assertThat(provider.sends.get()).isZero();
+    }
+
+    @Test void originalClockBudgetFlowsThroughPreflightCredentialWaitAndHttpWithoutReset() {
+        accounting.onReserve = () -> nanos.set(Duration.ofSeconds(5).toNanos());
+        accounting.onCheck = () -> {
+            if (accounting.checks.get() == 1) nanos.set(Duration.ofSeconds(8).toNanos());
+        };
+        provider.onSend = () -> nanos.set(Duration.ofSeconds(13).toNanos());
+        execute(coreWithBoundedCredentials(boundedAction((version, remaining, preflight, operation) -> {
+            assertThat(remaining.getAsLong()).isEqualTo(Duration.ofSeconds(25).toNanos());
+            preflight.run();
+            assertThat(remaining.getAsLong()).isEqualTo(Duration.ofSeconds(22).toNanos());
+            nanos.set(Duration.ofSeconds(12).toNanos());
+            assertThat(remaining.getAsLong()).isEqualTo(Duration.ofSeconds(18).toNanos());
+            return operation.apply("synthetic-placeholder-not-a-key");
+        })));
+        assertThat(provider.timeout).isEqualTo(Duration.ofSeconds(18));
+        assertThat(provider.sends.get()).isOne(); assertThat(accounting.settled.get()).isOne();
+        assertThat(requests.value.view().state()).isEqualTo("SUCCEEDED");
+        assertThat(requests.value.view().usage().latencyMs()).isEqualTo(13_000);
+        assertThat(requests.value.view().usage().providerLatencyMs()).isEqualTo(1_000);
+    }
+
+    @Test void interruptedBoundedCredentialScopeReportsZeroRemainingAndNeverSends() {
+        try {
+            execute(coreWithBoundedCredentials(boundedAction((version, remaining, preflight, operation) -> {
+                preflight.run(); Thread.currentThread().interrupt();
+                assertThat(remaining.getAsLong()).isZero();
+                return operation.apply("synthetic-placeholder-not-a-key");
+            })));
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally { Thread.interrupted(); }
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.settled.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_TIMEOUT");
+    }
+
+    @Test void boundedConsumerTimeoutAfterActualReplyCannotEraseKnownCost() {
+        execute(coreWithBoundedCredentials(boundedAction((version, remaining, preflight, operation) -> {
+            preflight.run(); operation.apply("synthetic-placeholder-not-a-key");
+            nanos.set(Duration.ofSeconds(31).toNanos());
+            assertThat(remaining.getAsLong()).isZero();
+            throw new IllegalStateException("private late credential cleanup detail");
+        })));
+        assertThat(provider.sends.get()).isOne(); assertThat(accounting.settled.get()).isOne();
+        assertThat(accounting.unknown.get()).isZero();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_TIMEOUT");
+        assertThat(requests.value.view().result()).isNull();
+        assertThat(requests.value.view().usage().actualCostMicrousd()).isEqualTo(273);
+        assertThat(requests.value.view().usage().providerResponseId()).isEqualTo("resp-synthetic");
+        assertThat(audit.toString()).doesNotContain("private late credential cleanup detail");
     }
 
     @Test void rejectedOutputAndForgedReferencesStillSettleKnownUsage() {
@@ -185,9 +262,9 @@ class LiveExecutionCoordinatorTest {
             throw new IllegalStateException("private audit detail");
         }, Clock.fixed(NOW, ZoneOffset.UTC), new RollbackResultTransactions(requests));
         var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
-            (version, preflight, operation) -> {
+            boundedFake((version, preflight, operation) -> {
                 preflight.run(); return operation.apply("synthetic-placeholder-not-a-key");
-            }, failingWriter,
+            }), failingWriter,
             new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
         assertThatThrownBy(() -> execute(core)).isInstanceOf(AgentUnavailableException.class).hasNoCause();
         assertThat(accounting.settled.get()).isOne(); assertThat(accounting.unknown.get()).isZero();
@@ -213,14 +290,14 @@ class LiveExecutionCoordinatorTest {
         var core = new LiveExecutionCoordinator(requests, accounting, snapshot -> {
             assertThat(credentialLockHeld.get()).as("Resource authorization must precede the credential store lock").isFalse();
             resourceChecks.incrementAndGet();
-        }, provider, (version, preflight, operation) -> {
+        }, provider, boundedFake((version, preflight, operation) -> {
             preflight.run();
             assertThat(version).isEqualTo(accounting.credential);
             credentialReads.incrementAndGet();
             credentialLockHeld.set(true);
             try { return operation.apply("synthetic-placeholder-not-a-key"); }
             finally { credentialLockHeld.set(false); }
-        }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {
+        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {
             assertThat(credentialLockHeld.get()).as("Token/network policy must precede the credential store lock").isFalse();
         }, nanos::get);
 
@@ -315,10 +392,10 @@ class LiveExecutionCoordinatorTest {
     }
 
     @Test void credentialConsumerCannotSendTwice() {
-        var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider, (version, preflight, operation) -> {
+        var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider, boundedFake((version, preflight, operation) -> {
             preflight.run();
             operation.apply("synthetic-placeholder-not-a-key"); return operation.apply("synthetic-placeholder-not-a-key");
-        }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
+        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
         execute(core); assertKnownReplyPreservedWithoutOutput();
     }
 
@@ -454,8 +531,45 @@ class LiveExecutionCoordinatorTest {
     }
 
     private LiveExecutionCoordinator coreWithCredentials(LiveExecutionCoordinator.CredentialUse credentials) {
+        return coreWithBoundedCredentials(boundedFake(credentials));
+    }
+
+    private LiveExecutionCoordinator coreWithBoundedCredentials(LiveExecutionCoordinator.CredentialUse credentials) {
         return new LiveExecutionCoordinator(requests, accounting, validResources(), provider, credentials,
             writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
+    }
+
+    /** Fake callbacks have no real lock; opt them into the bounded contract explicitly, never in production. */
+    private static LiveExecutionCoordinator.CredentialUse boundedFake(LiveExecutionCoordinator.CredentialUse delegate) {
+        return new LiveExecutionCoordinator.CredentialUse() {
+            @Override public LiveResponsePort.Reply use(UUID version, Runnable preflight,
+                    java.util.function.Function<String, LiveResponsePort.Reply> operation) {
+                throw new AssertionError("Core must not select the legacy unbounded entry point");
+            }
+            @Override public LiveResponsePort.Reply use(UUID version, java.util.function.LongSupplier remaining,
+                    Runnable preflight, java.util.function.Function<String, LiveResponsePort.Reply> operation) {
+                if (remaining.getAsLong() <= 0) throw new LiveResponsePort.CallFailure("MODEL_TIMEOUT");
+                return delegate.use(version, preflight, operation);
+            }
+        };
+    }
+
+    private static LiveExecutionCoordinator.CredentialUse boundedAction(BoundedCredentialAction action) {
+        return new LiveExecutionCoordinator.CredentialUse() {
+            @Override public LiveResponsePort.Reply use(UUID version, Runnable preflight,
+                    java.util.function.Function<String, LiveResponsePort.Reply> operation) {
+                throw new AssertionError("The bounded credential entry point is required");
+            }
+            @Override public LiveResponsePort.Reply use(UUID version, java.util.function.LongSupplier remaining,
+                    Runnable preflight, java.util.function.Function<String, LiveResponsePort.Reply> operation) {
+                return action.use(version, remaining, preflight, operation);
+            }
+        };
+    }
+
+    @FunctionalInterface private interface BoundedCredentialAction {
+        LiveResponsePort.Reply use(UUID version, java.util.function.LongSupplier remaining, Runnable preflight,
+            java.util.function.Function<String, LiveResponsePort.Reply> operation);
     }
 
     private void assertConcurrentPreflightFailure(LiveResponsePort replayResponses,

@@ -14,7 +14,9 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
@@ -27,7 +29,7 @@ final class CredentialApplicationService implements CredentialOperations {
     private final AuditRecorder audits;
     private final TraceIdProvider traces;
     private final Clock clock;
-    private EncryptedCredentialStore store;
+    private final AtomicReference<EncryptedCredentialStore> store = new AtomicReference<>();
     private final ThreadLocal<Boolean> inCredentialUse = new ThreadLocal<>();
 
     CredentialApplicationService(Environment environment, CurrentActorProvider actors, AuditRecorder audits,
@@ -81,23 +83,50 @@ final class CredentialApplicationService implements CredentialOperations {
             finally { inCredentialUse.remove(); }
         });
     }
+    void internalConsume(UUID expectedVersion, LongSupplier remainingNanos, Consumer<String> finalOperation) {
+        // Reject same-thread reentry before touching identity, audit, or even the deadline supplier.
+        rejectReentry();
+        try {
+            CredentialDeadline deadline = new CredentialDeadline(remainingNanos);
+            owner();
+            if (expectedVersion == null || finalOperation == null) throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE);
+            EncryptedCredentialStore currentStore = storage();
+            deadline.remainingNanos();
+            // Intent persistence is outside the slot lock and consumes the original execution budget.
+            audit("USE_REQUESTED", AuditResult.SUCCESS, expectedVersion);
+            deadline.remainingNanos();
+            currentStore.consume(expectedVersion, deadline::remainingNanos, apiKey -> {
+                inCredentialUse.set(true);
+                try { finalOperation.accept(apiKey); }
+                finally { inCredentialUse.remove(); }
+            });
+        } catch (CredentialFailure safe) { throw new CredentialFailure(safe.kind()); }
+        catch (RuntimeException unavailable) { throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE); }
+    }
     @Override public void rejectInvalidWrite() { owner(); audit("WRITE", AuditResult.FAILURE, null); }
     @Override public CredentialStatus write(String apiKey) {
         owner(); return operation("WRITE", true, () -> storage().write(apiKey, Instant.now(clock)));
     }
     @Override public CredentialStatus delete() { owner(); return operation("DELETE", true, () -> storage().delete()); }
 
-    private synchronized EncryptedCredentialStore storage() {
+    private EncryptedCredentialStore storage() {
         if (!environment.getProperty("archguard.agent.credentials.enabled", Boolean.class, false)
                 || !environment.acceptsProfiles(Profiles.of("local-compose"))) {
             throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE);
         }
-        if (store == null) {
-            try { store = new EncryptedCredentialStore(Path.of(required("directory")), Path.of(required("master-file")),
-                UUID.fromString(required("deployment-id"))); }
+        EncryptedCredentialStore currentStore = store.get();
+        if (currentStore == null) {
+            // Construction does not read credential/master files. Only the CAS winner is ever used,
+            // so concurrent initialization cannot create a second credential lock domain.
+            try {
+                EncryptedCredentialStore candidate = new EncryptedCredentialStore(Path.of(required("directory")),
+                    Path.of(required("master-file")), UUID.fromString(required("deployment-id")));
+                store.compareAndSet(null, candidate);
+                currentStore = store.get();
+            }
             catch (RuntimeException failure) { throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE); }
         }
-        return store;
+        return currentStore;
     }
 
     private void owner() {

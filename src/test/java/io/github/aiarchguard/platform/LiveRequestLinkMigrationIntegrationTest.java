@@ -33,7 +33,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 @SpringBootTest
 class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSupport {
-    private static final Instant NOW = Instant.parse("2026-10-12T00:00:00Z");
+    // Each test gets a fixed, current microsecond snapshot. Historical QUEUED timestamps
+    // were legitimately expired by recovery schedulers in cached shared-database contexts.
+    private final Instant NOW = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
     @Autowired LiveRequestStore links;
     @Autowired AgentStore requests;
     @Autowired AgentTransitions transitions;

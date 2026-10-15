@@ -10,4 +10,6 @@ public interface LiveRequestStore {
             UUID credentialVersion, long settingsRevision, Instant createdAt) { }
     void insert(Link link);
     Optional<Link> find(UUID projectId, UUID requestId);
+    /** Claim only the exact immutable association and live request projection; never reserves model cost. */
+    default boolean claim(Link link, UUID requester, Instant at) { return false; }
 }

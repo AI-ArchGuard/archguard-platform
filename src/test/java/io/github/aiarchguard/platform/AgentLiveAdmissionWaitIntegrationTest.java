@@ -46,7 +46,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @ActiveProfiles("local-compose")
 @Import({AgentPersonalEnablementIntegrationTest.Config.class, AgentLiveAdmissionWaitIntegrationTest.Config.class})
-class AgentLiveAdmissionWaitIntegrationTest extends PostgresIntegrationTestSupport {
+class AgentLiveAdmissionWaitIntegrationTest extends AgentLiveDatabaseIntegrationTestSupport {
     private static final AtomicReference<SyntheticBatchInventory.Proof> REVIEW = new AtomicReference<>();
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;

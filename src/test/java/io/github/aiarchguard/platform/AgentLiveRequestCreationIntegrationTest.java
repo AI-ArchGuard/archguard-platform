@@ -41,7 +41,7 @@ import org.springframework.test.context.ActiveProfiles;
 @ActiveProfiles("local-compose")
 @Import({AgentPersonalEnablementIntegrationTest.Config.class, AgentLiveAccountingIntegrationTest.Config.class,
     AgentLiveRequestCreationIntegrationTest.Config.class})
-class AgentLiveRequestCreationIntegrationTest extends PostgresIntegrationTestSupport {
+class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrationTestSupport {
     static final UUID OWNER = AgentLiveAccountingIntegrationTest.OWNER;
     static final String ORIGIN = "http://localhost:8083";
     static final String TRACE = "d".repeat(32);

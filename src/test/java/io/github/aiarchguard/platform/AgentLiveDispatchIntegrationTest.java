@@ -45,7 +45,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 @AutoConfigureMockMvc
 @ActiveProfiles("local-compose")
 @Import({AgentPersonalEnablementIntegrationTest.Config.class, AgentLiveAccountingIntegrationTest.Config.class})
-class AgentLiveDispatchIntegrationTest extends PostgresIntegrationTestSupport {
+class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestSupport {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;

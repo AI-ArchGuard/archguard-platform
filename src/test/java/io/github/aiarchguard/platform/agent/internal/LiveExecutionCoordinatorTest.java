@@ -21,11 +21,17 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.AbstractPlatformTransactionManager;
 import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 class LiveExecutionCoordinatorTest {
     static final Instant NOW = Instant.parse("2026-10-10T00:00:00Z");
@@ -42,6 +48,7 @@ class LiveExecutionCoordinatorTest {
     AtomicInteger credentialReads, resourceChecks;
     List<AuditEvent> audit;
     AgentSnapshot original;
+    LiveDatabaseWork database;
 
     @BeforeEach void setup() {
         var input = new AgentModelPort.ModelInput("FINDING_EXPLANATION", "0.1.0", LiveAccountingOperations.EXPLANATION_PROMPT,
@@ -53,16 +60,17 @@ class LiveExecutionCoordinatorTest {
         original = new AgentSnapshot(view, input, List.of());
         requests = new MemoryRequests(original); accounting = new Ledger(); provider = new Port(); nanos = new AtomicLong();
         credentialReads = new AtomicInteger(); resourceChecks = new AtomicInteger(); audit = new CopyOnWriteArrayList<>();
+        database = memoryDatabaseWork(new MemoryTransactions());
     }
     LiveResultTransitions writer() {
-        return new LiveResultTransitions(requests, audit::add, Clock.fixed(NOW, ZoneOffset.UTC), new MemoryTransactions());
+        return new LiveResultTransitions(requests, audit::add, Clock.fixed(NOW, ZoneOffset.UTC), new MemoryTransactions(), database);
     }
     LiveExecutionCoordinator core(Consumer<AgentSnapshot> resources) {
         return new LiveExecutionCoordinator(requests, accounting, resources, provider, boundedFake((version, preflight, operation) -> {
             preflight.run();
             assertThat(version).isEqualTo(accounting.credential); credentialReads.incrementAndGet();
             return operation.apply("synthetic-placeholder-not-a-key");
-        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
+        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get, database);
     }
     void execute(LiveExecutionCoordinator core) { core.execute(project, batch, template, request); }
     Consumer<AgentSnapshot> validResources() { return snapshot -> resourceChecks.incrementAndGet(); }
@@ -80,6 +88,115 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().state()).isEqualTo("RUNNING");
         assertThat(requests.value.view().failure()).isNull(); assertThat(audit).isEmpty();
         assertThat(accounting.unknown.get()).isZero(); assertThat(accounting.settled.get()).isZero();
+    }
+
+    @Test void explicitDatabaseOnPublicConstructionStillCannotAuthorizeEgress() {
+        var resources = new LiveResourceAuthorizer(unusedPort(ProjectAuthorization.class),
+            unusedPort(ScanJobOperations.class), unusedPort(FindingOperations.class),
+            unusedPort(DocumentOperations.class), unusedPort(ReportSubmissionOperations.class));
+        var core = new LiveExecutionCoordinator(requests, accounting, resources, provider,
+            (version, preflight, operation) -> { throw new AssertionError("No credential use is authorized"); },
+            writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), database);
+        assertThatThrownBy(() -> execute(core)).isInstanceOf(AgentUnavailableException.class).hasNoCause();
+        assertThat(accounting.reserves.get()).isZero(); assertThat(provider.sends.get()).isZero();
+        assertThat(requests.value.view().state()).isEqualTo("RUNNING"); assertThat(audit).isEmpty();
+    }
+
+    @Test void unsupportedDatabaseCannotExecuteReadsOrReserveSendOrMutate() {
+        database = new LiveDatabaseWork() {};
+        assertThatThrownBy(() -> execute(core(validResources()))).isInstanceOf(AgentUnavailableException.class).hasNoCause();
+        assertThat(accounting.reserves.get()).isZero(); assertThat(accounting.checks.get()).isZero();
+        assertThat(resourceChecks.get()).isZero(); assertThat(provider.sends.get()).isZero();
+        assertThat(accounting.unknown.get()).isZero(); assertThat(requests.value.view().state()).isEqualTo("RUNNING");
+        assertThat(audit).isEmpty();
+    }
+
+    @Test void ambientTransactionCannotReachAnyDatabaseReadReservationCredentialOrHttp() {
+        var reads = new AtomicInteger(); requests.onFind = reads::incrementAndGet;
+        var outer = new TransactionTemplate(new MemoryTransactions());
+        assertThatThrownBy(() -> outer.executeWithoutResult(status -> execute(core(validResources()))))
+            .isInstanceOf(AgentUnavailableException.class).hasNoCause();
+        assertThat(reads).hasValue(0); assertThat(accounting.reserves.get()).isZero();
+        assertThat(credentialReads.get()).isZero(); assertThat(provider.sends.get()).isZero();
+        assertThat(requests.value).isSameAs(original); assertThat(audit).isEmpty();
+        assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+    }
+
+    @Test void transactionIntroducedAfterPreflightCannotSurroundTheFinalHttpCallback() {
+        var core = coreWithCredentials((version, preflight, operation) -> {
+            preflight.run();
+            return new TransactionTemplate(new MemoryTransactions()).execute(status -> operation.apply("synthetic-placeholder-not-a-key"));
+        });
+        execute(core);
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.settled.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+        assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+    }
+
+    @Test void initialConnectionWaitThatExhaustsOriginalBudgetCannotEnterTheReadAction() {
+        var readActions = new AtomicInteger(); requests.onFind = readActions::incrementAndGet;
+        database = new LiveDatabaseWork() {
+            @Override public <T> T transaction(LongSupplier remaining, boolean readOnly, Supplier<T> action) {
+                nanos.set(Duration.ofSeconds(30).toNanos());
+                requireBudget(remaining);
+                return action.get();
+            }
+        };
+        assertThatThrownBy(() -> execute(core(validResources())))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("MODEL_TIMEOUT").hasNoCause();
+        assertThat(readActions).hasValue(0); assertThat(accounting.reserves.get()).isZero();
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.unknown.get()).isZero();
+        assertThat(requests.value.view().state()).isEqualTo("RUNNING"); assertThat(audit).isEmpty();
+    }
+
+    @Test void initialUntrustedDatabaseFailureCannotExposeItsMessageOrCause() {
+        database = new LiveDatabaseWork() {
+            @Override public <T> T transaction(LongSupplier remaining, boolean readOnly, Supplier<T> action) {
+                throw new IllegalStateException("private connection detail", new IllegalArgumentException("private JDBC detail"));
+            }
+        };
+        assertThatThrownBy(() -> execute(core(validResources()))).isInstanceOf(AgentUnavailableException.class)
+            .hasMessage("Agent storage is unavailable").hasNoCause();
+        assertThat(provider.sends.get()).isZero(); assertThat(accounting.reserves.get()).isZero();
+        assertThat(requests.value.view().state()).isEqualTo("RUNNING"); assertThat(audit).isEmpty();
+    }
+
+    @Test void databaseReadsLedgerCredentialsAndResultShareOneBudgetWithoutATransactionAcrossHttp() {
+        var originalDatabase = database;
+        var observedBudget = new AtomicReference<LongSupplier>();
+        var databaseDepth = new AtomicInteger(); var reads = new AtomicInteger(); var writes = new AtomicInteger();
+        database = new LiveDatabaseWork() {
+            @Override public <T> T transaction(LongSupplier remaining, boolean readOnly, Supplier<T> action) {
+                observedBudget.compareAndSet(null, remaining);
+                assertThat(remaining).isSameAs(observedBudget.get());
+                if (readOnly) reads.incrementAndGet(); else writes.incrementAndGet();
+                databaseDepth.incrementAndGet();
+                try { return originalDatabase.transaction(remaining, readOnly, action); }
+                finally { databaseDepth.decrementAndGet(); }
+            }
+            @Override public <T> T cleanup(Supplier<T> action) { return originalDatabase.cleanup(action); }
+        };
+        requests.onFind = () -> assertThat(databaseDepth.get()).isPositive();
+        accounting.onReserve = () -> assertThat(databaseDepth.get()).isZero();
+        accounting.onCheck = () -> assertThat(databaseDepth.get()).isZero();
+        provider.onSend = () -> {
+            assertThat(databaseDepth.get()).isZero();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+        };
+        var core = new LiveExecutionCoordinator(requests, accounting, snapshot -> {
+            assertThat(databaseDepth.get()).isPositive(); resourceChecks.incrementAndGet();
+        }, provider, boundedAction((version, remaining, preflight, operation) -> {
+            assertThat(remaining).isSameAs(observedBudget.get()); preflight.run();
+            assertThat(databaseDepth.get()).isZero();
+            return operation.apply("synthetic-placeholder-not-a-key");
+        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
+            body -> {}, nanos::get, database);
+        execute(core);
+        assertThat(accounting.deadlines).hasSize(3).allSatisfy(remaining -> assertThat(remaining).isSameAs(observedBudget.get()));
+        assertThat(reads).hasValue(7); assertThat(writes).hasValue(1); assertThat(databaseDepth).hasValue(0);
+        assertThat(resourceChecks.get()).isEqualTo(4); assertThat(provider.sends.get()).isOne();
+        assertThat(accounting.settled.get()).isOne(); assertThat(requests.value.view().state()).isEqualTo("SUCCEEDED");
     }
 
     @Test void validUsageIsSettledBeforeValidatedResultAndOnlyRealResultAuditIsWritten() {
@@ -100,13 +217,40 @@ class LiveExecutionCoordinatorTest {
                 credentialReads.incrementAndGet();
                 return operation.apply("synthetic-placeholder-not-a-key");
             }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
-            body -> {}, nanos::get);
+            body -> {}, nanos::get, database);
         execute(core);
         assertThat(credentialReads.get()).isZero();
         assertThat(provider.sends.get()).isZero();
         assertThat(accounting.settled.get()).isZero();
         assertThat(accounting.unknown.get()).isOne();
         assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    @Test void legacyLedgerCannotReserveOrSendAndCannotTerminalizeUnownedRunningRequest() {
+        LiveAccountingOperations legacy = new LiveAccountingOperations() {
+            public Admission reserve(UUID p, UUID b, UUID t, UUID r) { return accounting.reserve(p, b, t, r); }
+            public SendApproval checkBeforeSend(UUID p, UUID b, UUID t, UUID r) { return accounting.checkBeforeSend(p, b, t, r); }
+            public Outcome settle(UUID p, UUID r, String price, LiveTokenUsage usage) { return accounting.settle(p, r, price, usage); }
+            public Outcome unknown(UUID p, UUID r) { return accounting.unknown(p, r); }
+            public String preview(UUID p, List<UUID> templates) { throw new AssertionError(); }
+            public LiveBatchView approve(UUID p, String o, boolean s, LiveBatchInput i) { throw new AssertionError(); }
+            public LiveBatchView get(UUID p, UUID b) { throw new AssertionError(); }
+            public LiveBatchView revoke(UUID p, UUID b, String o, boolean s) { throw new AssertionError(); }
+            public String requestDigest(UUID p, UUID b, UUID t) { throw new AssertionError(); }
+        };
+        var core = new LiveExecutionCoordinator(requests, legacy, validResources(), provider,
+            boundedFake((version, preflight, operation) -> {
+                preflight.run(); credentialReads.incrementAndGet(); return operation.apply("synthetic-placeholder-not-a-key");
+            }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
+            body -> {}, nanos::get, database);
+        Throwable failure = catchThrowable(() -> execute(core));
+        assertThat(accounting.reserves.get()).isZero();
+        assertThat(failure).isInstanceOf(AgentUnavailableException.class).hasNoCause();
+        assertThat(accounting.checks.get()).isZero(); assertThat(provider.sends.get()).isZero();
+        assertThat(credentialReads.get()).isZero(); assertThat(accounting.unknown.get()).isZero();
+        assertThat(accounting.settled.get()).isZero(); assertThat(audit).isEmpty();
+        assertThat(requests.value.view().state()).isEqualTo("RUNNING");
+        assertThat(requests.value.view().failure()).isNull();
     }
 
     @Test void defaultBoundedMethodRejectsEvenAConstantPositiveBudgetWithoutLegacyFallback() {
@@ -258,14 +402,15 @@ class LiveExecutionCoordinatorTest {
 
     @Test void resultAuditFailureCannotEraseIndependentKnownSettlement() {
         // Model transaction rollback only for the result store; the ledger is independently committed.
+        var resultManager = new RollbackResultTransactions(requests);
         var failingWriter = new LiveResultTransitions(requests, event -> {
             throw new IllegalStateException("private audit detail");
-        }, Clock.fixed(NOW, ZoneOffset.UTC), new RollbackResultTransactions(requests));
+        }, Clock.fixed(NOW, ZoneOffset.UTC), resultManager, memoryDatabaseWork(resultManager));
         var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
             boundedFake((version, preflight, operation) -> {
                 preflight.run(); return operation.apply("synthetic-placeholder-not-a-key");
             }), failingWriter,
-            new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
+            new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get, database);
         assertThatThrownBy(() -> execute(core)).isInstanceOf(AgentUnavailableException.class).hasNoCause();
         assertThat(accounting.settled.get()).isOne(); assertThat(accounting.unknown.get()).isZero();
         assertThat(provider.sends.get()).isOne();
@@ -299,7 +444,7 @@ class LiveExecutionCoordinatorTest {
             finally { credentialLockHeld.set(false); }
         }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {
             assertThat(credentialLockHeld.get()).as("Token/network policy must precede the credential store lock").isFalse();
-        }, nanos::get);
+        }, nanos::get, database);
 
         execute(core);
 
@@ -386,7 +531,7 @@ class LiveExecutionCoordinatorTest {
     @Test void wrongActorCannotReadSecretSendOrMutateRequest() {
         var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider, (version, preflight, operation) -> {
             throw new AssertionError();
-        }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(UUID.randomUUID(), Set.of()), body -> {}, nanos::get);
+        }, writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(UUID.randomUUID(), Set.of()), body -> {}, nanos::get, database);
         assertThatThrownBy(() -> execute(core)).isInstanceOf(ProjectPermissionDeniedException.class);
         assertThat(requests.value.view().state()).isEqualTo("RUNNING"); assertThat(accounting.reserves.get()).isZero();
     }
@@ -395,7 +540,7 @@ class LiveExecutionCoordinatorTest {
         var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider, boundedFake((version, preflight, operation) -> {
             preflight.run();
             operation.apply("synthetic-placeholder-not-a-key"); return operation.apply("synthetic-placeholder-not-a-key");
-        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
+        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get, database);
         execute(core); assertKnownReplyPreservedWithoutOutput();
     }
 
@@ -536,7 +681,7 @@ class LiveExecutionCoordinatorTest {
 
     private LiveExecutionCoordinator coreWithBoundedCredentials(LiveExecutionCoordinator.CredentialUse credentials) {
         return new LiveExecutionCoordinator(requests, accounting, validResources(), provider, credentials,
-            writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get);
+            writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get, database);
     }
 
     /** Fake callbacks have no real lock; opt them into the bounded contract explicitly, never in production. */
@@ -584,7 +729,7 @@ class LiveExecutionCoordinatorTest {
         var replay = new LiveExecutionCoordinator(requests, accounting, replayResources, replayResponses,
             (version, preflight, operation) -> { throw new AssertionError("Replay must not consume credentials"); },
             writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
-            replayPolicy, nanos::get);
+            replayPolicy, nanos::get, database);
         try (var executor = Executors.newSingleThreadExecutor()) {
             Future<?> first = executor.submit(() -> execute(core(validResources())));
             try {
@@ -626,12 +771,19 @@ class LiveExecutionCoordinatorTest {
     static final class Ledger implements LiveAccountingOperations {
         final UUID credential = UUID.randomUUID(); final AtomicBoolean owns = new AtomicBoolean();
         final AtomicInteger reserves = new AtomicInteger(), settled = new AtomicInteger(), unknown = new AtomicInteger(), checks = new AtomicInteger();
+        final List<LongSupplier> deadlines = new CopyOnWriteArrayList<>();
         Runnable onReserve = () -> {}, onSettle = () -> {}, onCheck = () -> {}; int rejectCheck;
         public Admission reserve(UUID p, UUID b, UUID t, UUID r) { reserves.incrementAndGet(); onReserve.run(); return new Admission(r, 4200, owns.compareAndSet(false, true)); }
+        public Admission reserve(UUID p, UUID b, UUID t, UUID r, LongSupplier remaining) {
+            deadlines.add(remaining); requireBudget(remaining); return reserve(p, b, t, r);
+        }
         public SendApproval checkBeforeSend(UUID p, UUID b, UUID t, UUID r) {
             onCheck.run();
             if (checks.incrementAndGet() == rejectCheck) throw new AgentEnablementInvalidStateException();
             return new SendApproval(credential, Set.of("deepseek-flash"));
+        }
+        public SendApproval checkBeforeSend(UUID p, UUID b, UUID t, UUID r, LongSupplier remaining) {
+            deadlines.add(remaining); requireBudget(remaining); return checkBeforeSend(p, b, t, r);
         }
         public Outcome settle(UUID p, UUID r, String price, LiveTokenUsage usage) { settled.incrementAndGet(); onSettle.run(); return new Outcome("SETTLED", LiveCostPolicy.cost(usage)); }
         public Outcome unknown(UUID p, UUID r) { unknown.incrementAndGet(); return new Outcome("UNKNOWN", null); }
@@ -666,6 +818,38 @@ class LiveExecutionCoordinatorTest {
         protected void doBegin(Object transaction, TransactionDefinition definition) {}
         protected void doCommit(DefaultTransactionStatus status) {}
         protected void doRollback(DefaultTransactionStatus status) {}
+    }
+
+    /** Explicit fake persistence: models transaction/commit boundaries, not a production unbounded fallback. */
+    static LiveDatabaseWork memoryDatabaseWork(PlatformTransactionManager manager) {
+        return new LiveDatabaseWork() {
+            @Override public <T> T transaction(LongSupplier remaining, boolean readOnly, Supplier<T> action) {
+                requireBudget(remaining);
+                var transaction = new TransactionTemplate(manager);
+                transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+                transaction.setReadOnly(readOnly);
+                return transaction.execute(status -> {
+                    requireBudget(remaining);
+                    T value = action.get();
+                    requireBudget(remaining);
+                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override public void beforeCommit(boolean ignored) { requireBudget(remaining); }
+                    });
+                    return value;
+                });
+            }
+            @Override public <T> T cleanup(Supplier<T> action) {
+                var transaction = new TransactionTemplate(manager);
+                transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+                return transaction.execute(status -> action.get());
+            }
+        };
+    }
+
+    private static void requireBudget(LongSupplier remaining) {
+        if (Thread.currentThread().isInterrupted() || remaining.getAsLong() <= 0) {
+            throw new LiveResponsePort.CallFailure("MODEL_TIMEOUT");
+        }
     }
 
     static final class RollbackResultTransactions extends AbstractPlatformTransactionManager {

@@ -38,7 +38,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 @AutoConfigureMockMvc
 @ActiveProfiles("local-compose")
 @Import({AgentPersonalEnablementIntegrationTest.Config.class, AgentLiveAccountingIntegrationTest.Config.class})
-class AgentLiveResultIntegrationTest extends PostgresIntegrationTestSupport {
+class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSupport {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
@@ -52,6 +52,7 @@ class AgentLiveResultIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired PlatformTransactionManager manager;
     @Autowired DataSource dataSource;
     @Autowired ApplicationContext context;
+    @Autowired LiveDatabaseWork database;
     AgentLiveAccountingIntegrationTest fixture;
     AgentSnapshot snapshot;
     AgentRequestView.AgentUsage usage;
@@ -166,6 +167,66 @@ class AgentLiveResultIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(context.getBeansOfType(LiveResponsePort.class)).isEmpty();
         assertThat(context.getBeansOfType(LiveResultTransitions.class)).isEmpty();
         assertThat(enablements.settings(fixture.project).modelCallsAvailable()).isFalse();
+    }
+
+    @Test void boundedResultLockTimesOutBeforeHolderReleaseAndCannotEraseSettledUsage() throws Exception {
+        var bounded = new LiveResultTransitions(requests, audit, clock, manager, database);
+        var executor = Executors.newSingleThreadExecutor();
+        try (Connection blocker = dataSource.getConnection()) {
+            blocker.setAutoCommit(false);
+            try {
+                int pid;
+                try (var statement = blocker.createStatement(); var row = statement.executeQuery("SELECT pg_backend_pid()")) {
+                    assertThat(row.next()).isTrue(); pid = row.getInt(1);
+                }
+                try (var lock = blocker.prepareStatement("SELECT id FROM agent.requests WHERE id=? FOR UPDATE")) {
+                    lock.setQueryTimeout(10); lock.setObject(1, snapshot.view().id());
+                    try (var row = lock.executeQuery()) { assertThat(row.next()).isTrue(); }
+                }
+                Future<RuntimeException> waiting = executor.submit(() -> {
+                    long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                    try { bounded.finishBounded(snapshot, result(), usage, () -> until - System.nanoTime()); return null; }
+                    catch (RuntimeException failure) { return failure; }
+                });
+                awaitActualBlock(pid, waiting);
+                assertThat(waiting.get(5, TimeUnit.SECONDS)).isInstanceOf(LiveResponsePort.CallFailure.class)
+                    .hasMessage("MODEL_TIMEOUT").hasNoCause();
+                assertThat(blocker.isClosed()).isFalse();
+                assertThat(jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE :pid=ANY(pg_blocking_pids(pid))")
+                    .param("pid", pid).query(Integer.class).single()).isZero();
+            } finally { blocker.rollback(); }
+        } finally {
+            executor.shutdownNow(); assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(requests.find(fixture.project, snapshot.view().id()).orElseThrow().view().state()).isEqualTo("RUNNING");
+        assertThat(resultAudits()).isZero(); chargeStillSettled();
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        bounded.finishBounded(snapshot, result(), usage, () -> until - System.nanoTime());
+        assertThat(requests.find(fixture.project, snapshot.view().id()).orElseThrow().view().state()).isEqualTo("SUCCEEDED");
+        assertThat(resultAudits()).isOne(); chargeStillSettled();
+    }
+
+    @Test void boundedExpiryDuringAuditRollsBackResultAndAuditWithoutRollingBackTheCharge() {
+        var remaining = new java.util.concurrent.atomic.AtomicLong(TimeUnit.SECONDS.toNanos(5));
+        var bounded = new LiveResultTransitions(requests, event -> { audit.record(event); remaining.set(0); }, clock, manager, database);
+        assertThatThrownBy(() -> bounded.finishBounded(snapshot, result(), usage, remaining::get))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("MODEL_TIMEOUT").hasNoCause();
+        assertThat(requests.find(fixture.project, snapshot.view().id()).orElseThrow().view().state()).isEqualTo("RUNNING");
+        assertThat(resultAudits()).isZero(); chargeStillSettled();
+    }
+
+    @Test void interruptedBoundedFailureFinalizationUsesIndependentCleanupAndRetainsUsage() {
+        var bounded = new LiveResultTransitions(requests, audit, clock, manager, database);
+        Thread.currentThread().interrupt();
+        try {
+            bounded.failBounded(snapshot, new AgentRequestView.AgentFailure("MODEL_TIMEOUT", "Agent request timed out."), usage);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally { Thread.interrupted(); }
+        var terminal = requests.find(fixture.project, snapshot.view().id()).orElseThrow().view();
+        assertThat(terminal.state()).isEqualTo("FAILED"); assertThat(terminal.failure().code()).isEqualTo("MODEL_TIMEOUT");
+        assertThat(terminal.usage()).isEqualTo(usage); assertThat(resultAudits()).isOne(); chargeStillSettled();
+        bounded.failBounded(snapshot, new AgentRequestView.AgentFailure("INTERNAL_ERROR", "Ignored duplicate."), usage);
+        assertThat(resultAudits()).isOne(); chargeStillSettled();
     }
 
     private void awaitActualBlock(int pid, Future<?> write) {

@@ -21,6 +21,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -47,6 +48,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     private final ObjectMapper mapper;
     private final Clock clock;
     private final TransactionTemplate transaction;
+    private final LiveDatabaseWork database;
     private final String deploymentId;
     private final boolean enabled;
     private final long projectLimit, deploymentLimit;
@@ -56,7 +58,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             ScanJobOperations jobs, FindingOperations findings, DocumentOperations documents, ReportSubmissionOperations reports,
             AgentRequestRouting routing,
             AgentSchemaAvailability schema, AuditRecorder audit, CurrentActorProvider actors, TraceIdProvider traces, ObjectMapper mapper,
-            Clock clock, PlatformTransactionManager transactions,
+            Clock clock, PlatformTransactionManager transactions, LiveDatabaseWork database,
             @Value("${archguard.agent.credentials.deployment-id:}") String deploymentId,
             @Value("${archguard.agent.enabled:false}") boolean enabled,
             @Value("${archguard.agent.live-accounting.project-day-limit-microusd:5000000}") long projectLimit,
@@ -66,6 +68,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
         this.links = links; this.resources = new LiveResourceAuthorizer(projects, jobs, findings, documents, reports); this.routing = routing;
         this.actors = actors; this.traces = traces; this.mapper = mapper; this.clock = clock; this.deploymentId = deploymentId;
         this.enabled = enabled; this.projectLimit = projectLimit; this.deploymentLimit = deploymentLimit;
+        this.database = database;
         transaction = new TransactionTemplate(transactions);
         // Request must already be committed; an outcome's cost persists independently of result/auth failure.
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -169,7 +172,12 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
         return snapshot.view();
     }
     @Override public Admission reserve(UUID project, UUID batchId, UUID templateId, UUID requestId) {
-        return write(project, "agent.live.reserved", () -> {
+        return write(project, "agent.live.reserved", () -> reserveBody(project, batchId, templateId, requestId));
+    }
+    @Override public Admission reserve(UUID project, UUID batchId, UUID templateId, UUID requestId, LongSupplier remainingNanos) {
+        return boundedWrite(project, "agent.live.reserved", remainingNanos, () -> reserveBody(project, batchId, templateId, requestId));
+    }
+    private Admission reserveBody(UUID project, UUID batchId, UUID templateId, UUID requestId) {
             projects.requireViewer(project); schema.requireReady();
             var snapshot = request(project, requestId); sameActor(snapshot);
             var settings = enablements.lockSettings(project); var batch = batch(project, batchId); store.lockBatch(batchId);
@@ -203,10 +211,14 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             record(project, snapshot.view().requesterId(), snapshot.view().traceId(), "agent.live.reserved", Map.of("requestId", requestId, "attemptId", attempt.attemptId(),
                 "batchId", batchId, "estimatedMicrousd", LiveCostPolicy.RESERVATION, "priceVersion", LiveCostPolicy.VERSION));
             return new Admission(attempt.attemptId(), attempt.reservation(), true);
-        });
     }
     @Override public SendApproval checkBeforeSend(UUID project, UUID batchId, UUID templateId, UUID requestId) {
-        return write(project, "agent.live.send_check", () -> {
+        return write(project, "agent.live.send_check", () -> checkBeforeSendBody(project, batchId, templateId, requestId));
+    }
+    @Override public SendApproval checkBeforeSend(UUID project, UUID batchId, UUID templateId, UUID requestId, LongSupplier remainingNanos) {
+        return boundedWrite(project, "agent.live.send_check", remainingNanos, () -> checkBeforeSendBody(project, batchId, templateId, requestId));
+    }
+    private SendApproval checkBeforeSendBody(UUID project, UUID batchId, UUID templateId, UUID requestId) {
             projects.requireViewer(project); schema.requireReady();
             var snapshot = request(project, requestId); sameActor(snapshot);
             var settings = enablements.lockSettings(project); var batch = batch(project, batchId); store.lockBatch(batchId);
@@ -224,12 +236,11 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             validateLink(snapshot, batch, templateId, settings, approval);
             if (!binding.credentialVersion().equals(approval.acknowledgement().credentialVersion())) throw new AgentEnablementInvalidStateException();
             return new SendApproval(binding.credentialVersion(), new HashSet<>(approval.acknowledgement().allowedResponseModels()));
-        });
     }
     @Override public Outcome settle(UUID project, UUID request, String price, LiveTokenUsage usage) { return finish(project, request, price, usage); }
     @Override public Outcome unknown(UUID project, UUID request) { return finish(project, request, null, null); }
     private Outcome finish(UUID project, UUID id, String price, LiveTokenUsage usage) {
-        return write(project, "agent.live.finished", () -> {
+        return cleanupWrite(project, "agent.live.finished", () -> {
             schema.requireReady(); var snapshot = request(project, id); sameActor(snapshot);
             enablements.lockSettings(project);
             var initial = store.attempt(project, id).orElseThrow(AgentNotFoundException::new);
@@ -317,14 +328,36 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     private <T> T write(UUID project, String action, Supplier<T> operation) {
         try { return transaction.execute(status -> operation.get()); }
         catch (RuntimeException failure) {
-            try {
-                transaction.executeWithoutResult(status -> audit.record(new AuditEvent(actors.currentActor().id(), project,
-                    "agent.live.write_rejected", failure instanceof AgentQuotaExceededException || failure instanceof AgentConflictException ? AuditResult.CONFLICT
-                        : failure instanceof io.github.aiarchguard.platform.project.ProjectPermissionDeniedException
-                            || failure instanceof AgentEnablementInvalidStateException ? AuditResult.DENIED : AuditResult.FAILURE,
-                    traces.currentTraceId(), Map.of("operation", action, "code", failure instanceof AgentQuotaExceededException ? "QUOTA_EXHAUSTED" : "DENIED_OR_UNAVAILABLE"))));
-            } catch (RuntimeException unavailableAudit) { throw new AgentUnavailableException(); }
+            rejected(project, action, failure, false);
             throw failure;
         }
+    }
+    private <T> T boundedWrite(UUID project, String action, LongSupplier remainingNanos, Supplier<T> operation) {
+        try { return database.transaction(remainingNanos, false, operation); }
+        catch (RuntimeException failure) {
+            rejected(project, action, failure, true);
+            throw failure;
+        }
+    }
+    private <T> T cleanupWrite(UUID project, String action, Supplier<T> operation) {
+        try { return database.cleanup(operation); }
+        catch (RuntimeException failure) {
+            rejected(project, action, failure, true);
+            throw failure;
+        }
+    }
+    private void rejected(UUID project, String action, RuntimeException failure, boolean bounded) {
+        Supplier<Void> record = () -> {
+            audit.record(new AuditEvent(actors.currentActor().id(), project,
+                "agent.live.write_rejected", failure instanceof AgentQuotaExceededException || failure instanceof AgentConflictException ? AuditResult.CONFLICT
+                    : failure instanceof io.github.aiarchguard.platform.project.ProjectPermissionDeniedException
+                        || failure instanceof AgentEnablementInvalidStateException ? AuditResult.DENIED : AuditResult.FAILURE,
+                traces.currentTraceId(), Map.of("operation", action, "code", failure instanceof AgentQuotaExceededException ? "QUOTA_EXHAUSTED" : "DENIED_OR_UNAVAILABLE")));
+            return null;
+        };
+        try {
+            if (bounded) database.cleanup(record);
+            else transaction.executeWithoutResult(status -> record.get());
+        } catch (RuntimeException unavailableAudit) { throw new AgentUnavailableException(); }
     }
 }

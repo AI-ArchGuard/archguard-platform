@@ -91,6 +91,8 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 [有界、可中断的凭据等待](docs/technical-design/v0.5-agent-bounded-credential-wait.md)在同一槽位锁中保留替换/删除顺序，传递原执行期限、拒绝旧无界消费回退和迟到回调，并保留已收到回复的合法费用依据。没有外发装配或部署变更；文件、领域/审计、JDBC 与提交等待仍不能据此宣称全链路硬取消，真实验收与阶段退出关卡不变。
 
+[数据库等待与独立清理](docs/technical-design/v0.5-agent-database-deadlines.md)将原预算接入真实核心的只读事务、预留/复核及结果保存，用事务级 PostgreSQL 超时限制 SQL/锁等待；费用/失败落库使用独立有限清理。真实数据库测试覆盖取消、回滚、连接复用和迟到连接零动作。共享连接池获取及网络提交仍有明确限制；真实出口、Web 和运行栈不因此启用。
+
 [传输基础切片](docs/technical-design/v0.5-agent-deepseek-transport.md)提供未装配的固定 HTTPS/有界响应/取消机制、运行时 Secret 文件读取与高峰价格计算，假 HTTP 仅访问测试临时环回服务器。它仍不是可用的真实 Agent；批次来源清单、事务记账与 worker 接线、Token 上界和实际出口检查未完成，不提供 Key 或网络启用配置。
 
 4H 提供[本地合成验收适配器](docs/technical-design/v0.5-agent-4h-local-synthetic.md)：必须同时启用 `local-compose,agent-synthetic` profile、`ARCHGUARD_AGENT_SYNTHETIC_ENABLED=true` 和 Agent 开关。它没有网络调用，只返回标明合成用途的固定文本；用量与费用是测试值，不代表真实模型质量或账单。默认部署仍禁用，DeepSeek #43 关卡不变。

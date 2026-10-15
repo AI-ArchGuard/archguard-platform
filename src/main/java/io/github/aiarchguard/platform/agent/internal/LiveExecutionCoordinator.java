@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * Internal execution core, deliberately not a bean/worker/HTTP endpoint.
@@ -31,26 +32,41 @@ public final class LiveExecutionCoordinator {
     private final CurrentActorProvider actors;
     private final SendPolicy policy;
     private final LongSupplier nanos;
+    private final LiveDatabaseWork database;
 
     public LiveExecutionCoordinator(AgentStore requests, LiveAccountingOperations accounting, LiveResourceAuthorizer resources,
             LiveResponsePort responses, CredentialUse credentials, LiveResultTransitions transitions,
             AgentOutputValidator validator, CurrentActorProvider actors) {
         this(requests, accounting, resources::validate, responses, credentials,
-            transitions, validator, actors, body -> { throw new AgentUnavailableException(); }, System::nanoTime);
+            transitions, validator, actors, body -> { throw new AgentUnavailableException(); }, System::nanoTime,
+            new LiveDatabaseWork() {});
+    }
+
+    public LiveExecutionCoordinator(AgentStore requests, LiveAccountingOperations accounting, LiveResourceAuthorizer resources,
+            LiveResponsePort responses, CredentialUse credentials, LiveResultTransitions transitions,
+            AgentOutputValidator validator, CurrentActorProvider actors, LiveDatabaseWork database) {
+        this(requests, accounting, resources::validate, responses, credentials,
+            transitions, validator, actors, body -> { throw new AgentUnavailableException(); }, System::nanoTime, database);
     }
 
     // No production caller/Bean exists; permissive seam is confined to same-package tests.
     LiveExecutionCoordinator(AgentStore requests, LiveAccountingOperations accounting, Consumer<AgentSnapshot> resources,
             LiveResponsePort responses, CredentialUse credentials, LiveResultTransitions transitions,
-            AgentOutputValidator validator, CurrentActorProvider actors, SendPolicy policy, LongSupplier nanos) {
+            AgentOutputValidator validator, CurrentActorProvider actors, SendPolicy policy, LongSupplier nanos,
+            LiveDatabaseWork database) {
         this.requests = requests; this.accounting = accounting; this.resources = resources; this.responses = responses;
         this.credentials = credentials; this.transitions = transitions; this.validator = validator; this.actors = actors;
-        this.policy = policy; this.nanos = nanos;
+        this.policy = policy; this.nanos = nanos; this.database = java.util.Objects.requireNonNull(database);
     }
 
     public void execute(UUID project, UUID batch, UUID template, UUID request) {
+        requireNoDatabaseTransaction();
         long started = nanos.getAsLong();
-        var snapshot = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
+        LongSupplier remaining = () -> remainingNanos(started);
+        java.util.Optional<AgentSnapshot> selected;
+        try { selected = database.transaction(remaining, true, () -> requests.find(project, request)); }
+        catch (RuntimeException failure) { throw preflightFailure(failure); }
+        var snapshot = selected.orElseThrow(AgentNotFoundException::new);
         if (!actors.currentActor().id().equals(snapshot.view().requesterId())) throw new ProjectPermissionDeniedException();
         if (!"RUNNING".equals(snapshot.view().state())) return;
         boolean ownsAttempt = false, finalized = false;
@@ -58,15 +74,15 @@ public final class LiveExecutionCoordinator {
         try {
             if (!LiveAccountingOperations.MODEL_PROFILE.equals(snapshot.view().bindings().modelProfileVersion())) throw new AgentEnablementInvalidStateException();
             byte[] body = responses.prepare(snapshot.input());
-            remaining(started); policy.require(body.clone()); resources.accept(snapshot);
+            remaining(started); policy.require(body.clone()); validateResources(snapshot, remaining);
             remaining(started);
-            var admission = accounting.reserve(project, batch, template, request);
+            var admission = accounting.reserve(project, batch, template, request, remaining);
             // A replay must not send or terminalize the original in-flight executor's request.
             if (!admission.newAttempt()) return;
             ownsAttempt = true;
             remaining(started);
-            var approval = accounting.checkBeforeSend(project, batch, template, request);
-            resources.accept(snapshot); policy.require(body.clone()); requireRunning(project, request); remaining(started);
+            var approval = accounting.checkBeforeSend(project, batch, template, request, remaining);
+            validateResources(snapshot, remaining); policy.require(body.clone()); requireRunning(project, request, remaining); remaining(started);
             AtomicBoolean sent = new AtomicBoolean();
             AtomicBoolean preflightStarted = new AtomicBoolean(), preflightCompleted = new AtomicBoolean();
             AtomicBoolean consumerActive = new AtomicBoolean(true), consumerViolated = new AtomicBoolean();
@@ -76,15 +92,15 @@ public final class LiveExecutionCoordinator {
             LiveResponsePort.Reply consumerReply = null;
             boolean consumerFailed = false;
             try {
-                consumerReply = credentials.use(approval.credentialVersion(), () -> remainingNanos(started), () -> {
+                consumerReply = credentials.use(approval.credentialVersion(), remaining, () -> {
                     if (!consumerActive.get() || Thread.currentThread() != caller || !preflightStarted.compareAndSet(false, true)) {
                         consumerViolated.set(true);
                         throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
                     }
                     remaining(started);
-                    var fresh = accounting.checkBeforeSend(project, batch, template, request);
+                    var fresh = accounting.checkBeforeSend(project, batch, template, request, remaining);
                     if (!fresh.equals(approval)) throw new AgentEnablementInvalidStateException();
-                    resources.accept(snapshot); policy.require(body.clone()); requireRunning(project, request);
+                    validateResources(snapshot, remaining); policy.require(body.clone()); requireRunning(project, request, remaining);
                     remaining(started);
                     preflightCompleted.set(true);
                 }, key -> {
@@ -93,6 +109,7 @@ public final class LiveExecutionCoordinator {
                         consumerViolated.set(true);
                         throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
                     }
+                    requireNoDatabaseTransaction();
                     Duration timeout = remaining(started);
                     if (!sent.compareAndSet(false, true)) {
                         consumerViolated.set(true);
@@ -129,9 +146,9 @@ public final class LiveExecutionCoordinator {
             remaining(started);
             if (reply.outputFailureCode() != null) throw new AgentOutputValidator.InvalidOutput("OUTPUT_INVALID");
             var result = validator.validate(reply.rawJson(), snapshot);
-            resources.accept(snapshot); remaining(started);
+            validateResources(snapshot, remaining); remaining(started);
             usage = observedUsage(usage, started);
-            transitions.finishChecked(snapshot, result, usage, () -> remaining(started));
+            transitions.finishBounded(snapshot, result, usage, remaining);
         } catch (RuntimeException failure) {
             // Preflight denial (including a concurrent replay) never owns a shared RUNNING row.
             // Only the call awarded newAttempt=true may persist its outcome or terminalize work.
@@ -144,13 +161,22 @@ public final class LiveExecutionCoordinator {
             try {
                 String code = failureCode(failure);
                 usage = observedUsage(usage, started);
-                transitions.finish(snapshot, null, new AgentRequestView.AgentFailure(code, AgentApplicationService.message(code)), usage);
+                transitions.failBounded(snapshot, new AgentRequestView.AgentFailure(code, AgentApplicationService.message(code)), usage);
             } catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
         }
     }
 
-    private void requireRunning(UUID project, UUID request) {
-        if (requests.find(project, request).filter(s -> "RUNNING".equals(s.view().state())).isEmpty()) throw new AgentEnablementInvalidStateException();
+    private void requireRunning(UUID project, UUID request, LongSupplier remaining) {
+        var current = database.transaction(remaining, true, () -> requests.find(project, request));
+        if (current.filter(s -> "RUNNING".equals(s.view().state())).isEmpty()) throw new AgentEnablementInvalidStateException();
+    }
+    private void validateResources(AgentSnapshot snapshot, LongSupplier remaining) {
+        database.transaction(remaining, true, () -> { resources.accept(snapshot); return null; });
+    }
+    private static void requireNoDatabaseTransaction() {
+        // REQUIRES_NEW restores a caller's suspended transaction. Never let that surround HTTP.
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                || TransactionSynchronizationManager.isSynchronizationActive()) throw new AgentUnavailableException();
     }
     private Duration remaining(long started) {
         long remaining = remainingNanos(started);

@@ -73,7 +73,8 @@ class LiveRequestDispatcherTest {
         var unusedCore = new LiveExecutionCoordinator(fixture.requests, null,
             snapshot -> { throw new AssertionError("Default dispatch must not execute resources"); }, null,
             (version, preflight, operation) -> { throw new AssertionError("Default dispatch must not consume credentials"); },
-            null, null, fixture.actors, body -> { throw new AssertionError("Default dispatch must not prepare egress"); }, () -> 0L);
+            null, null, fixture.actors, body -> { throw new AssertionError("Default dispatch must not prepare egress"); }, () -> 0L,
+            new LiveDatabaseWork() {});
         var dispatcher = new LiveRequestDispatcher(fixture.requests, fixture.links, fixture.actors, fixture.scope,
             new TraceTaskScope(), fixture.transitions, unusedCore, fixture.queue);
         assertUnavailable(() -> dispatcher.dispatch(fixture.project, fixture.request));

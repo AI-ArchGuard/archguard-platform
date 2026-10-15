@@ -5,6 +5,7 @@ import io.github.aiarchguard.platform.agent.LiveBatchView;
 import io.github.aiarchguard.platform.agent.LiveTokenUsage;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 
 /** Internal orchestration contract; deliberately has no HTTP or model-port binding. */
 public interface LiveAccountingOperations {
@@ -17,8 +18,16 @@ public interface LiveAccountingOperations {
     LiveBatchView revoke(UUID project, UUID batch, String origin, boolean secure);
     String requestDigest(UUID project, UUID batch, UUID template);
     Admission reserve(UUID project, UUID batch, UUID template, UUID request);
+    /** Bounded admission must not fall back to the unbounded legacy transaction. */
+    default Admission reserve(UUID project, UUID batch, UUID template, UUID request, LongSupplier remainingNanos) {
+        throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
+    }
     /** Fresh, non-mutating admission after a unique reservation; not a Token/network permit. */
     SendApproval checkBeforeSend(UUID project, UUID batch, UUID template, UUID request);
+    /** Reuse the original execution deadline, including database lock waits. */
+    default SendApproval checkBeforeSend(UUID project, UUID batch, UUID template, UUID request, LongSupplier remainingNanos) {
+        throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
+    }
     Outcome settle(UUID project, UUID request, String priceVersion, LiveTokenUsage usage);
     Outcome unknown(UUID project, UUID request);
     record Admission(UUID attemptId, long reservedMicrousd, boolean newAttempt) { }

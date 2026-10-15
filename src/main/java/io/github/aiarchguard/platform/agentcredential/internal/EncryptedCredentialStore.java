@@ -13,8 +13,12 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -26,6 +30,7 @@ final class EncryptedCredentialStore {
     private final Path master;
     private final byte[] aad;
     private final SecureRandom random = new SecureRandom();
+    private final ReentrantLock lock = new ReentrantLock();
     private boolean consuming;
 
     EncryptedCredentialStore(Path directory, Path master, UUID deployment) {
@@ -33,16 +38,20 @@ final class EncryptedCredentialStore {
         this.aad = ("ArchGuard|personal|DeepSeek|credential-v1|" + deployment).getBytes(StandardCharsets.US_ASCII);
     }
 
-    synchronized CredentialStatus status() {
-        rejectReentry();
-        byte[] key = null;
-        try { key = master(); return current(key); }
-        catch (Exception failure) { throw PrivateCredentialFiles.unavailable(); }
-        finally { wipe(key); }
+    CredentialStatus status() {
+        return locked(() -> {
+            byte[] key = null;
+            try { key = master(); return current(key); }
+            catch (Exception failure) { throw PrivateCredentialFiles.unavailable(); }
+            finally { wipe(key); }
+        });
     }
 
-    synchronized CredentialStatus write(String apiKey, Instant now) {
-        rejectReentry();
+    CredentialStatus write(String apiKey, Instant now) {
+        return locked(() -> writeLocked(apiKey, now));
+    }
+
+    private CredentialStatus writeLocked(String apiKey, Instant now) {
         if (!valid(apiKey)) throw new CredentialFailure(CredentialFailure.Kind.INVALID);
         byte[] key = null; byte[] plain = null; Path pending = null;
         try {
@@ -74,31 +83,64 @@ final class EncryptedCredentialStore {
         }
     }
 
-    synchronized CredentialStatus delete() {
-        rejectReentry();
-        byte[] key = null;
-        try { key = master(); current(key); Files.deleteIfExists(file()); return CredentialStatus.absent(); }
-        catch (Exception failure) { throw PrivateCredentialFiles.unavailable(); }
-        finally { wipe(key); }
+    CredentialStatus delete() {
+        return locked(() -> {
+            byte[] key = null;
+            try { key = master(); current(key); Files.deleteIfExists(file()); return CredentialStatus.absent(); }
+            catch (Exception failure) { throw PrivateCredentialFiles.unavailable(); }
+            finally { wipe(key); }
+        });
     }
 
-    synchronized void consume(UUID expectedVersion, Consumer<String> finalOperation) {
-        rejectReentry();
+    void consume(UUID expectedVersion, Consumer<String> finalOperation) {
+        consumeWithDeadline(expectedVersion, null, finalOperation);
+    }
+
+    void consume(UUID expectedVersion, LongSupplier remainingNanos, Consumer<String> finalOperation) {
+        if (lock.isHeldByCurrentThread()) rejectReentry();
+        if (expectedVersion == null || finalOperation == null) throw PrivateCredentialFiles.unavailable();
+        consumeWithDeadline(expectedVersion, new CredentialDeadline(remainingNanos), finalOperation);
+    }
+
+    private void consumeWithDeadline(UUID expectedVersion, CredentialDeadline deadline, Consumer<String> finalOperation) {
         if (expectedVersion == null || finalOperation == null) throw PrivateCredentialFiles.unavailable();
         byte[] key = null;
+        boolean acquired = false;
         try {
+            if (deadline == null) {
+                lock.lockInterruptibly(); acquired = true;
+            } else {
+                acquired = lock.tryLock(deadline.remainingNanos(), TimeUnit.NANOSECONDS);
+                if (!acquired) throw PrivateCredentialFiles.unavailable();
+            }
+            rejectReentry(); check(deadline);
             key = master();
-            withCurrent(key, (status, apiKey) -> {
+            check(deadline);
+            withCurrent(key, deadline, (status, apiKey) -> {
+                check(deadline);
                 if (!status.configured() || !expectedVersion.equals(status.credentialVersion())) {
                     throw PrivateCredentialFiles.unavailable();
                 }
                 consuming = true;
-                try { finalOperation.accept(apiKey); }
+                try { check(deadline); finalOperation.accept(apiKey); check(deadline); }
                 finally { consuming = false; }
                 return null;
             });
+        } catch (InterruptedException cancelled) {
+            Thread.currentThread().interrupt(); throw PrivateCredentialFiles.unavailable();
         } catch (Exception failure) { throw PrivateCredentialFiles.unavailable(); }
-        finally { wipe(key); }
+        finally { wipe(key); if (acquired) lock.unlock(); }
+    }
+
+    private <T> T locked(Supplier<T> operation) {
+        lock.lock();
+        try { rejectReentry(); return operation.get(); }
+        finally { lock.unlock(); }
+    }
+
+    private static void check(CredentialDeadline deadline) {
+        if (Thread.currentThread().isInterrupted()) throw PrivateCredentialFiles.unavailable();
+        if (deadline != null) deadline.remainingNanos();
     }
 
     private void rejectReentry() {
@@ -117,10 +159,15 @@ final class EncryptedCredentialStore {
     }
 
     private <T> T withCurrent(byte[] key, BiFunction<CredentialStatus, String, T> operation) throws Exception {
+        return withCurrent(key, null, operation);
+    }
+
+    private <T> T withCurrent(byte[] key, CredentialDeadline deadline, BiFunction<CredentialStatus, String, T> operation) throws Exception {
         if (Files.notExists(file(), LinkOption.NOFOLLOW_LINKS)) return operation.apply(CredentialStatus.absent(), null);
         PrivateCredentialFiles.check(file(), false);
         byte[] envelope = bounded(file(), 33, 512); byte[] plain = null;
         try {
+            if (deadline != null) deadline.remainingNanos();
             var bytes = ByteBuffer.wrap(envelope);
             if (bytes.getInt() != MAGIC) throw PrivateCredentialFiles.unavailable();
             byte[] nonce = new byte[12]; bytes.get(nonce);

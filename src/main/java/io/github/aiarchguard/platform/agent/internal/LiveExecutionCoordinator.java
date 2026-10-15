@@ -76,7 +76,7 @@ public final class LiveExecutionCoordinator {
             LiveResponsePort.Reply consumerReply = null;
             boolean consumerFailed = false;
             try {
-                consumerReply = credentials.use(approval.credentialVersion(), () -> {
+                consumerReply = credentials.use(approval.credentialVersion(), () -> remainingNanos(started), () -> {
                     if (!consumerActive.get() || Thread.currentThread() != caller || !preflightStarted.compareAndSet(false, true)) {
                         consumerViolated.set(true);
                         throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
@@ -153,9 +153,13 @@ public final class LiveExecutionCoordinator {
         if (requests.find(project, request).filter(s -> "RUNNING".equals(s.view().state())).isEmpty()) throw new AgentEnablementInvalidStateException();
     }
     private Duration remaining(long started) {
+        long remaining = remainingNanos(started);
+        if (remaining == 0) throw new LiveResponsePort.CallFailure("MODEL_TIMEOUT");
+        return Duration.ofNanos(remaining);
+    }
+    private long remainingNanos(long started) {
         long elapsed = nanos.getAsLong() - started;
-        if (Thread.currentThread().isInterrupted() || elapsed < 0 || elapsed >= LIMIT_NANOS) throw new LiveResponsePort.CallFailure("MODEL_TIMEOUT");
-        return Duration.ofNanos(LIMIT_NANOS - elapsed);
+        return Thread.currentThread().isInterrupted() || elapsed < 0 || elapsed >= LIMIT_NANOS ? 0 : LIMIT_NANOS - elapsed;
     }
     private long elapsedMs(long started) { return Math.max(0, (nanos.getAsLong() - started) / 1_000_000); }
     private AgentRequestView.AgentUsage observedUsage(AgentRequestView.AgentUsage usage, long started) {
@@ -201,5 +205,11 @@ public final class LiveExecutionCoordinator {
      */
     @FunctionalInterface public interface CredentialUse {
         LiveResponsePort.Reply use(UUID expectedVersion, Runnable preflight, Function<String, LiveResponsePort.Reply> finalSend);
+
+        /** A remaining budget from the original clock; unsupported consumers must never fall back to unbounded use. */
+        default LiveResponsePort.Reply use(UUID expectedVersion, LongSupplier remainingNanos, Runnable preflight,
+                Function<String, LiveResponsePort.Reply> finalSend) {
+            throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
+        }
     }
 }

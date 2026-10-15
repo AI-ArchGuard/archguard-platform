@@ -12,7 +12,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -142,6 +145,50 @@ class EncryptedCredentialConsumptionTest {
     }
     @Test void deletionWaitsForStartedCallbackAndOldVersionCannotStartAfterward() throws Exception {
         serializesMutation(true);
+    }
+
+    @Test void waitingConsumptionCanBeInterruptedWithoutRunningItsCallbackAfterTheOwnerReleases() throws Exception {
+        var shared = store(); var saved = shared.write(synthetic, now);
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var done = new CountDownLatch(1);
+        var lateCalls = new AtomicInteger(); var interrupted = new AtomicBoolean();
+        var holderFailure = new AtomicReference<Throwable>(); var waiterFailure = new AtomicReference<Throwable>();
+        Thread holder = new Thread(() -> {
+            try {
+                shared.consume(saved.credentialVersion(), key -> {
+                    entered.countDown();
+                    try { assertThat(release.await(5, TimeUnit.SECONDS)).isTrue(); }
+                    catch (InterruptedException cancelled) { Thread.currentThread().interrupt(); throw new IllegalStateException(); }
+                });
+            } catch (Throwable failure) { holderFailure.set(failure); }
+        }, "synthetic-credential-holder");
+        Thread waiter = new Thread(() -> {
+            try { shared.consume(saved.credentialVersion(), key -> lateCalls.incrementAndGet()); }
+            catch (Throwable failure) { waiterFailure.set(failure); }
+            finally { interrupted.set(Thread.currentThread().isInterrupted()); done.countDown(); }
+        }, "synthetic-credential-waiter");
+        boolean exitedBeforeRelease;
+        holder.start();
+        try {
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            waiter.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (System.nanoTime() < deadline && waiter.getState() != Thread.State.BLOCKED
+                    && waiter.getState() != Thread.State.WAITING && waiter.getState() != Thread.State.TIMED_WAITING) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+            }
+            assertThat(waiter.getState()).as("waiter actually blocks behind the active credential callback")
+                .isIn(Thread.State.BLOCKED, Thread.State.WAITING, Thread.State.TIMED_WAITING);
+            waiter.interrupt();
+            exitedBeforeRelease = done.await(500, TimeUnit.MILLISECONDS);
+        } finally {
+            release.countDown(); holder.join(5_000); waiter.join(5_000);
+        }
+        assertThat(holder.isAlive()).isFalse(); assertThat(waiter.isAlive()).isFalse();
+        assertThat(holderFailure.get()).isNull();
+        assertThat(exitedBeforeRelease).as("interrupted waiter exits while the original consumer still owns the slot").isTrue();
+        assertThat(waiterFailure.get()).isInstanceOf(CredentialFailure.class).hasMessage("credential.unavailable").hasNoCause();
+        assertThat(interrupted.get()).isTrue(); assertThat(lateCalls).hasValue(0);
+        shared.consume(saved.credentialVersion(), key -> assertThat(key).isEqualTo(synthetic));
     }
 
     private void serializesMutation(boolean delete) throws Exception {

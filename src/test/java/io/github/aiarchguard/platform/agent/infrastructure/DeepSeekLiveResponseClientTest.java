@@ -19,6 +19,25 @@ import org.junit.jupiter.api.Test;
 class DeepSeekLiveResponseClientTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
+    @Test void explicitContextVersionPreservesOverThresholdAccountingWithoutRelaxingLegacyOrUnknownPolicies() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        var client = new DeepSeekLiveResponseClient(mapper, (request, timeout) -> {
+            calls.incrementAndGet(); var body = valid();
+            ((ObjectNode) body.path("usage")).put("input_tokens", 8001).put("total_tokens", 8021);
+            return new DeepSeekHttpTransport.Response(200, "application/json", mapper.writeValueAsBytes(body));
+        });
+        byte[] body = client.prepare(input("Synthetic context usage"));
+        var reply = client.send(body, "synthetic-test-key", Duration.ofMillis(500), Set.of("deepseek-flash"),
+            io.github.aiarchguard.platform.agent.LiveCostPolicy.CONTEXT_VERSION);
+        assertThat(reply.usage().inputTokens()).isEqualTo(8001);
+        assertThatThrownBy(() -> client.send(body, "synthetic-test-key", Duration.ofMillis(500), Set.of("deepseek-flash")))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("OUTPUT_INVALID");
+        assertThat(calls.get()).isEqualTo(2);
+        assertThatThrownBy(() -> client.send(body, "synthetic-test-key", Duration.ofMillis(500), Set.of("deepseek-flash"), "unapproved"))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("MODEL_UNAVAILABLE");
+        assertThat(calls.get()).isEqualTo(2);
+    }
+
     @Test void preparesOnlyFrozenInputAndUsesOneFixedOfficialRequestWithoutModelPortRegistration() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         AtomicReference<java.net.http.HttpRequest> captured = new AtomicReference<>();

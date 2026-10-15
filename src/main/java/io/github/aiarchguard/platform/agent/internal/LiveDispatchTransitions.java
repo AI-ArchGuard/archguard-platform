@@ -4,6 +4,7 @@ import io.github.aiarchguard.platform.agent.AgentEnablementInvalidStateException
 import io.github.aiarchguard.platform.agent.AgentNotFoundException;
 import io.github.aiarchguard.platform.agent.AgentRequestView;
 import io.github.aiarchguard.platform.agent.AgentUnavailableException;
+import io.github.aiarchguard.platform.agent.LiveCostPolicy;
 import io.github.aiarchguard.platform.audit.AuditEvent;
 import io.github.aiarchguard.platform.audit.AuditRecorder;
 import io.github.aiarchguard.platform.audit.AuditResult;
@@ -15,6 +16,7 @@ import io.github.aiarchguard.platform.project.ProjectPermissionDeniedException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -34,15 +36,34 @@ public final class LiveDispatchTransitions {
     private final Clock clock;
     private final TransactionTemplate transaction;
     private final LiveResultTransitions results;
+    private final LiveAccountingOperations accounting;
+    private final boolean bounded;
 
     public LiveDispatchTransitions(AgentStore requests, LiveRequestStore links, ProjectAuthorization projects,
             CurrentActorProvider actors, AuthenticatedTaskScope identities, TraceIdProvider traces,
             AuditRecorder audit, Clock clock, PlatformTransactionManager manager) {
+        this(requests, links, projects, actors, identities, traces, audit, clock, manager, null, null, false);
+    }
+
+    public LiveDispatchTransitions(AgentStore requests, LiveRequestStore links, ProjectAuthorization projects,
+            CurrentActorProvider actors, AuthenticatedTaskScope identities, TraceIdProvider traces,
+            AuditRecorder audit, Clock clock, PlatformTransactionManager manager,
+            LiveAccountingOperations accounting, LiveDatabaseWork database) {
+        this(requests, links, projects, actors, identities, traces, audit, clock, manager,
+            Objects.requireNonNull(accounting), Objects.requireNonNull(database), true);
+    }
+
+    private LiveDispatchTransitions(AgentStore requests, LiveRequestStore links, ProjectAuthorization projects,
+            CurrentActorProvider actors, AuthenticatedTaskScope identities, TraceIdProvider traces,
+            AuditRecorder audit, Clock clock, PlatformTransactionManager manager,
+            LiveAccountingOperations accounting, LiveDatabaseWork database, boolean bounded) {
         this.requests = requests; this.links = links; this.projects = projects; this.actors = actors;
         this.identities = identities; this.traces = traces; this.audit = audit; this.clock = clock;
+        this.accounting = accounting; this.bounded = bounded;
         transaction = new TransactionTemplate(manager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        results = new LiveResultTransitions(requests, audit, clock, manager);
+        results = bounded ? new LiveResultTransitions(requests, audit, clock, manager, database)
+            : new LiveResultTransitions(requests, audit, clock, manager);
     }
 
     public Claim start(UUID project, UUID request) {
@@ -51,6 +72,11 @@ public final class LiveDispatchTransitions {
             var snapshot = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
             var view = snapshot.view();
             if (!actors.currentActor().id().equals(view.requesterId())) throw new ProjectPermissionDeniedException();
+            // A context claim needs an independently persisted stop even if preflight creates no attempt.
+            // The compatibility boundary must not acquire ownership it cannot safely finalize.
+            if (!bounded && LiveCostPolicy.CONTEXT_VERSION.equals(view.bindings().priceCatalogVersion())) {
+                throw new AgentUnavailableException();
+            }
             if (!"QUEUED".equals(view.state())) return null;
             var link = links.find(project, request).orElseThrow(AgentEnablementInvalidStateException::new);
             requireContext(snapshot, link);
@@ -79,8 +105,20 @@ public final class LiveDispatchTransitions {
         String safe = java.util.Set.of("MODEL_TIMEOUT", "MODEL_UNAVAILABLE", "AUTHORIZATION_REVOKED",
             "QUOTA_EXHAUSTED", "OUTPUT_INVALID", "INTERNAL_ERROR").contains(code == null ? "" : code)
                 ? code : "INTERNAL_ERROR";
-        results.finish(claim.snapshot(), null,
-            new AgentRequestView.AgentFailure(safe, AgentApplicationService.message(safe)), null);
+        var snapshot = claim.snapshot();
+        var failure = new AgentRequestView.AgentFailure(safe, AgentApplicationService.message(safe));
+        if (LiveCostPolicy.CONTEXT_VERSION.equals(snapshot.view().bindings().priceCatalogVersion())) {
+            if (!bounded) throw new AgentUnavailableException();
+            try {
+                accounting.stopBatch(snapshot.view().projectId(), claim.link().batchId(), snapshot.view().id(), safe);
+            } catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
+        }
+        if (bounded) {
+            try { results.failBounded(snapshot, failure, null); }
+            catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
+        } else {
+            results.finish(snapshot, null, failure, null);
+        }
     }
 
     private void requireContext(AgentSnapshot snapshot, LiveRequestStore.Link link) {

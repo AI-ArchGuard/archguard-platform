@@ -32,11 +32,16 @@ final class DeepSeekLiveResponseClient implements LiveResponsePort {
     }
 
     @Override public Reply send(byte[] body, String apiKey, Duration remaining, Set<String> approvedModelIds) {
-        if (approvedModelIds == null || approvedModelIds.isEmpty()) throw new CallFailure("MODEL_UNAVAILABLE");
+        return send(body, apiKey, remaining, approvedModelIds, io.github.aiarchguard.platform.agent.LiveCostPolicy.VERSION);
+    }
+
+    @Override public Reply send(byte[] body, String apiKey, Duration remaining, Set<String> approvedModelIds, String priceVersion) {
+        if (approvedModelIds == null || approvedModelIds.isEmpty()
+                || !io.github.aiarchguard.platform.agent.LiveCostPolicy.supported(priceVersion)) throw new CallFailure("MODEL_UNAVAILABLE");
         byte[] response = null;
         try {
             response = transport.post(body, apiKey, remaining);
-            var accounting = codec.decodeAccounting(response, approvedModelIds);
+            var accounting = codec.decodeAccounting(response, approvedModelIds, priceVersion);
             // Provider identifiers are untrusted metadata too, not a safe channel for echoed credentials.
             if (sensitiveIdentifier(accounting.responseId(), apiKey) || sensitiveIdentifier(accounting.actualModelId(), apiKey)) {
                 throw new CallFailure("OUTPUT_INVALID");

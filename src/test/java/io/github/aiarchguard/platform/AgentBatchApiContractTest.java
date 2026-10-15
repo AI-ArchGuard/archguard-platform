@@ -112,7 +112,7 @@ class AgentBatchApiContractTest {
     @Test void apiExposesOnlyMetadataManagementAndAllResponsesAreNoStore() throws Exception {
         Path file = Path.of("openapi/agent-batches-v1.json"); JsonNode api = mapper.readTree(file.toFile());
         assertThat(api.path("openapi").asText()).isEqualTo("3.1.0");
-        assertThat(api.at("/info/version").asText()).isEqualTo("0.1.0");
+        assertThat(api.at("/info/version").asText()).isEqualTo("0.2.0");
         assertThat(api.path("x-archguard-request-body-max-bytes").asInt()).isEqualTo(8192);
         assertThat(api.path("x-archguard-strict-json").asBoolean()).isTrue();
         assertThat(api.path("x-archguard-model-calls").asBoolean()).isFalse();
@@ -201,7 +201,8 @@ class AgentBatchApiContractTest {
                 String ref = value.path("$ref").asText();
                 if (ref.startsWith("#/")) assertThat(root.at(ref.substring(1)).isMissingNode()).isFalse();
                 else {
-                    assertThat(ref).isIn("../contracts/agent-batch-preview-0.1.0.schema.json", "../contracts/agent-live-batch-0.1.0.schema.json");
+                    assertThat(ref).isIn("../contracts/agent-batch-preview-0.1.0.schema.json", "../contracts/agent-live-batch-0.1.0.schema.json",
+                        "../contracts/agent-live-batch-0.2.0.schema.json");
                     assertThat(Files.isRegularFile(file.getParent().resolve(ref).normalize())).isTrue();
                 }
             }

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://archguard.example/contracts/agent-live-batch-0.2.0.schema.json",
+  "title": "Personal two-call synthetic context-cost batch approval input; no live egress grant",
+  "description": "The immutable enablement must select schema 0.3.0 and the ADR-0014 context-cost policy; client fields cannot select or upgrade policy. Exactly one explanation and one PR summary template are checked server-side. Approval creates metadata only. Each attempt reserves 316373 microUSD; two serial attempts require 632746..700000 authorized microUSD, stop on any failure, no retries or extra requests. All independent runtime/technical gates remain required.",
+  "type": "object", "additionalProperties": false,
+  "required": ["enablementId", "syntheticInventoryId", "templateRequestIds", "manifestSha256", "expiresAt", "maxRequests", "maxCostMicrousd", "callsApproved"],
+  "properties": {
+    "enablementId": {"type": "string", "format": "uuid", "description": "Must bind an immutable 0.3.0 context-policy acknowledgement; an old enablement cannot be upgraded by this body."},
+    "syntheticInventoryId": {"type": "string", "format": "uuid", "description": "Trusted deployment inventory must review this exact Project and computed manifest. Caller consent and digest matching do not prove synthetic provenance."},
+    "templateRequestIds": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}, "description": "Server validates exactly one FINDING_EXPLANATION and one PR_SUMMARY template; no extra attempts or automatic retries."},
+    "manifestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Must equal server digest of ordered immutable templates, resource bindings and input/citation hashes."},
+    "expiresAt": {"type": "string", "format": "date-time", "description": "Future, at most 24 hours; not later than acknowledgement, price or operator inventory expiry."},
+    "maxRequests": {"const": 2},
+    "maxCostMicrousd": {"type": "integer", "minimum": 632746, "maximum": 700000, "description": "At least two context reservations, at most the owner's USD 0.70 conditional authorization. Local control based on declared context and peak prices, not a provider account spending guarantee."},
+    "callsApproved": {"const": true}
+  }
+}

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.aiarchguard.platform.agent.AgentModelPort;
+import io.github.aiarchguard.platform.agent.LiveCostPolicy;
 import java.util.Set;
 
 /** Offline wire codec only. No model port, Spring bean, Secret access or network capability. */
@@ -60,15 +61,25 @@ final class DeepSeekResponsesCodec {
     }
 
     Decoded decode(byte[] bytes, Set<String> approvedResponseModels) {
-        var accounting = decodeAccounting(bytes, approvedResponseModels);
+        return decode(bytes, approvedResponseModels, LiveCostPolicy.VERSION);
+    }
+
+    Decoded decode(byte[] bytes, Set<String> approvedResponseModels, String priceVersion) {
+        var accounting = decodeAccounting(bytes, approvedResponseModels, priceVersion);
         return new Decoded(decodeOutput(accounting), accounting.inputTokens(), accounting.outputTokens(),
             accounting.cachedInputTokens(), accounting.responseId(), accounting.actualModelId());
     }
 
     /** Valid billable usage is independent of whether the untrusted business text can be accepted. */
     Accounting decodeAccounting(byte[] bytes, Set<String> approvedResponseModels) {
+        return decodeAccounting(bytes, approvedResponseModels, LiveCostPolicy.VERSION);
+    }
+
+    Accounting decodeAccounting(byte[] bytes, Set<String> approvedResponseModels, String priceVersion) {
         if (bytes == null || bytes.length == 0 || bytes.length > MAX_RESPONSE_BYTES
-                || approvedResponseModels == null || approvedResponseModels.isEmpty()) throw invalid();
+                || approvedResponseModels == null || approvedResponseModels.isEmpty()
+                || !LiveCostPolicy.supported(priceVersion)) throw invalid();
+        int inputLimit = LiveCostPolicy.isContext(priceVersion) ? LiveCostPolicy.CONTEXT_INPUT_LIMIT : 8000;
         try {
             JsonNode root = mapper.readTree(bytes);
             fields(root, ENVELOPE_FIELDS);
@@ -84,8 +95,8 @@ final class DeepSeekResponsesCodec {
             if (root.has("background") && (!root.get("background").isBoolean() || root.get("background").booleanValue())) throw invalid();
             JsonNode usage = root.path("usage");
             fields(usage, Set.of("input_tokens", "output_tokens", "total_tokens", "input_tokens_details", "output_tokens_details"));
-            int input = count(usage, "input_tokens", 8000), out = count(usage, "output_tokens", 1500);
-            if (count(usage, "total_tokens", 9500) != input + out) throw invalid();
+            int input = count(usage, "input_tokens", inputLimit), out = count(usage, "output_tokens", 1500);
+            if (count(usage, "total_tokens", inputLimit + 1500) != (long) input + out) throw invalid();
             JsonNode inputDetails = usage.path("input_tokens_details"), outputDetails = usage.path("output_tokens_details");
             fields(inputDetails, Set.of("cached_tokens"));
             fields(outputDetails, Set.of("reasoning_tokens"));

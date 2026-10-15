@@ -431,7 +431,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
     private org.flywaydb.core.api.configuration.FluentConfiguration agentMigration(String url) {
         return Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
             .locations("classpath:db/agent-migration").defaultSchema("public").table("flyway_agent_schema_history")
-            .baselineOnMigrate(true).baselineVersion("8");
+            .baselineOnMigrate(true).baselineVersion("8").target(MigrationVersion.fromVersion("14"));
     }
 
     private record Fixture(UUID project, UUID approval, UUID batch, UUID template, UUID credential) { }

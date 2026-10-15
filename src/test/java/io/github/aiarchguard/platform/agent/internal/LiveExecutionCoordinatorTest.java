@@ -75,6 +75,55 @@ class LiveExecutionCoordinatorTest {
     void execute(LiveExecutionCoordinator core) { core.execute(project, batch, template, request); }
     Consumer<AgentSnapshot> validResources() { return snapshot -> resourceChecks.incrementAndGet(); }
 
+    @Test void contextOverThresholdSettlesKnownUsageButFailsAndStopsWithoutAnotherSend() {
+        contextPolicy();
+        provider.reply = new LiveResponsePort.Reply(INSUFFICIENT, null,
+            new LiveTokenUsage(8001, 100, 0, 8101, 0), "resp-synthetic", "deepseek-flash");
+        execute(core(validResources()));
+        assertThat(provider.sends.get()).isOne(); assertThat(accounting.settled.get()).isOne();
+        assertThat(accounting.unknown.get()).isZero(); assertThat(accounting.stops.get()).isOne();
+        assertThat(requests.value.view().state()).isEqualTo("FAILED");
+        assertThat(requests.value.view().failure().code()).isEqualTo("OUTPUT_INVALID");
+        assertThat(requests.value.view().usage().inputTokens()).isEqualTo(8001);
+        assertThat(requests.value.view().usage().actualCostMicrousd()).isEqualTo(2521);
+        assertThat(requests.value.view().usage().estimatedCostMicrousd()).isEqualTo(316373);
+        execute(core(validResources())); assertThat(provider.sends.get()).isOne();
+    }
+
+    @Test void contextTransportFailureStopsBatchAndRetainsUnknownReservation() {
+        contextPolicy(); provider.failure = new LiveResponsePort.CallFailure("MODEL_TIMEOUT");
+        execute(core(validResources()));
+        assertThat(provider.sends.get()).isOne(); assertThat(accounting.stops.get()).isOne();
+        assertThat(accounting.unknown.get()).isOne(); assertThat(accounting.settled.get()).isZero();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_TIMEOUT");
+    }
+
+    @Test void contextCannotFallBackToLegacyOnlyTransport() {
+        contextPolicy();
+        LiveResponsePort legacy = new LiveResponsePort() {
+            public byte[] prepare(AgentModelPort.ModelInput input) { return provider.prepare(input); }
+            public Reply send(byte[] body, String key, Duration timeout, Set<String> models) {
+                throw new AssertionError("A new-policy request must not reach the old send method");
+            }
+        };
+        var execution = new LiveExecutionCoordinator(requests, accounting, validResources(), legacy,
+            boundedFake((version, preflight, operation) -> { preflight.run(); return operation.apply("synthetic-placeholder-not-a-key"); }),
+            writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get, database);
+        execute(execution);
+        assertThat(accounting.stops.get()).isOne(); assertThat(accounting.unknown.get()).isOne();
+        assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
+    }
+
+    private void contextPolicy() {
+        var view = original.view(); var old = view.bindings();
+        var bindings = new AgentRequestView.VersionBindings(old.scanJobId(), old.reportSha256(), old.prHeadRevisionId(),
+            old.findingIds(), old.documentVersions(), old.promptVersion(), LiveCostPolicy.CONTEXT_MODEL_PROFILE,
+            old.modelProtocolVersion(), old.modelId(), old.outputSchemaVersion(), LiveCostPolicy.CONTEXT_VERSION, old.inputDigest());
+        original = new AgentSnapshot(new AgentRequestView(view.id(), view.projectId(), view.requesterId(), view.traceId(),
+            view.purpose(), view.state(), bindings, null, null, null, view.createdAt(), view.updatedAt()), original.input(), original.candidates());
+        requests.value = original; accounting.price = LiveCostPolicy.CONTEXT_VERSION;
+    }
+
     @Test void publicConstructionAlwaysDeniesBeforeReservationSecretAndHttp() {
         var resources = new LiveResourceAuthorizer(unusedPort(ProjectAuthorization.class),
             unusedPort(ScanJobOperations.class), unusedPort(FindingOperations.class),
@@ -767,13 +816,17 @@ class LiveExecutionCoordinatorTest {
         public Reply send(byte[] body, String key, Duration remaining, Set<String> models) {
             sends.incrementAndGet(); timeout = remaining; onSend.run(); if (failure != null) throw failure; return reply;
         }
+        public Reply send(byte[] body, String key, Duration remaining, Set<String> models, String price) {
+            assertThat(LiveCostPolicy.supported(price)).isTrue(); return send(body, key, remaining, models);
+        }
     }
     static final class Ledger implements LiveAccountingOperations {
         final UUID credential = UUID.randomUUID(); final AtomicBoolean owns = new AtomicBoolean();
         final AtomicInteger reserves = new AtomicInteger(), settled = new AtomicInteger(), unknown = new AtomicInteger(), checks = new AtomicInteger();
+        final AtomicInteger stops = new AtomicInteger(); String price = LiveCostPolicy.VERSION;
         final List<LongSupplier> deadlines = new CopyOnWriteArrayList<>();
         Runnable onReserve = () -> {}, onSettle = () -> {}, onCheck = () -> {}; int rejectCheck;
-        public Admission reserve(UUID p, UUID b, UUID t, UUID r) { reserves.incrementAndGet(); onReserve.run(); return new Admission(r, 4200, owns.compareAndSet(false, true)); }
+        public Admission reserve(UUID p, UUID b, UUID t, UUID r) { reserves.incrementAndGet(); onReserve.run(); return new Admission(r, LiveCostPolicy.reservation(price), owns.compareAndSet(false, true)); }
         public Admission reserve(UUID p, UUID b, UUID t, UUID r, LongSupplier remaining) {
             deadlines.add(remaining); requireBudget(remaining); return reserve(p, b, t, r);
         }
@@ -785,8 +838,9 @@ class LiveExecutionCoordinatorTest {
         public SendApproval checkBeforeSend(UUID p, UUID b, UUID t, UUID r, LongSupplier remaining) {
             deadlines.add(remaining); requireBudget(remaining); return checkBeforeSend(p, b, t, r);
         }
-        public Outcome settle(UUID p, UUID r, String price, LiveTokenUsage usage) { settled.incrementAndGet(); onSettle.run(); return new Outcome("SETTLED", LiveCostPolicy.cost(usage)); }
+        public Outcome settle(UUID p, UUID r, String price, LiveTokenUsage usage) { settled.incrementAndGet(); onSettle.run(); return new Outcome("SETTLED", LiveCostPolicy.cost(price, usage)); }
         public Outcome unknown(UUID p, UUID r) { unknown.incrementAndGet(); return new Outcome("UNKNOWN", null); }
+        public void stopBatch(UUID p, UUID b, UUID r, String code) { stops.incrementAndGet(); }
         public String preview(UUID p, List<UUID> templates) { throw new AssertionError(); }
         public LiveBatchView approve(UUID p, String o, boolean s, LiveBatchInput i) { throw new AssertionError(); }
         public LiveBatchView get(UUID p, UUID b) { throw new AssertionError(); }

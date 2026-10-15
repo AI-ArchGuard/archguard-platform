@@ -43,10 +43,10 @@ class JdbcLiveRequestStore implements LiveRequestStore {
         return jdbc.sql("""
             UPDATE agent.requests r SET state='RUNNING', updated_at=:at
             WHERE r.id=:request AND r.project_id=:project AND r.requester_id=:requester AND r.state='QUEUED'
-                AND r.bindings->>'modelProfileVersion'=:profile
+                AND ((r.bindings->>'modelProfileVersion'=:profile AND r.bindings->>'priceCatalogVersion'=:catalog)
+                    OR (r.bindings->>'modelProfileVersion'=:context_profile AND r.bindings->>'priceCatalogVersion'=:context_catalog))
                 AND r.bindings->>'modelProtocolVersion'='responses-v1-restricted'
                 AND r.bindings->>'modelId'='deepseek-flash'
-                AND r.bindings->>'priceCatalogVersion'=:catalog
                 AND r.bindings->>'outputSchemaVersion'='0.1.0'
                 AND r.model_input->>'schemaVersion'='0.1.0'
                 AND r.model_input->>'purpose'=r.purpose
@@ -57,7 +57,9 @@ class JdbcLiveRequestStore implements LiveRequestStore {
                         AND r.bindings->>'promptVersion'=:summary
                         AND r.model_input->>'promptVersion'=:summary))
                 AND EXISTS (SELECT 1 FROM agent.live_request_links l
+                    JOIN agent.live_batches b ON b.project_id=l.project_id AND b.id=l.batch_id
                     WHERE l.request_id=r.id AND l.project_id=r.project_id
+                        AND b.cost_policy_version=r.bindings->>'priceCatalogVersion'
                         AND l.batch_id=:batch AND l.template_id=:template AND l.enablement_id=:enablement
                         AND l.credential_version=:credential AND l.settings_revision=:revision AND l.created_at=:created)
             """).param("request", link.requestId()).param("project", link.projectId()).param("requester", requester)
@@ -65,6 +67,7 @@ class JdbcLiveRequestStore implements LiveRequestStore {
             .param("credential", link.credentialVersion()).param("revision", link.settingsRevision())
             .param("created", Timestamp.from(link.createdAt())).param("at", Timestamp.from(at))
             .param("profile", LiveAccountingOperations.MODEL_PROFILE).param("catalog", LiveCostPolicy.VERSION)
+            .param("context_profile", LiveCostPolicy.CONTEXT_MODEL_PROFILE).param("context_catalog", LiveCostPolicy.CONTEXT_VERSION)
             .param("explanation", LiveAccountingOperations.EXPLANATION_PROMPT).param("summary", LiveAccountingOperations.SUMMARY_PROMPT)
             .update() == 1;
     }

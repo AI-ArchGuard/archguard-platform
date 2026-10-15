@@ -79,7 +79,7 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 个人 Key 的[只写凭据设计](docs/technical-design/v0.5-personal-credential-management.md)和[API 0.1.0](openapi/agent-credentials-v1.json)提供后端添加/替换/删除与重启后加密读取。管理默认关闭，仅在 local-compose 环回个人部署中允许配置的 owner 操作；需独立主密钥与受控目录。浏览器不保存或回显 Key；操作不检查有效性、不打开 Agent 或发起模型调用。真实出口仍未装配，此入口不是 #43/阶段完成证据。
 
-个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)提供 ADR-0012 的后端实现边界；无网络 Responses 编解码已通过 #48 合入且 main CI 成功。[项目设置与不可变启用确认](docs/technical-design/v0.5-agent-personal-enablement.md)、[API 0.1.0](openapi/agent-enablement-v1.json)和[确认输入 0.2.0](contracts/agent-personal-enablement-0.2.0.schema.json)追加独立 V11，仅保存默认关闭设置、owner 风险确认及撤销历史，绑定当前加密凭据版本；不提供真实模型调用。出口编排、Web 消费和真实验收仍未完成，不能据此关闭 Issue #43 或阶段 4。
+个人 DeepSeek 接入的[增量设计](docs/technical-design/v0.5-agent-personal-deepseek.md)提供 ADR-0012 的后端实现边界；无网络 Responses 编解码已通过 #48 合入且 main CI 成功。[项目设置与不可变启用确认](docs/technical-design/v0.5-agent-personal-enablement.md)（V11 初始 API 为 0.1.0；[当前 API 0.2.0](openapi/agent-enablement-v1.json)）和[确认输入 0.2.0](contracts/agent-personal-enablement-0.2.0.schema.json)追加独立 V11，仅保存默认关闭设置、owner 风险确认及撤销历史，绑定当前加密凭据版本；不提供真实模型调用。出口编排、Web 消费和真实验收仍未完成，不能据此关闭 Issue #43 或阶段 4。
 
 [合成批次与费用账本基础](docs/technical-design/v0.5-agent-live-accounting.md)提供 Batch Input 0.1.0、独立 V12、三层事务预留、唯一 attempt 与实际用量结算；未知费用不退款或重试。[受控来源与批次管理](docs/technical-design/v0.5-agent-synthetic-batches.md)追加 API 0.1.0 与 V13：独立默认关闭的操作员来源清单、不可变证明、预览/批准/读取/撤销元数据，不提供发送、预留或结算 HTTP 接口。原请求/worker 防护不变；来源清单部署、Token/网络准入、Web 和真实验收仍是独立后续关卡，当前 8081 栈不因此启用。
 
@@ -93,11 +93,13 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 [数据库等待与独立清理](docs/technical-design/v0.5-agent-database-deadlines.md)将原预算接入真实核心的只读事务、预留/复核及结果保存，用事务级 PostgreSQL 超时限制 SQL/锁等待；费用/失败落库使用独立有限清理。真实数据库测试覆盖取消、回滚、连接复用和迟到连接零动作。共享连接池获取及网络提交仍有明确限制；真实出口、Web 和运行栈不因此启用。
 
+[个人上下文费用策略](docs/technical-design/v0.5-agent-context-cost-policy.md)按 Docs ADR-0014 增加确认 0.3.0、批次 0.2.0、API 0.2.0 与独立 V15；旧确认/批次/4,200 预留及历史结算保持旧版本。新策略每次保守预留 316,373 microUSD，单次/两次本地准入 USD 0.35/0.70，输入 8,000 为调用后阈值而非发送前证明；完整请求仍最多 6,000 UTF-8 字节。可信超阈值用量照常结算并停批；摘要只能在前一解释已成功且已结算后执行，失败/未知不补发。早期切片中“输入上界待证”的旧决策由该新策略替代，不改变协议或外发字段。运行时仍未装配/部署；有条件两次合成授权须先完成全部工程/CI 与具体运行绑定，不代表已发生真实验收或阶段退出。
+
 [传输基础切片](docs/technical-design/v0.5-agent-deepseek-transport.md)提供未装配的固定 HTTPS/有界响应/取消机制、运行时 Secret 文件读取与高峰价格计算，假 HTTP 仅访问测试临时环回服务器。它仍不是可用的真实 Agent；批次来源清单、事务记账与 worker 接线、Token 上界和实际出口检查未完成，不提供 Key 或网络启用配置。
 
 4H 提供[本地合成验收适配器](docs/technical-design/v0.5-agent-4h-local-synthetic.md)：必须同时启用 `local-compose,agent-synthetic` profile、`ARCHGUARD_AGENT_SYNTHETIC_ENABLED=true` 和 Agent 开关。它没有网络调用，只返回标明合成用途的固定文本；用量与费用是测试值，不代表真实模型质量或账单。默认部署仍禁用，DeepSeek #43 关卡不变。
 
-Stage 4D/4E 的单个 Finding 解释与已选 Finding 的 PR 摘要共用异步 Agent API；4E 要求已应用的 PR head 修订和与该修订匹配的已完成报告。Docs [ADR-0011](https://github.com/AI-ArchGuard/archguard-docs/blob/main/adr/0011-deepseek-official-api-egress.md)已选择 DeepSeek 官方 API，未批准真实外发；当前只验收默认关闭的合成路径。`ARCHGUARD_AGENT_ENABLED` 默认 `false`；即使显式设为 `true`，没有获批适配器仍返回 `MODEL_UNAVAILABLE`，不会外发数据。Agent 迁移独立于主 Flyway 链，迁移失败时 Agent 路由返回 503，主 Project/Scanner/门禁仍可启动。CI 只注入确定性假模型。请求须显式调用 `POST /api/v1/projects/{projectId}/agent/requests`，之后用 GET 查询；结果不参与 Finding、基线、门禁或 CI 判断。详情见 [4D 解释设计](docs/technical-design/v0.5-agent-4d-finding-explanation.md)和 [4E 摘要设计](docs/technical-design/v0.5-agent-4e-pr-summary.md)。
+Stage 4D/4E 的单个 Finding 解释与已选 Finding 的 PR 摘要共用异步 Agent API；4E 要求已应用的 PR head 修订和与该修订匹配的已完成报告。Docs [ADR-0011](https://github.com/AI-ArchGuard/archguard-docs/blob/main/adr/0011-deepseek-official-api-egress.md)选择 DeepSeek 官方 API 时未授权真实外发；后续 [ADR-0014](https://github.com/AI-ArchGuard/archguard-docs/blob/main/adr/0014-personal-token-admission-and-cost-reservation.md)记录了解释/摘要各一次的两次合成条件授权，具体运行绑定及技术/CI 关卡仍须成立，运行时继续关闭。当前只验收默认关闭的合成路径。`ARCHGUARD_AGENT_ENABLED` 默认 `false`；即使显式设为 `true`，没有获批适配器仍返回 `MODEL_UNAVAILABLE`，不会外发数据。Agent 迁移独立于主 Flyway 链，迁移失败时 Agent 路由返回 503，主 Project/Scanner/门禁仍可启动。CI 只注入确定性假模型。请求须显式调用 `POST /api/v1/projects/{projectId}/agent/requests`，之后用 GET 查询；结果不参与 Finding、基线、门禁或 CI 判断。详情见 [4D 解释设计](docs/technical-design/v0.5-agent-4d-finding-explanation.md)和 [4E 摘要设计](docs/technical-design/v0.5-agent-4e-pr-summary.md)。
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|

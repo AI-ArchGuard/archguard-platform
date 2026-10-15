@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ArchGuard personal synthetic acceptance batch management",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Local personal metadata management only. Preview, approval and revocation require deployment owner AND Project Maintainer, configured Origin and local credential-management guards before reading a body. GET requires Project Viewer. All responses, including authentication errors, are no-store. This API never sends a model request, creates an Agent request or attempt, or reserves fees. Approval requires separate operator-controlled source review and caller consent; neither a Key nor a checkbox proves synthetic provenance. Token/network admission and real adapter wiring remain separate gates."
   },
   "security": [{"platformIdentity": []}],
@@ -35,8 +35,8 @@
       "post": {
         "operationId": "approvePersonalSyntheticBatch",
         "parameters": [{"$ref": "#/components/parameters/Origin"}],
-        "description": "Owner + Project Maintainer and Origin authorization before body parsing. Server generates immutable ID, actor and timestamp. An active enablement bound to the current credential version, exact server manifest, operator-controlled file proof and explicit callsApproved=true are all required. Future expiry is at most 24 hours and no later than enablement, price or inventory expiry. The operator proof snapshot and file digest are bound internally, never returned. Counts/costs are bounded, with maxCostMicrousd <= maxRequests*4200. Creates batch metadata only, not a request or network permission; missing/changed source proof fails closed.",
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "../contracts/agent-live-batch-0.1.0.schema.json"}}}},
+        "description": "Owner + Project Maintainer and Origin authorization before body parsing. Server generates immutable ID, actor and timestamp. An active enablement bound to the current credential version, exact server manifest, operator-controlled file proof and explicit callsApproved=true are all required. Policy is selected only by the immutable enablement and persisted on the batch; no caller policy/schemaVersion selector exists. Legacy 0.1.0 body is accepted only with a legacy acknowledgement and maxCostMicrousd <= maxRequests*4200. Context 0.2.0 requires a 0.3.0 acknowledgement, exactly two unique templates (one explanation, one PR summary), maxRequests=2 and maxCostMicrousd=632746..700000. Later execution must be serial and stop on failure; metadata approval alone never grants network permission. Future expiry is at most 24 hours and no later than enablement, price or inventory expiry. The operator proof and internal policy snapshot are never returned. Missing/changed proof or mixed policy/body fails closed.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"oneOf": [{"$ref": "../contracts/agent-live-batch-0.1.0.schema.json"}, {"$ref": "../contracts/agent-live-batch-0.2.0.schema.json"}]}}}},
         "responses": {
           "201": {
             "description": "Immutable batch metadata; does not open a model exit",
@@ -114,9 +114,13 @@
           "manifestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
           "expiresAt": {"type": "string", "format": "date-time"},
           "maxRequests": {"type": "integer", "minimum": 1, "maximum": 20},
-          "maxCostMicrousd": {"type": "integer", "minimum": 4200, "maximum": 84000},
+          "maxCostMicrousd": {"type": "integer", "minimum": 4200, "maximum": 700000},
           "revoked": {"type": "boolean"}
-        }
+        },
+        "oneOf": [
+          {"properties": {"maxRequests": {"type": "integer", "minimum": 1, "maximum": 20}, "maxCostMicrousd": {"type": "integer", "minimum": 4200, "maximum": 84000}}},
+          {"properties": {"maxRequests": {"const": 2}, "maxCostMicrousd": {"type": "integer", "minimum": 632746, "maximum": 700000}}}
+        ]
       },
       "ApiError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "traceId", "details"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "traceId": {"type": "string"}, "details": {"type": "object"}}}
     }

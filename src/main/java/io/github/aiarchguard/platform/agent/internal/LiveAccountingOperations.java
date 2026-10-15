@@ -30,6 +30,10 @@ public interface LiveAccountingOperations {
     }
     Outcome settle(UUID project, UUID request, String priceVersion, LiveTokenUsage usage);
     Outcome unknown(UUID project, UUID request);
+    /** Independent append-only stop; never releases an attempt or authorizes replacement calls. */
+    default void stopBatch(UUID project, UUID batch, UUID request, String code) {
+        throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
+    }
     record Admission(UUID attemptId, long reservedMicrousd, boolean newAttempt) { }
     record Outcome(String state, Long actualMicrousd) { }
     record SendApproval(UUID credentialVersion, java.util.Set<String> allowedResponseModels) {

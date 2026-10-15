@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
+import io.github.aiarchguard.platform.agent.LiveCostPolicy;
 import org.junit.jupiter.api.Test;
 
 class DeepSeekPriceSnapshotTest {
@@ -25,5 +26,25 @@ class DeepSeekPriceSnapshotTest {
         assertThat(DeepSeekPriceSnapshot.valid(DeepSeekPriceSnapshot.VERSION, now.plusSeconds(60), now)).isTrue();
         assertThat(DeepSeekPriceSnapshot.valid("unknown", now.plusSeconds(60), now)).isFalse();
         assertThat(DeepSeekPriceSnapshot.valid(DeepSeekPriceSnapshot.VERSION, now, now)).isFalse();
+    }
+
+    @Test void contextSnapshotUsesItsOwnReservationAndDoesNotDiscardOverThresholdUsage() {
+        assertThat(DeepSeekPriceSnapshot.maxReservationMicrousd(LiveCostPolicy.VERSION)).isEqualTo(4200);
+        assertThat(DeepSeekPriceSnapshot.maxReservationMicrousd(LiveCostPolicy.CONTEXT_VERSION)).isEqualTo(316373);
+        assertThat(DeepSeekPriceSnapshot.peakCostMicrousd(LiveCostPolicy.CONTEXT_VERSION, 8001, 1500, 0)).isEqualTo(4201);
+        assertThat(DeepSeekPriceSnapshot.peakCostMicrousd(LiveCostPolicy.CONTEXT_VERSION, 1_048_576, 1500, 0)).isEqualTo(316373);
+        assertThat(DeepSeekPriceSnapshot.peakCostMicrousd(LiveCostPolicy.CONTEXT_VERSION, 1_048_576, 1500, 1_048_576)).isEqualTo(8092);
+        Instant now = Instant.parse("2026-10-15T00:00:00Z");
+        assertThat(DeepSeekPriceSnapshot.valid(LiveCostPolicy.CONTEXT_VERSION, now.plusSeconds(60), now)).isTrue();
+        assertThat(DeepSeekPriceSnapshot.valid(LiveCostPolicy.CONTEXT_VERSION, now, now)).isFalse();
+    }
+
+    @Test void versionedSnapshotRejectsUnknownCatalogsAndOverflowWithoutFallback() {
+        for (String unknown : new String[] {null, "", "unknown"}) {
+            assertThatThrownBy(() -> DeepSeekPriceSnapshot.maxReservationMicrousd(unknown)).isInstanceOf(IllegalArgumentException.class).hasNoCause();
+            assertThatThrownBy(() -> DeepSeekPriceSnapshot.peakCostMicrousd(unknown, 1, 1, 0)).isInstanceOf(IllegalArgumentException.class).hasNoCause();
+        }
+        assertThatThrownBy(() -> DeepSeekPriceSnapshot.peakCostMicrousd(LiveCostPolicy.CONTEXT_VERSION, Integer.MAX_VALUE, Integer.MAX_VALUE, 0))
+            .isInstanceOf(IllegalArgumentException.class).hasNoCause();
     }
 }

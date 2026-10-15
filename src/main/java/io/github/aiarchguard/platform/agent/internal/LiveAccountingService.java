@@ -81,14 +81,24 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             controls.authorizeWrite(project, origin, secure); schema.requireReady();
             Instant now = Instant.now(clock);
             if (input == null || input.enablementId() == null || input.syntheticInventoryId() == null || !input.callsApproved()
-                    || input.maxRequests() < 1 || input.maxRequests() > 20 || input.maxCostMicrousd() < LiveCostPolicy.RESERVATION
-                    || input.maxCostMicrousd() > input.maxRequests() * LiveCostPolicy.RESERVATION
+                    || input.maxRequests() < 1 || input.maxRequests() > 20
                     || input.expiresAt() == null || !input.expiresAt().isAfter(now) || input.expiresAt().isAfter(now.plusSeconds(86400))) throw new AgentInvalidException();
             enablements.lockSettings(project);
             var approval = approval(project, input.enablementId()); validateApproval(approval);
+            String price = approval.acknowledgement().priceCatalogVersion();
+            long reservation = LiveCostPolicy.reservation(price);
+            if (LiveCostPolicy.isContext(price)) {
+                if (input.maxRequests() != 2 || input.maxCostMicrousd() < 2 * reservation
+                        || input.maxCostMicrousd() > LiveCostPolicy.BATCH_LIMIT
+                        || reservation > LiveCostPolicy.PER_REQUEST_LIMIT) throw new AgentInvalidException();
+            } else if (input.maxCostMicrousd() < reservation
+                    || input.maxCostMicrousd() > input.maxRequests() * reservation) throw new AgentInvalidException();
             if (input.expiresAt().isAfter(approval.acknowledgement().expiresAt())
                     || input.expiresAt().isAfter(approval.acknowledgement().priceCatalogExpiresAt())) throw new AgentInvalidException();
             var manifest = manifest(project, input.templateRequestIds()); String hash = LiveManifest.hash(mapper, manifest);
+            if (LiveCostPolicy.isContext(price) && (manifest.templates().size() != 2
+                    || !manifest.templates().stream().map(t -> t.selection().purpose()).collect(java.util.stream.Collectors.toSet())
+                        .equals(java.util.Set.of("FINDING_EXPLANATION", "PR_SUMMARY")))) throw new AgentInvalidException();
             if (!hash.equals(input.manifestSha256())) throw new AgentInvalidException();
             var proof = inventory.resolve(project, input.syntheticInventoryId(), hash).orElseThrow(AgentUnavailableException::new);
             now = Instant.now(clock);
@@ -96,7 +106,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             validateApproval(approval);
             var view = new LiveBatchView(UUID.randomUUID(), project, input.enablementId(), actors.currentActor().id(), now,
                 hash, input.expiresAt(), input.maxRequests(), input.maxCostMicrousd(), false);
-            store.insert(new LiveAccountingStore.Batch(view, deployment(), input.syntheticInventoryId(), manifest, proof));
+            store.insert(new LiveAccountingStore.Batch(view, deployment(), input.syntheticInventoryId(), manifest, proof, price));
             record(project, actors.currentActor().id(), "agent.batch.approved", Map.of("batchId", view.id(), "manifestSha256", hash,
                 "maxRequests", view.maxRequests(), "maxCostMicrousd", view.maxCostMicrousd(), "inventoryId", input.syntheticInventoryId(),
                 "inventoryFileSha256", proof.fileSha256(), "fixtureSetVersion", proof.fixtureSetVersion(),
@@ -119,8 +129,9 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
         projects.requireViewer(project); schema.requireReady(); var batch = batch(project, batchId);
         var template = template(batch, templateId); var approval = approval(project, batch.view().enablementId());
         String prompt = "PR_SUMMARY".equals(template.selection().purpose()) ? SUMMARY_PROMPT : EXPLANATION_PROMPT;
+        String price = batch.costPolicyVersion();
         return AgentApplicationService.sha256(batch.view().manifestSha256() + "|" + templateId + "|" + batchId + "|"
-            + approval.id() + "|" + approval.acknowledgement().credentialVersion() + "|" + prompt + "|" + MODEL_PROFILE + "|" + LiveCostPolicy.VERSION);
+            + approval.id() + "|" + approval.acknowledgement().credentialVersion() + "|" + prompt + "|" + LiveCostPolicy.modelProfile(price) + "|" + price);
     }
     @Override public AgentRequestView create(UUID project, UUID batchId, UUID templateId, String key, String origin, boolean secure) {
         return write(project, "agent.live.request.created", () -> {
@@ -144,8 +155,8 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             var liveInput = new AgentModelPort.ModelInput(input.purpose(), input.schemaVersion(), prompt, input.findingRef(),
                 input.ruleId(), input.ruleVersion(), input.severity(), input.message(), input.subject(), input.evidence(), input.documents(), input.findings());
             var bindings = new AgentRequestView.VersionBindings(old.scanJobId(), old.reportSha256(), old.prHeadRevisionId(),
-                List.copyOf(old.findingIds()), List.copyOf(old.documentVersions()), prompt, MODEL_PROFILE,
-                "responses-v1-restricted", "deepseek-flash", old.outputSchemaVersion(), LiveCostPolicy.VERSION, digest);
+                List.copyOf(old.findingIds()), List.copyOf(old.documentVersions()), prompt, LiveCostPolicy.modelProfile(batch.costPolicyVersion()),
+                "responses-v1-restricted", "deepseek-flash", old.outputSchemaVersion(), batch.costPolicyVersion(), digest);
             Instant now = Instant.now(clock);
             var view = new AgentRequestView(UUID.randomUUID(), project, actor, traces.currentTraceId(), source.view().purpose(),
                 "QUEUED", bindings, null, null, null, now, now);
@@ -159,7 +170,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             record(project, actor, view.traceId(), "agent.live.request.created", Map.of("requestId", view.id(),
                 "batchId", batchId, "templateId", templateId, "enablementId", approval.id(),
                 "credentialVersion", approval.acknowledgement().credentialVersion(), "settingsRevision", settings.revision(),
-                "inputDigest", digest, "modelProfileVersion", MODEL_PROFILE));
+                "inputDigest", digest, "modelProfileVersion", bindings.modelProfileVersion()));
             // No afterCommit hook: dispatch, Token admission and bounded trusted identity are separate gates.
             return view;
         });
@@ -167,7 +178,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     private AgentRequestView replay(AgentSnapshot snapshot, UUID batch, UUID template, String digest) {
         var link = links.find(snapshot.view().projectId(), snapshot.view().id()).orElseThrow(AgentConflictException::new);
         if (!batch.equals(link.batchId()) || !template.equals(link.templateId())
-                || !MODEL_PROFILE.equals(snapshot.view().bindings().modelProfileVersion())
+                || !LiveCostPolicy.modelProfile(snapshot.view().bindings().priceCatalogVersion()).equals(snapshot.view().bindings().modelProfileVersion())
                 || !digest.equals(snapshot.view().bindings().inputDigest())) throw new AgentConflictException();
         return snapshot.view();
     }
@@ -188,6 +199,8 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
                 return new Admission(attempt.attemptId(), attempt.reservation(), false);
             }
             validateBatch(project, settings, batch);
+            long reservation = LiveCostPolicy.reservation(batch.costPolicyVersion());
+            if (LiveCostPolicy.isContext(batch.costPolicyVersion())) store.requireSerialProgress(batch, requestId);
             var approval = approval(project, settings.enablementId()); validateApproval(approval);
             validateRequest(snapshot, batch, templateId, "RUNNING"); validateLink(snapshot, batch, templateId, settings, approval);
             if (projectLimit < 0 || projectLimit > 5_000_000 || deploymentLimit < 0 || deploymentLimit > 20_000_000) throw new AgentUnavailableException();
@@ -199,17 +212,18 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             projects.requireViewer(project); validateBatch(project, settings, batch); validateApproval(approval);
             snapshot = request(project, requestId); sameActor(snapshot);
             validateRequest(snapshot, batch, templateId, "RUNNING"); validateLink(snapshot, batch, templateId, settings, approval);
+            if (LiveCostPolicy.isContext(batch.costPolicyVersion())) store.requireSerialProgress(batch, requestId);
             if (!day.equals(Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate())) throw new AgentEnablementInvalidStateException();
-            if (batchUsage.attempts() >= batch.view().maxRequests() || !fits(batchUsage, batch.view().maxCostMicrousd())
-                    || !fits(deploymentUsage, deploymentLimit) || !fits(projectUsage, projectLimit)) throw new AgentQuotaExceededException();
-            store.reserveBudget("DEPLOYMENT", deployment(), day, LiveCostPolicy.RESERVATION);
-            store.reserveBudget("PROJECT", project, day, LiveCostPolicy.RESERVATION);
-            store.reserveBatch(batchId, LiveCostPolicy.RESERVATION);
+            if (batchUsage.attempts() >= batch.view().maxRequests() || !fits(batchUsage, batch.view().maxCostMicrousd(), reservation)
+                    || !fits(deploymentUsage, deploymentLimit, reservation) || !fits(projectUsage, projectLimit, reservation)) throw new AgentQuotaExceededException();
+            store.reserveBudget("DEPLOYMENT", deployment(), day, reservation);
+            store.reserveBudget("PROJECT", project, day, reservation);
+            store.reserveBatch(batchId, reservation);
             var attempt = new LiveAccountingStore.Attempt(requestId, project, batchId, templateId, UUID.randomUUID(), deployment(), day,
-                LiveCostPolicy.VERSION, LiveCostPolicy.RESERVATION, null, null);
+                batch.costPolicyVersion(), reservation, null, null);
             store.insertAttempt(attempt, approval.id(), approval.acknowledgement().credentialVersion(), settings.revision(), Instant.now(clock));
             record(project, snapshot.view().requesterId(), snapshot.view().traceId(), "agent.live.reserved", Map.of("requestId", requestId, "attemptId", attempt.attemptId(),
-                "batchId", batchId, "estimatedMicrousd", LiveCostPolicy.RESERVATION, "priceVersion", LiveCostPolicy.VERSION));
+                "batchId", batchId, "estimatedMicrousd", reservation, "priceVersion", batch.costPolicyVersion()));
             return new Admission(attempt.attemptId(), attempt.reservation(), true);
     }
     @Override public SendApproval checkBeforeSend(UUID project, UUID batchId, UUID templateId, UUID requestId) {
@@ -225,8 +239,8 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             var attempt = store.attempt(project, requestId).orElseThrow(AgentEnablementInvalidStateException::new);
             var binding = store.reservationBinding(project, requestId);
             if (!batchId.equals(attempt.batchId()) || !templateId.equals(attempt.templateId()) || attempt.outcome() != null
-                    || !deployment().equals(attempt.deploymentId()) || !LiveCostPolicy.VERSION.equals(attempt.priceVersion())
-                    || attempt.reservation() != LiveCostPolicy.RESERVATION || settings.revision() != binding.settingsRevision()
+                    || !deployment().equals(attempt.deploymentId()) || !batch.costPolicyVersion().equals(attempt.priceVersion())
+                    || attempt.reservation() != LiveCostPolicy.reservation(batch.costPolicyVersion()) || settings.revision() != binding.settingsRevision()
                     || !batch.view().enablementId().equals(binding.enablementId())
                     || !attempt.day().equals(Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate())) throw new AgentEnablementInvalidStateException();
             // Read again after lock waits: recovery may already have terminalized the request.
@@ -234,11 +248,24 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             validateBatch(project, settings, batch); validateRequest(snapshot, batch, templateId, "RUNNING");
             var approval = approval(project, settings.enablementId()); validateApproval(approval);
             validateLink(snapshot, batch, templateId, settings, approval);
+            if (LiveCostPolicy.isContext(batch.costPolicyVersion())) store.requireSerialProgress(batch, requestId);
             if (!binding.credentialVersion().equals(approval.acknowledgement().credentialVersion())) throw new AgentEnablementInvalidStateException();
             return new SendApproval(binding.credentialVersion(), new HashSet<>(approval.acknowledgement().allowedResponseModels()));
     }
     @Override public Outcome settle(UUID project, UUID request, String price, LiveTokenUsage usage) { return finish(project, request, price, usage); }
     @Override public Outcome unknown(UUID project, UUID request) { return finish(project, request, null, null); }
+    @Override public void stopBatch(UUID project, UUID batchId, UUID requestId, String code) {
+        cleanupWrite(project, "agent.live.batch_stopped", () -> {
+            schema.requireReady(); var snapshot = request(project, requestId); sameActor(snapshot);
+            enablements.lockSettings(project); var batch = batch(project, batchId); store.lockBatch(batchId);
+            var link = links.find(project, requestId).orElseThrow(AgentNotFoundException::new);
+            if (!batchId.equals(link.batchId()) || !batch.view().enablementId().equals(link.enablementId())
+                    || !batch.costPolicyVersion().equals(snapshot.view().bindings().priceCatalogVersion())) throw new AgentConflictException();
+            // A committed claim can fail preflight before it ever reserves a provider attempt.
+            if (LiveCostPolicy.isContext(batch.costPolicyVersion())) stop(batch, snapshot, code);
+            return null;
+        });
+    }
     private Outcome finish(UUID project, UUID id, String price, LiveTokenUsage usage) {
         return cleanupWrite(project, "agent.live.finished", () -> {
             schema.requireReady(); var snapshot = request(project, id); sameActor(snapshot);
@@ -250,9 +277,13 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             store.lockBudget("DEPLOYMENT", attempt.deploymentId(), attempt.day()); store.lockBudget("PROJECT", project, attempt.day());
             Long cost = null;
             if (attempt.priceVersion().equals(price)) {
-                try { cost = LiveCostPolicy.cost(usage); } catch (AgentInvalidException invalid) { /* Untrusted accounting remains unknown. */ }
+                try { cost = LiveCostPolicy.cost(attempt.priceVersion(), usage); } catch (AgentInvalidException invalid) { /* Untrusted accounting remains unknown. */ }
             }
             store.finish(attempt, cost == null ? null : usage, cost, Instant.now(clock));
+            if (LiveCostPolicy.CONTEXT_VERSION.equals(attempt.priceVersion())
+                    && (cost == null || usage.inputTokens() > LiveCostPolicy.POSTCALL_INPUT_THRESHOLD)) {
+                stop(batch(project, attempt.batchId()), snapshot, cost == null ? "OUTPUT_INVALID" : "INPUT_TOKEN_LIMIT");
+            }
             Map<String, Object> metadata = new java.util.HashMap<>();
             metadata.put("requestId", id); metadata.put("attemptId", attempt.attemptId());
             metadata.put("state", cost == null ? "UNKNOWN" : "SETTLED"); metadata.put("actualMicrousd", cost == null ? "UNKNOWN" : cost);
@@ -275,9 +306,9 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     private void validateRequest(AgentSnapshot snapshot, LiveAccountingStore.Batch batch, UUID templateId, String state) {
         var expected = template(batch, templateId); var bindings = snapshot.view().bindings();
         String prompt = "PR_SUMMARY".equals(snapshot.view().purpose()) ? SUMMARY_PROMPT : EXPLANATION_PROMPT;
-        if (!state.equals(snapshot.view().state()) || !MODEL_PROFILE.equals(bindings.modelProfileVersion())
+        if (!state.equals(snapshot.view().state()) || !LiveCostPolicy.modelProfile(batch.costPolicyVersion()).equals(bindings.modelProfileVersion())
                 || !"deepseek-flash".equals(bindings.modelId()) || !"responses-v1-restricted".equals(bindings.modelProtocolVersion())
-                || !LiveCostPolicy.VERSION.equals(bindings.priceCatalogVersion()) || !prompt.equals(bindings.promptVersion())
+                || !batch.costPolicyVersion().equals(bindings.priceCatalogVersion()) || !prompt.equals(bindings.promptVersion())
                 || !prompt.equals(snapshot.input().promptVersion())
                 || !requestDigest(snapshot.view().projectId(), batch.view().id(), templateId).equals(bindings.inputDigest())
                 || !expected.selection().equals(LiveManifest.selection(snapshot))
@@ -291,12 +322,14 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
                 || !approval.id().equals(link.enablementId()) || settings.revision() != link.settingsRevision()
                 || !approval.acknowledgement().credentialVersion().equals(link.credentialVersion())) throw new AgentEnablementInvalidStateException();
     }
-    private boolean fits(LiveAccountingStore.Usage value, long limit) {
+    private boolean fits(LiveAccountingStore.Usage value, long limit, long reservation) {
         return value.reserved() >= 0 && value.spent() >= 0 && value.reserved() <= limit && value.spent() <= limit - value.reserved()
-            && LiveCostPolicy.RESERVATION <= limit - value.reserved() - value.spent();
+            && reservation <= limit - value.reserved() - value.spent();
     }
     private void validateBatch(UUID project, AgentEnablementStore.Settings settings, LiveAccountingStore.Batch batch) {
-        if (!enabled || !settings.enabled() || !batch.view().enablementId().equals(settings.enablementId())
+        if (!LiveCostPolicy.supported(batch.costPolicyVersion())
+                || !batch.costPolicyVersion().equals(approval(project, batch.view().enablementId()).acknowledgement().priceCatalogVersion())
+                || !enabled || !settings.enabled() || !batch.view().enablementId().equals(settings.enablementId())
                 || batch.view().revoked() || !Instant.now(clock).isBefore(batch.view().expiresAt())
                 || !deployment().equals(batch.deploymentId()) || batch.inventoryProof() == null
                 || !inventory.resolve(project, batch.inventoryId(), batch.view().manifestSha256())
@@ -305,7 +338,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     private void validateApproval(AgentEnablementStore.Approval value) {
         var input = value.acknowledgement(); var credential = credentials.current(); Instant now = Instant.now(clock);
         if (!deployment().equals(value.deploymentId()) || value.revokedAt() != null || !now.isBefore(input.expiresAt())
-                || !now.isBefore(input.priceCatalogExpiresAt()) || !LiveCostPolicy.VERSION.equals(input.priceCatalogVersion())
+                || !now.isBefore(input.priceCatalogExpiresAt()) || !LiveCostPolicy.supported(input.priceCatalogVersion())
                 || !"SYNTHETIC_ACCEPTANCE".equals(input.dataScope()) || !credential.configured()
                 || !input.credentialVersion().equals(credential.credentialVersion())) throw new AgentEnablementInvalidStateException();
     }
@@ -321,6 +354,11 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     private UUID deployment() { try { return UUID.fromString(deploymentId); } catch (RuntimeException invalid) { throw new AgentUnavailableException(); } }
     private void record(UUID project, UUID actor, String action, Map<String, Object> metadata) {
         record(project, actor, traces.currentTraceId(), action, metadata);
+    }
+    private void stop(LiveAccountingStore.Batch batch, AgentSnapshot snapshot, String code) {
+        store.stop(snapshot.view().projectId(), batch.view().id(), snapshot.view().id(), code, Instant.now(clock));
+        record(snapshot.view().projectId(), snapshot.view().requesterId(), snapshot.view().traceId(), "agent.live.batch_stopped",
+            Map.of("batchId", batch.view().id(), "requestId", snapshot.view().id(), "code", code));
     }
     private void record(UUID project, UUID actor, String trace, String action, Map<String, Object> metadata) {
         audit.record(new AuditEvent(actor, project, action, AuditResult.SUCCESS, trace, metadata));

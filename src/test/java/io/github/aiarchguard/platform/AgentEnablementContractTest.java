@@ -39,7 +39,7 @@ class AgentEnablementContractTest {
         var file = Path.of("openapi/agent-enablement-v1.json");
         JsonNode api = mapper.readTree(file.toFile());
         assertThat(api.path("openapi").asText()).isEqualTo("3.1.0");
-        assertThat(api.path("info").path("version").asText()).isEqualTo("0.1.0");
+        assertThat(api.path("info").path("version").asText()).isEqualTo("0.2.0");
         assertThat(api.path("x-archguard-request-body-max-bytes").asInt()).isEqualTo(8192);
         assertThat(api.path("paths").size()).isEqualTo(4);
         assertThat(api.at("/components/schemas/Settings/properties/enabled/default").asBoolean()).isFalse();
@@ -58,7 +58,8 @@ class AgentEnablementContractTest {
                 String ref = value.path("$ref").asText();
                 if (ref.startsWith("#/")) assertThat(root.at(ref.substring(1)).isMissingNode()).isFalse();
                 else {
-                    assertThat(ref).isEqualTo("../contracts/agent-personal-enablement-0.2.0.schema.json");
+                    assertThat(ref).isIn("../contracts/agent-personal-enablement-0.2.0.schema.json",
+                        "../contracts/agent-personal-enablement-0.3.0.schema.json");
                     assertThat(Files.isRegularFile(file.getParent().resolve(ref).normalize())).isTrue();
                 }
             }

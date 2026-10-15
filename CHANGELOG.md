@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — test clock isolation
+
+- Isolate all shared mutable-clock Agent integration contexts from the wall-clock test database. Add a database-boundary regression while preserving recovery scheduling, timeout/no-retry assertions and production behavior.
+
 ## Unreleased — personal context-cost policy
 
 - Add explicit ADR-0014 context-based reservation (316,373 microUSD), acknowledgement 0.3.0, batch 0.2.0 and metadata APIs 0.2.0 without upgrading legacy approvals, 4,200 reservations, schemas or accounting history.

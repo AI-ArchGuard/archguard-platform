@@ -42,7 +42,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @ActiveProfiles("local-compose")
 @Import(AgentPersonalEnablementIntegrationTest.Config.class)
-class AgentPersonalEnablementIntegrationTest extends PostgresIntegrationTestSupport {
+class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegrationTestSupport {
     static final String OWNER = "11111111-1111-4111-8111-111111111111";
     static final Instant NOW = Instant.parse("2026-10-06T13:00:00Z");
     static final UUID CREDENTIAL = UUID.fromString("33333333-3333-4333-8333-333333333333");

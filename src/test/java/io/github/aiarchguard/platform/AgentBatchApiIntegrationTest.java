@@ -33,7 +33,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @ActiveProfiles("local-compose")
 @Import({AgentPersonalEnablementIntegrationTest.Config.class, AgentLiveAccountingIntegrationTest.Config.class})
-class AgentBatchApiIntegrationTest extends PostgresIntegrationTestSupport {
+class AgentBatchApiIntegrationTest extends AgentLiveDatabaseIntegrationTestSupport {
     static final String OWNER = AgentPersonalEnablementIntegrationTest.OWNER;
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;

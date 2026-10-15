@@ -36,7 +36,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @ActiveProfiles("local-compose")
 @Import({AgentPersonalEnablementIntegrationTest.Config.class, AgentLiveAccountingIntegrationTest.Config.class})
-class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport {
+class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTestSupport {
     static final UUID OWNER = UUID.fromString(AgentPersonalEnablementIntegrationTest.OWNER);
     static final UUID DEPLOYMENT = UUID.fromString("22222222-2222-4222-8222-222222222222");
     static final AtomicInteger DAY = new AtomicInteger();
@@ -112,6 +112,23 @@ class AgentLiveAccountingIntegrationTest extends PostgresIntegrationTestSupport 
     long amount(String scope, UUID id, String column) {
         return jdbc.sql("SELECT " + column + " FROM agent.live_budget_usage WHERE scope=:s AND scope_id=:id AND utc_day=:day")
             .param("s", scope).param("id", id).param("day", now.atZone(java.time.ZoneOffset.UTC).toLocalDate()).query(Long.class).optional().orElse(0L);
+    }
+
+    @Test void fixedClockRecoveryCannotShareSystemClockDatabase() throws Exception {
+        try (var connection = dataSource.getConnection()) {
+            assertThat(connection.getCatalog())
+                .as("A future test clock must not expire wall-clock requests in another cached context")
+                .isNotEqualTo(PostgresIntegrationTestSupport.POSTGRES.getDatabaseName());
+        }
+        for (Class<?> test : List.of(AgentPersonalEnablementIntegrationTest.class,
+                AgentBatchApiIntegrationTest.class, AgentLiveAccountingIntegrationTest.class,
+                AgentLiveAdmissionWaitIntegrationTest.class, AgentLiveDispatchIntegrationTest.class,
+                AgentLiveRequestCreationIntegrationTest.class, AgentContextAccountingIntegrationTest.class,
+                AgentLiveDatabaseAccountingIntegrationTest.class, AgentLiveResultIntegrationTest.class)) {
+            assertThat(AgentLiveDatabaseIntegrationTestSupport.class.isAssignableFrom(test))
+                .as("%s uses the shared mutable clock and must use its separate database", test.getSimpleName())
+                .isTrue();
+        }
     }
 
     @Test void oneAttemptAndKnownSettlementAreIdempotentAndUseActualCacheTokens() throws Exception {

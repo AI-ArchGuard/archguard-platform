@@ -1,5 +1,7 @@
 # Changelog
 
+- Agent：增加默认拒绝且未装配的独立 live 领取/审计、提交后调度与单次 OIDC/trace 作用域；不保留 Token，不启用真实调用、Web 或部署，公共契约和迁移不变。
+
 ## Unreleased — 4H local synthetic acceptance
 
 - Add a network-free deterministic adapter guarded by two local profiles and an explicit synthetic flag; default and real-egress behavior remain disabled.

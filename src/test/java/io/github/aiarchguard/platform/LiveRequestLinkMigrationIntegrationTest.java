@@ -20,6 +20,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
@@ -154,6 +157,139 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
         assertThat(requests.claim(synthetic, NOW)).isFalse();
     }
 
+    @Test void liveClaimTakesEachSupportedPurposeOnceWithoutCreatingAttemptOrChangingAnyBudget() throws Exception {
+        Fixture fixture;
+        try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
+        String before = claimAccountingHistory(fixture);
+        for (String purpose : List.of("FINDING_EXPLANATION", "PR_SUMMARY")) {
+            UUID request = routedRequest(fixture.project(), true, purpose, Map.of(), Map.of());
+            var association = link(fixture, request, fixture.template(), fixture.batch(), fixture.approval(), 7);
+            links.insert(association);
+
+            assertThat(links.claim(association, fixture.project(), NOW.plusSeconds(1))).isTrue();
+            assertThat(links.claim(association, fixture.project(), NOW.plusSeconds(2))).isFalse();
+            var claimed = requests.find(fixture.project(), request).orElseThrow().view();
+            assertThat(claimed.state()).isEqualTo("RUNNING");
+            assertThat(claimed.updatedAt()).isEqualTo(NOW.plusSeconds(1));
+            assertThat(links.find(fixture.project(), request)).contains(association);
+            assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE request_id=:request")
+                .param("request", request).query(Integer.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT budget_day IS NULL AND reserved_microusd IS NULL FROM agent.requests WHERE id=:request")
+                .param("request", request).query(Boolean.class).single()).isTrue();
+        }
+        assertThat(claimAccountingHistory(fixture)).isEqualTo(before);
+    }
+
+    @Test void concurrentLiveClaimsHaveExactlyOneWinnerAndPreserveAssociation() throws Exception {
+        Fixture fixture;
+        try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
+        UUID request = routedRequest(fixture.project(), true);
+        var association = link(fixture, request, fixture.template(), fixture.batch(), fixture.approval(), 7);
+        links.insert(association);
+        var ready = new CountDownLatch(8);
+        var release = new CountDownLatch(1);
+        var futures = new ArrayList<java.util.concurrent.Future<Boolean>>();
+        try (var executor = Executors.newFixedThreadPool(8)) {
+            try {
+                for (int i = 0; i < 8; i++) futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("Claim fixture was not released");
+                    return links.claim(association, fixture.project(), NOW.plusSeconds(1));
+                }));
+                assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            } finally { release.countDown(); }
+            int winners = 0;
+            for (var future : futures) if (future.get(10, TimeUnit.SECONDS)) winners++;
+            assertThat(winners).isOne();
+        }
+        assertThat(requests.find(fixture.project(), request).orElseThrow().view().state()).isEqualTo("RUNNING");
+        assertThat(links.find(fixture.project(), request)).contains(association);
+    }
+
+    @Test void liveClaimRejectsUnlinkedLiveAndAssociatedSyntheticRequests() throws Exception {
+        Fixture fixture;
+        try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
+        UUID unlinked = routedRequest(fixture.project(), true), synthetic = routedRequest(fixture.project(), false);
+        var unlinkedAssociation = link(fixture, unlinked, fixture.template(), fixture.batch(), fixture.approval(), 7);
+        var syntheticAssociation = link(fixture, synthetic, fixture.template(), fixture.batch(), fixture.approval(), 7);
+        links.insert(syntheticAssociation);
+
+        assertThat(links.claim(unlinkedAssociation, fixture.project(), NOW.plusSeconds(1))).isFalse();
+        assertThat(links.claim(syntheticAssociation, fixture.project(), NOW.plusSeconds(1))).isFalse();
+        assertThat(requests.find(fixture.project(), unlinked).orElseThrow().view().state()).isEqualTo("QUEUED");
+        assertThat(requests.find(fixture.project(), synthetic).orElseThrow().view().state()).isEqualTo("QUEUED");
+    }
+
+    @Test void liveClaimRejectsEveryAlteredLinkFieldAndWrongRequesterWithoutChangingTheQueuedRequest() throws Exception {
+        Fixture fixture;
+        try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
+        UUID request = routedRequest(fixture.project(), true);
+        var association = link(fixture, request, fixture.template(), fixture.batch(), fixture.approval(), 7);
+        links.insert(association);
+        List<LiveRequestStore.Link> altered = List.of(
+            new LiveRequestStore.Link(UUID.randomUUID(), association.projectId(), association.batchId(), association.templateId(), association.enablementId(), association.credentialVersion(), association.settingsRevision(), association.createdAt()),
+            new LiveRequestStore.Link(association.requestId(), UUID.randomUUID(), association.batchId(), association.templateId(), association.enablementId(), association.credentialVersion(), association.settingsRevision(), association.createdAt()),
+            new LiveRequestStore.Link(association.requestId(), association.projectId(), UUID.randomUUID(), association.templateId(), association.enablementId(), association.credentialVersion(), association.settingsRevision(), association.createdAt()),
+            new LiveRequestStore.Link(association.requestId(), association.projectId(), association.batchId(), UUID.randomUUID(), association.enablementId(), association.credentialVersion(), association.settingsRevision(), association.createdAt()),
+            new LiveRequestStore.Link(association.requestId(), association.projectId(), association.batchId(), association.templateId(), UUID.randomUUID(), association.credentialVersion(), association.settingsRevision(), association.createdAt()),
+            new LiveRequestStore.Link(association.requestId(), association.projectId(), association.batchId(), association.templateId(), association.enablementId(), UUID.randomUUID(), association.settingsRevision(), association.createdAt()),
+            new LiveRequestStore.Link(association.requestId(), association.projectId(), association.batchId(), association.templateId(), association.enablementId(), association.credentialVersion(), association.settingsRevision() + 1, association.createdAt()),
+            new LiveRequestStore.Link(association.requestId(), association.projectId(), association.batchId(), association.templateId(), association.enablementId(), association.credentialVersion(), association.settingsRevision(), association.createdAt().plusNanos(1_000)));
+
+        for (var invalid : altered) assertThat(links.claim(invalid, fixture.project(), NOW.plusSeconds(1)))
+            .as("Altered association %s must not claim", invalid).isFalse();
+        assertThat(links.claim(association, UUID.randomUUID(), NOW.plusSeconds(1))).isFalse();
+        assertThat(requests.find(fixture.project(), request).orElseThrow().view().state()).isEqualTo("QUEUED");
+        assertThat(links.find(fixture.project(), request)).contains(association);
+        assertThat(links.claim(association, fixture.project(), NOW.plusSeconds(1))).isTrue();
+    }
+
+    @Test void liveClaimRejectsWrongFixedBindingsAndInputVersionsForBothPurposes() throws Exception {
+        Fixture fixture;
+        try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
+        for (String purpose : List.of("FINDING_EXPLANATION", "PR_SUMMARY")) {
+            var badBindings = Map.of("modelProfileVersion", "disabled-or-test-fake-0.1.0",
+                "modelProtocolVersion", "unsupported-protocol", "modelId", "deterministic-fake-or-disabled",
+                "priceCatalogVersion", "synthetic-0.1.0", "outputSchemaVersion", "9.9.9",
+                "promptVersion", "FINDING_EXPLANATION".equals(purpose) ? LiveAccountingOperations.SUMMARY_PROMPT : LiveAccountingOperations.EXPLANATION_PROMPT);
+            for (var bad : badBindings.entrySet()) {
+                UUID request = routedRequest(fixture.project(), true, purpose, Map.of(bad.getKey(), bad.getValue()), Map.of());
+                var association = link(fixture, request, fixture.template(), fixture.batch(), fixture.approval(), 7);
+                links.insert(association);
+                assertThat(links.claim(association, fixture.project(), NOW.plusSeconds(1)))
+                    .as("%s binding %s must fail closed", purpose, bad.getKey()).isFalse();
+                assertThat(requests.find(fixture.project(), request).orElseThrow().view().state()).isEqualTo("QUEUED");
+            }
+            for (var bad : Map.of("schemaVersion", "9.9.9", "purpose", "FINDING_EXPLANATION".equals(purpose) ? "PR_SUMMARY" : "FINDING_EXPLANATION",
+                    "promptVersion", "FINDING_EXPLANATION".equals(purpose) ? LiveAccountingOperations.SUMMARY_PROMPT : LiveAccountingOperations.EXPLANATION_PROMPT).entrySet()) {
+                UUID request = routedRequest(fixture.project(), true, purpose, Map.of(), Map.of(bad.getKey(), bad.getValue()));
+                var association = link(fixture, request, fixture.template(), fixture.batch(), fixture.approval(), 7);
+                links.insert(association);
+                assertThat(links.claim(association, fixture.project(), NOW.plusSeconds(1)))
+                    .as("%s input %s must fail closed", purpose, bad.getKey()).isFalse();
+                assertThat(requests.find(fixture.project(), request).orElseThrow().view().state()).isEqualTo("QUEUED");
+            }
+        }
+    }
+
+    @Test void liveClaimCannotChangeEitherTerminalState() throws Exception {
+        Fixture fixture;
+        try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
+        for (boolean success : List.of(false, true)) {
+            UUID request = routedRequest(fixture.project(), true);
+            var association = link(fixture, request, fixture.template(), fixture.batch(), fixture.approval(), 7);
+            links.insert(association);
+            assertThat(links.claim(association, fixture.project(), NOW.plusSeconds(1))).isTrue();
+            AgentRequestView.AgentResult result = success ? new AgentRequestView.AgentResult("Synthetic", List.of("Synthetic rule"), List.of(), List.of(), List.of(), "INSUFFICIENT") : null;
+            AgentRequestView.AgentFailure failure = success ? null : new AgentRequestView.AgentFailure("MODEL_TIMEOUT", "Synthetic timeout");
+            assertThat(requests.finish(request, result, failure, null, NOW.plusSeconds(2))).isTrue();
+            var terminal = requests.find(fixture.project(), request).orElseThrow();
+
+            assertThat(links.claim(association, fixture.project(), NOW.plusSeconds(3))).isFalse();
+            assertThat(requests.find(fixture.project(), request)).contains(terminal);
+        }
+    }
+
     @Test void generatedQueuedFixtureCanRecoverWithAuditAndWithoutChangingAnyBudget() throws Exception {
         Fixture fixture;
         try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
@@ -182,18 +318,35 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
     }
 
     private UUID routedRequest(UUID project, boolean live) {
+        return routedRequest(project, live, "FINDING_EXPLANATION", Map.of(), Map.of());
+    }
+
+    private UUID routedRequest(UUID project, boolean live, String purpose, Map<String, String> bindingOverrides, Map<String, String> inputOverrides) {
         UUID request = UUID.randomUUID();
-        String prompt = live ? LiveAccountingOperations.EXPLANATION_PROMPT : "finding-explanation-0.1.0";
+        String prompt = "PR_SUMMARY".equals(purpose)
+            ? live ? LiveAccountingOperations.SUMMARY_PROMPT : "pr-summary-0.1.0"
+            : live ? LiveAccountingOperations.EXPLANATION_PROMPT : "finding-explanation-0.1.0";
         var bindings = new AgentRequestView.VersionBindings(UUID.randomUUID(), "a".repeat(64), null, List.of(UUID.randomUUID()),
-            List.of(), prompt, live ? LiveAccountingOperations.MODEL_PROFILE : "disabled-or-test-fake-0.1.0",
-            "responses-v1-restricted", live ? "deepseek-flash" : "deterministic-fake-or-disabled", "0.1.0",
-            live ? LiveCostPolicy.VERSION : "synthetic-0.1.0", "b".repeat(64));
-        var input = new AgentModelPort.ModelInput("FINDING_EXPLANATION", "0.1.0", prompt, "c-" + UUID.randomUUID(),
+            List.of(), bindingOverrides.getOrDefault("promptVersion", prompt), bindingOverrides.getOrDefault("modelProfileVersion", live ? LiveAccountingOperations.MODEL_PROFILE : "disabled-or-test-fake-0.1.0"),
+            bindingOverrides.getOrDefault("modelProtocolVersion", "responses-v1-restricted"), bindingOverrides.getOrDefault("modelId", live ? "deepseek-flash" : "deterministic-fake-or-disabled"),
+            bindingOverrides.getOrDefault("outputSchemaVersion", "0.1.0"), bindingOverrides.getOrDefault("priceCatalogVersion", live ? LiveCostPolicy.VERSION : "synthetic-0.1.0"), "b".repeat(64));
+        var input = new AgentModelPort.ModelInput(inputOverrides.getOrDefault("purpose", purpose), inputOverrides.getOrDefault("schemaVersion", "0.1.0"),
+            inputOverrides.getOrDefault("promptVersion", prompt), "c-" + UUID.randomUUID(),
             "synthetic.rule", "0.1.0", "high", "Synthetic migration fixture", "synthetic.module", List.of(), List.of(), null);
-        var view = new AgentRequestView(request, project, project, "c".repeat(32), input.purpose(),
+        var view = new AgentRequestView(request, project, project, "c".repeat(32), purpose,
             "QUEUED", bindings, null, null, null, NOW, NOW);
         assertThat(requests.insert(new AgentSnapshot(view, input, List.of()), request.toString())).isTrue();
         return request;
+    }
+
+    private String claimAccountingHistory(Fixture fixture) {
+        return jdbc.sql("""
+            SELECT jsonb_build_object(
+                'synthetic', (SELECT COALESCE(jsonb_agg(to_jsonb(b) ORDER BY scope),'[]'::jsonb) FROM agent.budget_usage b WHERE scope_id=:project),
+                'live', (SELECT COALESCE(jsonb_agg(to_jsonb(b) ORDER BY scope),'[]'::jsonb) FROM agent.live_budget_usage b WHERE scope_id=:project),
+                'batch', (SELECT to_jsonb(b) FROM agent.live_batch_usage b WHERE batch_id=:batch),
+                'attempts', (SELECT count(*) FROM agent.live_attempts WHERE project_id=:project))::text
+            """).param("project", fixture.project()).param("batch", fixture.batch()).query(String.class).single();
     }
 
     private LiveRequestStore.Link link(Fixture fixture, UUID request, UUID template, UUID batch, UUID approval, long revision) {

@@ -87,6 +87,8 @@ $env:ARCHGUARD_OIDC_AUDIENCE='archguard-platform'
 
 [真实请求关联与创建基础](docs/technical-design/v0.5-agent-live-request-association.md)追加不可变 V14，内部原子创建独立请求、批次/模板/启用/凭据/设置版本关联及审计；费用预留和发送检查须匹配关联，旧假模型队列拒绝误处理真实请求。无 HTTP 创建入口、调度、费用预留、Key 消费或外发装配，旧迁移与公共契约不变。下一步仍需可信调度、Token 上界、硬取消和 Web 接线；本轮不部署或关闭阶段。
 
+[独立领取与可信调度基础](docs/technical-design/v0.5-agent-live-dispatch-foundation.md)提供精确 live 关联 CAS、原子领取审计、提交后排队及不携带 Token 的 OIDC/trace 作用域；只由领取胜者处理失败，重复/拒绝排队不改写其他执行者。dispatcher 与 core 均未装配，公开构造仍拒绝调度/外发；不修改 API、迁移、Web 或运行栈。完整 Token 上界、全链路硬取消、生产调度准入和真实验收仍须后续交付。
+
 [传输基础切片](docs/technical-design/v0.5-agent-deepseek-transport.md)提供未装配的固定 HTTPS/有界响应/取消机制、运行时 Secret 文件读取与高峰价格计算，假 HTTP 仅访问测试临时环回服务器。它仍不是可用的真实 Agent；批次来源清单、事务记账与 worker 接线、Token 上界和实际出口检查未完成，不提供 Key 或网络启用配置。
 
 4H 提供[本地合成验收适配器](docs/technical-design/v0.5-agent-4h-local-synthetic.md)：必须同时启用 `local-compose,agent-synthetic` profile、`ARCHGUARD_AGENT_SYNTHETIC_ENABLED=true` 和 Agent 开关。它没有网络调用，只返回标明合成用途的固定文本；用量与费用是测试值，不代表真实模型质量或账单。默认部署仍禁用，DeepSeek #43 关卡不变。

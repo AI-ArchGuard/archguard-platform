@@ -11,6 +11,8 @@ import io.github.aiarchguard.platform.agent.LiveBatchInput;
 import io.github.aiarchguard.platform.agent.LiveBatchPreviewInput;
 import io.github.aiarchguard.platform.agent.LiveBatchPreviewView;
 import io.github.aiarchguard.platform.agent.LiveBatchView;
+import io.github.aiarchguard.platform.agent.LiveBatchExecutionOperations;
+import io.github.aiarchguard.platform.agent.LiveBatchExecutionView;
 import io.github.aiarchguard.platform.agent.internal.LiveAccountingOperations;
 import io.github.aiarchguard.platform.audit.AuditEvent;
 import io.github.aiarchguard.platform.audit.AuditRecorder;
@@ -37,15 +39,16 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/projects/{projectId}/agent/batches")
 final class AgentBatchController {
     private final LiveAccountingOperations accounting;
+    private final LiveBatchExecutionOperations execution;
     private final AgentEnablementOperations controls;
     private final AuditRecorder audit;
     private final CurrentActorProvider actors;
     private final TraceIdProvider traces;
     private final ObjectMapper mapper;
 
-    AgentBatchController(LiveAccountingOperations accounting, AgentEnablementOperations controls,
+    AgentBatchController(LiveAccountingOperations accounting, LiveBatchExecutionOperations execution, AgentEnablementOperations controls,
             AuditRecorder audit, CurrentActorProvider actors, TraceIdProvider traces, ObjectMapper mapper) {
-        this.accounting = accounting; this.controls = controls; this.audit = audit;
+        this.accounting = accounting; this.execution = execution; this.controls = controls; this.audit = audit;
         this.actors = actors; this.traces = traces;
         this.mapper = mapper.copy().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -77,6 +80,11 @@ final class AgentBatchController {
     @GetMapping("/{batchId}")
     LiveBatchView get(@PathVariable UUID projectId, @PathVariable UUID batchId) {
         return accounting.get(projectId, batchId);
+    }
+
+    @GetMapping("/{batchId}/execution")
+    LiveBatchExecutionView execution(@PathVariable UUID projectId, @PathVariable UUID batchId) {
+        return execution.get(projectId, batchId);
     }
 
     @PostMapping("/{batchId}/revoke")

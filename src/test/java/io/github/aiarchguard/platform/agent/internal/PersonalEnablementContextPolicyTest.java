@@ -144,7 +144,7 @@ class PersonalEnablementContextPolicyTest {
         JsonNode enablement = json("openapi/agent-enablement-v1.json");
         JsonNode batches = json("openapi/agent-batches-v1.json");
         assertThat(enablement.at("/info/version").asText()).isEqualTo("0.3.0");
-        assertThat(batches.at("/info/version").asText()).isEqualTo("0.2.0");
+        assertThat(batches.at("/info/version").asText()).isEqualTo("0.3.0");
         JsonNode acknowledgementInput = enablement.path("paths").path("/api/v1/projects/{projectId}/agent/enablements")
             .at("/post/requestBody/content/application~1json/schema/oneOf");
         assertThat(refs(acknowledgementInput)).containsExactlyInAnyOrder("../contracts/agent-personal-enablement-0.2.0.schema.json", "../contracts/agent-personal-enablement-0.3.0.schema.json");

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ArchGuard personal synthetic acceptance batch management",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Local personal metadata management only. Preview, approval and revocation require deployment owner AND Project Maintainer, configured Origin and local credential-management guards before reading a body. GET requires Project Viewer. All responses, including authentication errors, are no-store. This API never sends a model request, creates an Agent request or attempt, or reserves fees. Approval requires separate operator-controlled source review and caller consent; neither a Key nor a checkbox proves synthetic provenance. Token/network admission and real adapter wiring remain separate gates."
   },
   "security": [{"platformIdentity": []}],
@@ -68,6 +68,23 @@
         }
       }
     },
+    "/api/v1/projects/{projectId}/agent/batches/{batchId}/execution": {
+      "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/BatchId"}],
+      "get": {
+        "operationId": "getPersonalSyntheticBatchExecution",
+        "x-archguard-read-only": true,
+        "description": "Project Viewer; one committed database statement snapshot, context cost policy only (legacy policy returns 409; original metadata GET remains readable). Restores exact immutable template slots and request IDs without creating, dispatching, retrying, charging, checking credentials, reading inventory files or contacting the provider. Historical reads survive expiry/revocation/closed switches/key replacement. No request/attempt/outcome are distinct states: an absent attempt is not a replacement permit, SETTLED is not result success, UNKNOWN retains the reservation, FAILED is not zero cost. observedAt is observational, never a send permit, supplier bill or sent-count proof. Result and citations remain on the separately authorized Request GET. Corrupt/inconsistent history fails 503 rather than returning zero or empty. No admission/remaining-call/retryAllowed field exists.",
+        "responses": {
+          "200": {"description": "Bounded execution observation, never a send permit", "headers": {"Cache-Control": {"$ref": "#/components/headers/NoStore"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BatchExecution"}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
     "/api/v1/projects/{projectId}/agent/batches/{batchId}/revoke": {
       "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/BatchId"}],
       "post": {
@@ -121,6 +138,78 @@
           {"properties": {"maxRequests": {"type": "integer", "minimum": 1, "maximum": 20}, "maxCostMicrousd": {"type": "integer", "minimum": 4200, "maximum": 84000}}},
           {"properties": {"maxRequests": {"const": 2}, "maxCostMicrousd": {"type": "integer", "minimum": 632746, "maximum": 700000}}}
         ]
+      },
+      "BatchExecution": {
+        "type": "object", "additionalProperties": false,
+        "required": ["schemaVersion", "observedAt", "batch", "costPolicyVersion", "accounting", "stop", "templates"],
+        "properties": {
+          "schemaVersion": {"const": "0.1.0"},
+          "observedAt": {"type": "string", "format": "date-time"},
+          "batch": {"$ref": "#/components/schemas/Batch"},
+          "costPolicyVersion": {"const": "deepseek-flash-context-peak-usd-2026-10-15"},
+          "accounting": {"$ref": "#/components/schemas/BatchAccounting"},
+          "stop": {"oneOf": [{"type": "null"}, {"$ref": "#/components/schemas/BatchStop"}]},
+          "templates": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/components/schemas/TemplateExecution"}, "description": "Exactly one FINDING_EXPLANATION followed by one PR_SUMMARY; fixed immutable template IDs. An existing slot is permanent even with no attempt or a failed request."}
+        }
+      },
+      "BatchAccounting": {
+        "type": "object", "additionalProperties": false, "required": ["attemptCount", "reservedMicrousd", "spentMicrousd"],
+        "properties": {"attemptCount": {"type": "integer", "minimum": 0, "maximum": 2}, "reservedMicrousd": {"type": "integer", "minimum": 0, "maximum": 632746}, "spentMicrousd": {"type": "integer", "minimum": 0, "maximum": 632746}}
+      },
+      "BatchStop": {
+        "type": "object", "additionalProperties": false, "required": ["requestId", "code", "stoppedAt"],
+        "properties": {"requestId": {"type": "string", "format": "uuid"}, "code": {"$ref": "#/components/schemas/FailureCode"}, "stoppedAt": {"type": "string", "format": "date-time"}}
+      },
+      "FailureCode": {"type": "string", "enum": ["MODEL_DISABLED", "MODEL_UNAVAILABLE", "MODEL_TIMEOUT", "AUTHORIZATION_REVOKED", "QUOTA_EXHAUSTED", "OUTPUT_INVALID", "CITATION_INVALID", "INTERNAL_ERROR", "INPUT_TOKEN_LIMIT"]},
+      "TemplateExecution": {
+        "type": "object", "additionalProperties": false, "required": ["templateRequestId", "purpose", "request", "attempt"],
+        "properties": {
+          "templateRequestId": {"type": "string", "format": "uuid"},
+          "purpose": {"type": "string", "enum": ["FINDING_EXPLANATION", "PR_SUMMARY"]},
+          "request": {"oneOf": [{"type": "null"}, {"$ref": "#/components/schemas/RequestExecution"}]},
+          "attempt": {"oneOf": [{"type": "null"}, {"$ref": "#/components/schemas/AttemptExecution"}]}
+        }
+      },
+      "RequestExecution": {
+        "type": "object", "additionalProperties": false, "required": ["id", "state", "failureCode", "traceId", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"}, "state": {"type": "string", "enum": ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED"]},
+          "failureCode": {"oneOf": [{"type": "null"}, {"$ref": "#/components/schemas/FailureCode"}]},
+          "traceId": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+          "createdAt": {"type": "string", "format": "date-time"}, "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "AttemptExecution": {
+        "type": "object", "additionalProperties": false, "required": ["attemptId", "utcDay", "priceCatalogVersion", "reservedMicrousd", "createdAt", "outcome"],
+        "properties": {
+          "attemptId": {"type": "string", "format": "uuid"}, "utcDay": {"type": "string", "format": "date"},
+          "priceCatalogVersion": {"const": "deepseek-flash-context-peak-usd-2026-10-15"},
+          "reservedMicrousd": {"const": 316373}, "createdAt": {"type": "string", "format": "date-time"},
+          "outcome": {"oneOf": [{"type": "null"}, {"$ref": "#/components/schemas/ExecutionOutcome"}]}
+        }
+      },
+      "ExecutionOutcome": {
+        "type": "object", "additionalProperties": false, "required": ["state", "actualMicrousd", "usage", "recordedAt"],
+        "properties": {
+          "state": {"type": "string", "enum": ["SETTLED", "UNKNOWN"]},
+          "actualMicrousd": {"type": ["integer", "null"], "minimum": 0, "maximum": 316373},
+          "usage": {"oneOf": [{"type": "null"}, {"$ref": "#/components/schemas/TokenUsage"}]},
+          "recordedAt": {"type": "string", "format": "date-time"}
+        },
+        "oneOf": [
+          {"properties": {"state": {"const": "UNKNOWN"}, "actualMicrousd": {"type": "null"}, "usage": {"type": "null"}}},
+          {"properties": {"state": {"const": "SETTLED"}, "actualMicrousd": {"type": "integer"}, "usage": {"$ref": "#/components/schemas/TokenUsage"}}}
+        ]
+      },
+      "TokenUsage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["inputTokens", "outputTokens", "cachedInputTokens", "totalTokens", "reasoningTokens"],
+        "properties": {
+          "inputTokens": {"type": "integer", "minimum": 0, "maximum": 1048576},
+          "outputTokens": {"type": "integer", "minimum": 0, "maximum": 1500},
+          "cachedInputTokens": {"type": "integer", "minimum": 0, "maximum": 1048576},
+          "totalTokens": {"type": "integer", "minimum": 0, "maximum": 1050076}, "reasoningTokens": {"const": 0}
+        }
       },
       "ApiError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "traceId", "details"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "traceId": {"type": "string"}, "details": {"type": "object"}}}
     }

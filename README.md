@@ -35,6 +35,8 @@ Platform `v0.4.0` 在 `v0.3.0` MVP 控制面之上交付持续治理闭环。当
 
 ## 本地验证
 
+个人批次的[执行只读视图](docs/technical-design/v0.5-agent-batch-execution-read.md)由 Batch API 0.3.0 增量提供，供后续 Web 在刷新或响应丢失后找回唯一模板请求、尝试与结算记录。它不是发送许可或供应商账单，不会读取 Key、探测模型、预留费用、补发或修复历史；旧批次仍通过原元数据 GET 读取。默认开关及后续真实验收/发布关卡不变。
+
 个人真实请求的[端到端接线设计](docs/technical-design/v0.5-agent-personal-live-runtime.md)和[独立 live API 0.1.0](openapi/agent-live-v1.json)复用官方托管 DeepSeek API，**无需部署模型**。浏览器只在现有 owner 凭据页面短暂输入 Key，后端加密托管并调用固定官方目标，不让浏览器直连提供方。原 synthetic 请求接口不改变语义。
 
 真实出口仍默认关闭，且只支持配置中明确绑定的一个合成 Project/批次。独立 live 开关、Project 确认、来源/模板、当前凭据版本、检查引用、有限数据库等待、可信 OIDC、固定网络和费用校验必须同时成立；设置里的可用状态不测试 Key 或查询账户。V16 为新策略固定每模板唯一请求，失败或崩溃不允许换 ID 补发；旧策略和历史不升级。可选 `agent-live` profile 只提供有限数据库等待，不自动启用外发。Web 消费、受限 Compose 出口、获批两次真实验收、最终候选回滚、制品及唯一报告仍是后续关卡，不能据接线代码关闭 #43、4H 或阶段 4。

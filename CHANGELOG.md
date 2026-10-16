@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — personal batch execution read model
+
+- Add Project-authorized, no-store Batch API 0.3.0 execution observation for context-policy batches: exact immutable template slots, allocated request IDs, separate attempt/outcome/stop and accounting state in one SQL snapshot. Preserve legacy metadata reads, reject inconsistent history, and never expose inputs/secrets or infer retry/admission from absent records.
+- No migration, model/account request, credential/inventory consumption, deployment, release or stage-exit change; Web/Deploy and final real acceptance remain subsequent gates.
+
 ## Unreleased — controlled personal live runtime
 
 - Connect an independent default-off, exact synthetic Project/batch live-request entry to trusted OIDC dispatch, one shared worker deadline, version-bound credential use and independent usage/result persistence; preserve the original synthetic route and public deny-by-default constructors.

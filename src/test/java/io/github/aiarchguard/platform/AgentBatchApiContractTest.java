@@ -112,18 +112,20 @@ class AgentBatchApiContractTest {
     @Test void apiExposesOnlyMetadataManagementAndAllResponsesAreNoStore() throws Exception {
         Path file = Path.of("openapi/agent-batches-v1.json"); JsonNode api = mapper.readTree(file.toFile());
         assertThat(api.path("openapi").asText()).isEqualTo("3.1.0");
-        assertThat(api.at("/info/version").asText()).isEqualTo("0.2.0");
+        assertThat(api.at("/info/version").asText()).isEqualTo("0.3.0");
         assertThat(api.path("x-archguard-request-body-max-bytes").asInt()).isEqualTo(8192);
         assertThat(api.path("x-archguard-strict-json").asBoolean()).isTrue();
         assertThat(api.path("x-archguard-model-calls").asBoolean()).isFalse();
         assertThat(api.path("x-archguard-cache-control").asText()).isEqualTo("no-store");
-        assertThat(names(api.path("paths"))).containsExactlyInAnyOrder(PREFIX + "/preview", PREFIX, PREFIX + "/{batchId}", PREFIX + "/{batchId}/revoke");
+        assertThat(names(api.path("paths"))).containsExactlyInAnyOrder(PREFIX + "/preview", PREFIX, PREFIX + "/{batchId}",
+            PREFIX + "/{batchId}/revoke", PREFIX + "/{batchId}/execution");
         for (String route : names(api.path("paths"))) {
             JsonNode item = api.path("paths").path(route);
-            assertThat(names(item)).containsExactlyInAnyOrder("parameters", route.equals(PREFIX + "/{batchId}") ? "get" : "post");
-            JsonNode operation = item.path(route.equals(PREFIX + "/{batchId}") ? "get" : "post");
+            boolean read = route.equals(PREFIX + "/{batchId}") || route.equals(PREFIX + "/{batchId}/execution");
+            assertThat(names(item)).containsExactlyInAnyOrder("parameters", read ? "get" : "post");
+            JsonNode operation = item.path(read ? "get" : "post");
             assertThat(operation.path("responses").has("401")).isTrue();
-            if (!route.equals(PREFIX + "/{batchId}")) {
+            if (!read) {
                 assertThat(operation.at("/parameters/0/$ref").asText()).isEqualTo("#/components/parameters/Origin");
             }
             for (JsonNode response : operation.path("responses")) {

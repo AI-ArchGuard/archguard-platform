@@ -35,6 +35,10 @@ Platform `v0.4.0` 在 `v0.3.0` MVP 控制面之上交付持续治理闭环。当
 
 ## 本地验证
 
+个人真实请求的[端到端接线设计](docs/technical-design/v0.5-agent-personal-live-runtime.md)和[独立 live API 0.1.0](openapi/agent-live-v1.json)复用官方托管 DeepSeek API，**无需部署模型**。浏览器只在现有 owner 凭据页面短暂输入 Key，后端加密托管并调用固定官方目标，不让浏览器直连提供方。原 synthetic 请求接口不改变语义。
+
+真实出口仍默认关闭，且只支持配置中明确绑定的一个合成 Project/批次。独立 live 开关、Project 确认、来源/模板、当前凭据版本、检查引用、有限数据库等待、可信 OIDC、固定网络和费用校验必须同时成立；设置里的可用状态不测试 Key 或查询账户。V16 为新策略固定每模板唯一请求，失败或崩溃不允许换 ID 补发；旧策略和历史不升级。可选 `agent-live` profile 只提供有限数据库等待，不自动启用外发。Web 消费、受限 Compose 出口、获批两次真实验收、最终候选回滚、制品及唯一报告仍是后续关卡，不能据接线代码关闭 #43、4H 或阶段 4。
+
 Web 4F 的[只读契约补充](docs/technical-design/v0.5-agent-4f-read-contracts.md)公开已验证的当前 PR 修订 ID，以及按不可变版本 ID 读取获授权文档的入口。先发布 Platform，再同步 Web 固定快照；缺少可信历史或 Project 授权时明确不可用，不改变门禁。
 
 4G 的[合成安全与恢复加固](docs/technical-design/v0.5-agent-4g-hardening.md)增加有界遗留请求恢复（不重试模型、不释放未知费用）、不可信用量/追溯字段校验，以及并发额度、授权撤销、审计与门禁隔离测试。真实模型仍关闭，公共契约和已发布迁移不变。

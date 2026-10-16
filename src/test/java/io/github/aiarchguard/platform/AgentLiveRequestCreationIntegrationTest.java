@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.aiarchguard.platform.agent.*;
 import io.github.aiarchguard.platform.agent.internal.*;
 import io.github.aiarchguard.platform.agentcredential.CredentialStatus;
+import io.github.aiarchguard.platform.agentcredential.CredentialVersionSource;
 import io.github.aiarchguard.platform.agentdocument.DocumentOperations;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
@@ -17,6 +18,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,7 +42,7 @@ import org.springframework.test.context.ActiveProfiles;
     "archguard.agent.credentials.origin=http://localhost:8083", "archguard.agent.credentials.allow-loopback-http=true"})
 @AutoConfigureMockMvc
 @ActiveProfiles("local-compose")
-@Import({AgentPersonalEnablementIntegrationTest.Config.class, AgentLiveAccountingIntegrationTest.Config.class,
+@Import({AgentLiveRequestCreationIntegrationTest.CreationMetadataConfig.class, AgentLiveAccountingIntegrationTest.Config.class,
     AgentLiveRequestCreationIntegrationTest.Config.class})
 class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrationTestSupport {
     static final UUID OWNER = AgentLiveAccountingIntegrationTest.OWNER;
@@ -47,6 +50,8 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
     static final String TRACE = "d".repeat(32);
     static final String REPORT = "a".repeat(64);
     static final AtomicBoolean FAIL_LINK = new AtomicBoolean();
+    static final AtomicReference<CredentialVersionSource> CREATION_METADATA = new AtomicReference<>();
+    static final AtomicReference<LongSupplier> CREATION_METADATA_BUDGET = new AtomicReference<>();
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
     @Autowired AgentOperations agents;
@@ -63,6 +68,8 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
 
     @BeforeEach void prepare() throws Exception {
         FAIL_LINK.set(false);
+        CREATION_METADATA.set(null); CREATION_METADATA_BUDGET.set(null);
+        AgentPersonalEnablementIntegrationTest.REQUIRE_BOUNDED_METADATA.set(false);
         model.calls.set(0);
         AgentPersonalEnablementIntegrationTest.FAIL_AUDIT_ACTION.set(null);
         now = AgentPersonalEnablementIntegrationTest.NOW.plusSeconds(
@@ -91,6 +98,8 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
 
     @AfterEach void clearIdentity() {
         FAIL_LINK.set(false);
+        CREATION_METADATA.set(null); CREATION_METADATA_BUDGET.set(null);
+        AgentPersonalEnablementIntegrationTest.REQUIRE_BOUNDED_METADATA.set(false);
         AgentPersonalEnablementIntegrationTest.FAIL_AUDIT_ACTION.set(null);
         SecurityContextHolder.clearContext();
         org.slf4j.MDC.remove("traceId");
@@ -162,6 +171,70 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertThat(create(batch.id(), template, "same-key")).isEqualTo(first);
         assertCreationCount(1);
         assertNoCallsOrReservations();
+    }
+
+    @Test void contextTemplateDifferentKeyConflictsWithoutOrphansAndSameKeyReplays() throws Exception {
+        var batch = contextBatch();
+        var first = create(batch.id(), template, "context-first");
+        assertThat(create(batch.id(), template, "context-first")).isEqualTo(first);
+        assertThatThrownBy(() -> create(batch.id(), template, "context-replacement")).isInstanceOf(AgentConflictException.class).hasNoCause();
+        assertThat(requests.findByKey(project, OWNER, "context-replacement")).isEmpty();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.requests WHERE project_id=:p AND bindings->>'modelProfileVersion'=:profile")
+            .param("p", project).param("profile", LiveCostPolicy.CONTEXT_MODEL_PROFILE).query(Integer.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_request_links WHERE project_id=:p").param("p", project).query(Integer.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_template_request_slots WHERE project_id=:p").param("p", project).query(Integer.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM audit.audit_records WHERE project_id=:p AND action='agent.live.request.created'")
+            .param("p", project).query(Integer.class).single()).isOne();
+        assertNoCallsOrReservations();
+    }
+
+    @Test void boundedCreateDefaultRejectsWithoutInvokingALegacyImplementation() {
+        var calls = new AtomicInteger();
+        LiveRequestOperations legacy = (p, b, t, k, o, s) -> { calls.incrementAndGet(); throw new AssertionError("No legacy fallback"); };
+        assertThatThrownBy(() -> legacy.create(project, project, project, "legacy", ORIGIN, false, () -> 1_000_000_000L))
+            .isInstanceOf(AgentUnavailableException.class).hasNoCause();
+        assertThat(calls.get()).isZero();
+    }
+
+    @Test void boundedCreatePropagatesTheSameOriginalBudgetToBothCredentialChecks() {
+        var batch = batch(template);
+        LongSupplier remaining = () -> java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        AgentPersonalEnablementIntegrationTest.REQUIRE_BOUNDED_METADATA.set(true);
+        AgentPersonalEnablementIntegrationTest.BOUNDED_METADATA_READS.set(0);
+        var first = creation.create(project, batch.id(), template, "bounded-create", ORIGIN, false, remaining);
+        assertThat(first.state()).isEqualTo("QUEUED");
+        assertThat(AgentPersonalEnablementIntegrationTest.BOUNDED_METADATA_READS.get()).isGreaterThanOrEqualTo(2);
+        assertThat(CREATION_METADATA_BUDGET.get()).isSameAs(remaining);
+        assertThat(AgentPersonalEnablementIntegrationTest.METADATA_BUDGET.get()).isSameAs(remaining);
+        assertCreationCount(1); assertNoCallsOrReservations();
+    }
+
+    @Test void boundedCreateRejectsLegacyOnlyCredentialMetadataWithoutUnboundedFallback() {
+        var batch = batch(template); var legacyReads = new AtomicInteger();
+        CREATION_METADATA.set(() -> { legacyReads.incrementAndGet(); return AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE.get(); });
+        LongSupplier remaining = () -> java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        assertThatThrownBy(() -> creation.create(project, batch.id(), template, "legacy-metadata", ORIGIN, false, remaining))
+            .isInstanceOf(AgentUnavailableException.class).hasNoCause();
+        assertThat(CREATION_METADATA_BUDGET.get()).isSameAs(remaining);
+        assertThat(legacyReads.get()).isZero();
+        assertCreationCount(0); assertNoCallsOrReservations();
+    }
+
+    @Test void boundedCreateDoesNotRenewAnExpiredOriginalBudgetAndRollsBackAllWrites() {
+        var batch = batch(template);
+        var nanos = new java.util.concurrent.atomic.AtomicLong(java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
+        LongSupplier remaining = nanos::get;
+        CREATION_METADATA.set(new CredentialVersionSource() {
+            @Override public CredentialStatus current() { throw new AssertionError("No unbounded fallback"); }
+            @Override public CredentialStatus current(LongSupplier budget) {
+                assertThat(budget).isSameAs(remaining); nanos.set(0); return AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE.get();
+            }
+        });
+        assertThatThrownBy(() -> creation.create(project, batch.id(), template, "expired-original-budget", ORIGIN, false, remaining))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("MODEL_TIMEOUT").hasNoCause();
+        assertThat(CREATION_METADATA_BUDGET.get()).isSameAs(remaining);
+        assertThat(requests.findByKey(project, OWNER, "expired-original-budget")).isEmpty();
+        assertCreationCount(0); assertNoCallsOrReservations();
     }
 
     @Test void differentBatchCannotReuseTheSameKeyAndCannotModifyTheFirstLink() {
@@ -348,6 +421,21 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
                 now.plusSeconds(3600), 2, 8400, true));
     }
 
+    private LiveBatchView contextBatch() throws Exception {
+        ObjectNode input = mapper.valueToTree(new AgentPersonalEnablementIntegrationTest().input());
+        input.put("schemaVersion", "0.3.0").put("priceCatalogVersion", LiveCostPolicy.CONTEXT_VERSION)
+            .put("mappingSnapshot", "deepseek-v4.1-flash-2026-10-15")
+            .put("expiresAt", now.plusSeconds(86400).toString()).put("priceCatalogExpiresAt", now.plusSeconds(86400).toString());
+        for (var source : input.path("sources")) ((ObjectNode) source).put("checkedAt", now.toString());
+        acknowledgement = enablements.approve(project, mapper.treeToValue(input, PersonalEnablementInput.class)).id();
+        enablements.update(project, enablements.settings(project).revision(), new AgentSettingsUpdate(true, acknowledgement));
+        UUID summary = template("PR_SUMMARY", completedPrRevision(), List.of(), "context-summary");
+        List<UUID> templates = List.of(template, summary); String digest = accounting.preview(project, templates);
+        AgentLiveAccountingIntegrationTest.INVENTORY.add(project + ":" + digest);
+        return accounting.approve(project, ORIGIN, false, new LiveBatchInput(acknowledgement, UUID.randomUUID(), templates, digest,
+            now.plusSeconds(3600), 2, 700000, true));
+    }
+
     private AgentRequestView create(UUID batchId, UUID templateId, String key) {
         return creation.create(project, batchId, templateId, key, ORIGIN, false);
     }
@@ -430,6 +518,19 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
     }
 
     private static void identity(UUID actor) { AgentLiveAccountingIntegrationTest.identity(actor); }
+
+    @TestConfiguration static class CreationMetadataConfig extends AgentPersonalEnablementIntegrationTest.Config {
+        @Override @Bean @Primary CredentialVersionSource versionSource() {
+            var original = super.versionSource();
+            return new CredentialVersionSource() {
+                @Override public CredentialStatus current() { var source = CREATION_METADATA.get(); return (source == null ? original : source).current(); }
+                @Override public CredentialStatus current(LongSupplier remaining) {
+                    CREATION_METADATA_BUDGET.set(remaining);
+                    var source = CREATION_METADATA.get(); return (source == null ? original : source).current(remaining);
+                }
+            };
+        }
+    }
 
     @TestConfiguration static class Config {
         @Bean @Primary UnavailableModel noModelDispatch() { return new UnavailableModel(); }

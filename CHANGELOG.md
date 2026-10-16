@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — controlled personal live runtime
+
+- Connect an independent default-off, exact synthetic Project/batch live-request entry to trusted OIDC dispatch, one shared worker deadline, version-bound credential use and independent usage/result persistence; preserve the original synthetic route and public deny-by-default constructors.
+- Append V16 immutable context-policy template request slots, precise conflict handling, bounded credential metadata/intent audit, lazy fixed-host client resources and finite cancellation/shutdown checks. Settings API 0.3.0 reports local controlled availability without probing the provider; live API 0.1.0 accepts only batch/template IDs.
+- Keep real calls, deployment and stage closure outside this implementation. Web/Deploy engineering and CI, concrete two-call bindings, authorized synthetic real acceptance, final rollback, artifacts and the unique report remain required.
+
 ## Unreleased — test clock isolation
 
 - Isolate all shared mutable-clock Agent integration contexts from the wall-clock test database. Add a database-boundary regression while preserving recovery scheduling, timeout/no-retry assertions and production behavior.

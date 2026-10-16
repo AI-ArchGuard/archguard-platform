@@ -47,6 +47,25 @@ final class EncryptedCredentialStore {
         });
     }
 
+    CredentialStatus status(LongSupplier remainingNanos) {
+        if (lock.isHeldByCurrentThread()) rejectReentry();
+        var deadline = new CredentialDeadline(remainingNanos);
+        boolean acquired = false;
+        byte[] key = null;
+        try {
+            acquired = lock.tryLock(deadline.remainingNanos(), TimeUnit.NANOSECONDS);
+            if (!acquired) throw PrivateCredentialFiles.unavailable();
+            rejectReentry(); deadline.remainingNanos();
+            key = master(); deadline.remainingNanos();
+            var status = withCurrent(key, deadline, (metadata, apiKey) -> metadata);
+            deadline.remainingNanos();
+            return status;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt(); throw PrivateCredentialFiles.unavailable();
+        } catch (Exception unavailable) { throw PrivateCredentialFiles.unavailable(); }
+        finally { wipe(key); if (acquired) lock.unlock(); }
+    }
+
     CredentialStatus write(String apiKey, Instant now) {
         return locked(() -> writeLocked(apiKey, now));
     }

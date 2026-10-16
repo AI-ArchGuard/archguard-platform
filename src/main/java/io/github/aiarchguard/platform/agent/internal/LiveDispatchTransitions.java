@@ -18,13 +18,14 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Unregistered claim boundary. Claim and audit commit before any execution; no budget locks. */
+/** Claim and audit commit before any execution; no cost-budget locks or HTTP in the transaction. */
 public final class LiveDispatchTransitions {
     private final AgentStore requests;
     private final LiveRequestStore links;
@@ -37,6 +38,7 @@ public final class LiveDispatchTransitions {
     private final TransactionTemplate transaction;
     private final LiveResultTransitions results;
     private final LiveAccountingOperations accounting;
+    private final LiveDatabaseWork database;
     private final boolean bounded;
 
     public LiveDispatchTransitions(AgentStore requests, LiveRequestStore links, ProjectAuthorization projects,
@@ -60,6 +62,7 @@ public final class LiveDispatchTransitions {
         this.requests = requests; this.links = links; this.projects = projects; this.actors = actors;
         this.identities = identities; this.traces = traces; this.audit = audit; this.clock = clock;
         this.accounting = accounting; this.bounded = bounded;
+        this.database = database;
         transaction = new TransactionTemplate(manager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         results = bounded ? new LiveResultTransitions(requests, audit, clock, manager, database)
@@ -67,36 +70,47 @@ public final class LiveDispatchTransitions {
     }
 
     public Claim start(UUID project, UUID request) {
-        return transaction.execute(status -> {
-            identities.requireActive(); projects.requireViewer(project);
-            var snapshot = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
-            var view = snapshot.view();
-            if (!actors.currentActor().id().equals(view.requesterId())) throw new ProjectPermissionDeniedException();
-            // A context claim needs an independently persisted stop even if preflight creates no attempt.
-            // The compatibility boundary must not acquire ownership it cannot safely finalize.
-            if (!bounded && LiveCostPolicy.CONTEXT_VERSION.equals(view.bindings().priceCatalogVersion())) {
-                throw new AgentUnavailableException();
+        return transaction.execute(status -> startBody(project, request, () -> {}));
+    }
+
+    public Claim start(UUID project, UUID request, LongSupplier remainingNanos) {
+        if (!bounded) throw new AgentUnavailableException();
+        var budget = new LiveExecutionBudget(System::nanoTime, remainingNanos);
+        Runnable deadline = () -> budget.requireRemaining();
+        deadline.run();
+        return database.transaction(budget, false, () -> startBody(project, request, deadline));
+    }
+
+    private Claim startBody(UUID project, UUID request, Runnable deadline) {
+        deadline.run(); identities.requireActive(); projects.requireViewer(project);
+        var snapshot = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
+        var view = snapshot.view();
+        if (!actors.currentActor().id().equals(view.requesterId())) throw new ProjectPermissionDeniedException();
+        // A context claim needs an independently persisted stop even if preflight creates no attempt.
+        // The compatibility boundary must not acquire ownership it cannot safely finalize.
+        if (!bounded && LiveCostPolicy.CONTEXT_VERSION.equals(view.bindings().priceCatalogVersion())) {
+            throw new AgentUnavailableException();
+        }
+        if (!"QUEUED".equals(view.state())) return null;
+        var link = links.find(project, request).orElseThrow(AgentEnablementInvalidStateException::new);
+        requireContext(snapshot, link); deadline.run(); identities.requireActive();
+        if (!links.claim(link, view.requesterId(), Instant.now(clock))) return null;
+        // CAS may wait on a row lock. Recheck before auditing/committing its tentative claim.
+        deadline.run(); identities.requireActive();
+        var claimed = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
+        if (!"RUNNING".equals(claimed.view().state())) throw new AgentEnablementInvalidStateException();
+        requireContext(claimed, link); identities.requireActive(); projects.requireViewer(project); deadline.run();
+        audit.record(new AuditEvent(view.requesterId(), project, "agent.live.request.running", AuditResult.SUCCESS,
+            view.traceId(), Map.of("requestId", request, "batchId", link.batchId(), "templateId", link.templateId(),
+                "enablementId", link.enablementId(), "credentialVersion", link.credentialVersion(),
+                "settingsRevision", link.settingsRevision(), "inputDigest", view.bindings().inputDigest())));
+        deadline.run(); requireContext(claimed, link); identities.requireActive();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void beforeCommit(boolean readOnly) {
+                deadline.run(); requireContext(claimed, link); identities.requireActive();
             }
-            if (!"QUEUED".equals(view.state())) return null;
-            var link = links.find(project, request).orElseThrow(AgentEnablementInvalidStateException::new);
-            requireContext(snapshot, link);
-            if (!links.claim(link, view.requesterId(), Instant.now(clock))) return null;
-            // CAS may wait on a row lock. Recheck before auditing/committing its tentative claim.
-            var claimed = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
-            if (!"RUNNING".equals(claimed.view().state())) throw new AgentEnablementInvalidStateException();
-            requireContext(claimed, link); identities.requireActive(); projects.requireViewer(project);
-            audit.record(new AuditEvent(view.requesterId(), project, "agent.live.request.running", AuditResult.SUCCESS,
-                view.traceId(), Map.of("requestId", request, "batchId", link.batchId(), "templateId", link.templateId(),
-                    "enablementId", link.enablementId(), "credentialVersion", link.credentialVersion(),
-                    "settingsRevision", link.settingsRevision(), "inputDigest", view.bindings().inputDigest())));
-            requireContext(claimed, link); identities.requireActive();
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override public void beforeCommit(boolean readOnly) {
-                    requireContext(claimed, link); identities.requireActive();
-                }
-            });
-            return new Claim(this, claimed, link);
         });
+        return new Claim(this, claimed, link);
     }
 
     /** Only the committed claim winner calls this; no retry, synthetic settlement or refund. */

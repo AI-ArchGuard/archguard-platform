@@ -1,6 +1,7 @@
 package io.github.aiarchguard.platform.agent.persistence;
 
 import io.github.aiarchguard.platform.agent.LiveCostPolicy;
+import io.github.aiarchguard.platform.agent.AgentConflictException;
 import io.github.aiarchguard.platform.agent.internal.LiveAccountingOperations;
 import io.github.aiarchguard.platform.agent.internal.LiveRequestStore;
 import java.sql.Timestamp;
@@ -8,6 +9,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -17,7 +19,8 @@ class JdbcLiveRequestStore implements LiveRequestStore {
     JdbcLiveRequestStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
     @Override public void insert(Link link) {
-        jdbc.sql("""
+        try {
+            jdbc.sql("""
             INSERT INTO agent.live_request_links(request_id,project_id,batch_id,template_id,enablement_id,
                 credential_version,settings_revision,created_at)
             VALUES (:request,:project,:batch,:template,:enablement,:credential,:revision,:at)
@@ -25,6 +28,10 @@ class JdbcLiveRequestStore implements LiveRequestStore {
             .param("batch", link.batchId()).param("template", link.templateId()).param("enablement", link.enablementId())
             .param("credential", link.credentialVersion()).param("revision", link.settingsRevision())
             .param("at", Timestamp.from(link.createdAt())).update();
+        } catch (DataAccessException failure) {
+            if (LiveTemplateSlotConflict.isConflict(failure)) throw new AgentConflictException();
+            throw failure;
+        }
     }
 
     @Override public Optional<Link> find(UUID projectId, UUID requestId) {

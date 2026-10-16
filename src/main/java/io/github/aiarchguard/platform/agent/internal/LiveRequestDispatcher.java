@@ -13,12 +13,13 @@ import io.github.aiarchguard.platform.project.ProjectNotFoundException;
 import io.github.aiarchguard.platform.project.ProjectPermissionDeniedException;
 import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-/** No bean, HTTP route, scheduler polling or live egress assembly. Public construction denies dispatch. */
+/** Trusted process-local dispatch; no polling or automatic retry. Public construction denies dispatch. */
 public final class LiveRequestDispatcher {
     private static final Logger LOGGER = LoggerFactory.getLogger(LiveRequestDispatcher.class);
     private final AgentStore requests;
@@ -30,6 +31,8 @@ public final class LiveRequestDispatcher {
     private final Executor executor;
     private final Execution execution;
     private final Runnable admission;
+    private final BoundedExecution boundedExecution;
+    private final LongSupplier nanos;
 
     public LiveRequestDispatcher(AgentStore requests, LiveRequestStore links, CurrentActorProvider actors,
             AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
@@ -38,13 +41,24 @@ public final class LiveRequestDispatcher {
             () -> { throw new AgentUnavailableException(); });
     }
 
-    // Only same-package tests can permit fake work. There is no permissive runtime/config implementation.
+    // Compatibility-only test seam; production assembly must select the shared-budget overload.
     LiveRequestDispatcher(AgentStore requests, LiveRequestStore links, CurrentActorProvider actors,
             AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
             Execution execution, Executor executor, Runnable admission) {
         this.requests = requests; this.links = links; this.actors = actors; this.identities = identities;
         this.traces = traces; this.transitions = transitions; this.execution = execution;
         this.executor = executor; this.admission = admission;
+        this.boundedExecution = null; this.nanos = System::nanoTime;
+    }
+
+    LiveRequestDispatcher(AgentStore requests, LiveRequestStore links, CurrentActorProvider actors,
+            AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
+            BoundedExecution execution, Executor executor, Runnable admission, LongSupplier nanos) {
+        this.requests = requests; this.links = links; this.actors = actors; this.identities = identities;
+        this.traces = traces; this.transitions = transitions; this.execution = null;
+        this.executor = executor; this.admission = admission;
+        this.boundedExecution = java.util.Objects.requireNonNull(execution);
+        this.nanos = java.util.Objects.requireNonNull(nanos);
     }
 
     public void dispatch(UUID project, UUID request) {
@@ -93,12 +107,17 @@ public final class LiveRequestDispatcher {
     private void process(UUID project, UUID request) {
         LiveDispatchTransitions.Claim claim = null;
         try {
+            var budget = boundedExecution == null ? null : new LiveExecutionBudget(nanos);
             identities.requireActive();
-            claim = transitions.start(project, request);
+            claim = budget == null ? transitions.start(project, request) : transitions.start(project, request, budget);
             if (claim == null) return;
             identities.requireActive();
             var link = claim.link();
-            execution.execute(project, link.batchId(), link.templateId(), request);
+            if (budget == null) execution.execute(project, link.batchId(), link.templateId(), request);
+            else {
+                budget.requireRemaining();
+                boundedExecution.execute(project, link.batchId(), link.templateId(), request, budget);
+            }
         } catch (RuntimeException failure) {
             String code = code(failure);
             if (claim != null) {
@@ -123,5 +142,9 @@ public final class LiveRequestDispatcher {
 
     @FunctionalInterface interface Execution {
         void execute(UUID project, UUID batch, UUID template, UUID request);
+    }
+
+    @FunctionalInterface interface BoundedExecution {
+        void execute(UUID project, UUID batch, UUID template, UUID request, LongSupplier remainingNanos);
     }
 }

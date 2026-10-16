@@ -9,4 +9,7 @@ final class StoredCredentialVersionSource implements CredentialVersionSource {
     private final CredentialApplicationService credentials;
     StoredCredentialVersionSource(CredentialApplicationService credentials) { this.credentials = credentials; }
     @Override public CredentialStatus current() { return credentials.internalStatus(); }
+    @Override public CredentialStatus current(java.util.function.LongSupplier remainingNanos) {
+        return credentials.internalStatus(remainingNanos);
+    }
 }

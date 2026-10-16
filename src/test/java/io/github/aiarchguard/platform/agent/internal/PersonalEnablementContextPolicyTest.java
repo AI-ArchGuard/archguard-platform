@@ -140,10 +140,10 @@ class PersonalEnablementContextPolicyTest {
         valid(previous, old); invalid(current, old);
     }
 
-    @Test void apiAcceptsExplicitOldAndNewContractsWhileKeepingModelCallsUnavailable() throws Exception {
+    @Test void apiAcceptsExplicitOldAndNewContractsWithDefaultClosedRuntimeAvailability() throws Exception {
         JsonNode enablement = json("openapi/agent-enablement-v1.json");
         JsonNode batches = json("openapi/agent-batches-v1.json");
-        assertThat(enablement.at("/info/version").asText()).isEqualTo("0.2.0");
+        assertThat(enablement.at("/info/version").asText()).isEqualTo("0.3.0");
         assertThat(batches.at("/info/version").asText()).isEqualTo("0.2.0");
         JsonNode acknowledgementInput = enablement.path("paths").path("/api/v1/projects/{projectId}/agent/enablements")
             .at("/post/requestBody/content/application~1json/schema/oneOf");
@@ -153,8 +153,10 @@ class PersonalEnablementContextPolicyTest {
         assertThat(refs(batchInput)).containsExactlyInAnyOrder("../contracts/agent-live-batch-0.1.0.schema.json", "../contracts/agent-live-batch-0.2.0.schema.json");
         assertThat(strings(enablement.at("/components/schemas/Enablement/properties/priceCatalogVersion/enum")))
             .containsExactlyInAnyOrder(LEGACY_PRICE, CONTEXT_PRICE);
-        assertThat(enablement.at("/components/schemas/Settings/properties/modelCallsAvailable/const").isBoolean()).isTrue();
-        assertThat(enablement.at("/components/schemas/Settings/properties/modelCallsAvailable/const").asBoolean()).isFalse();
+        assertThat(enablement.at("/components/schemas/Settings/properties/modelCallsAvailable/type").asText()).isEqualTo("boolean");
+        assertThat(enablement.at("/components/schemas/Settings/properties/modelCallsAvailable/default").isBoolean()).isTrue();
+        assertThat(enablement.at("/components/schemas/Settings/properties/modelCallsAvailable/default").asBoolean()).isFalse();
+        assertThat(enablement.at("/components/schemas/Settings/properties/modelCallsAvailable").has("const")).isFalse();
         assertThat(batches.path("x-archguard-model-calls").asBoolean()).isFalse();
         assertThat(batches.path("paths").toString()).doesNotContain("/send", "/reserve", "/settle");
     }

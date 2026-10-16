@@ -39,11 +39,15 @@ class AgentEnablementContractTest {
         var file = Path.of("openapi/agent-enablement-v1.json");
         JsonNode api = mapper.readTree(file.toFile());
         assertThat(api.path("openapi").asText()).isEqualTo("3.1.0");
-        assertThat(api.path("info").path("version").asText()).isEqualTo("0.2.0");
+        assertThat(api.path("info").path("version").asText()).isEqualTo("0.3.0");
         assertThat(api.path("x-archguard-request-body-max-bytes").asInt()).isEqualTo(8192);
         assertThat(api.path("paths").size()).isEqualTo(4);
         assertThat(api.at("/components/schemas/Settings/properties/enabled/default").asBoolean()).isFalse();
-        assertThat(api.at("/components/schemas/Settings/properties/modelCallsAvailable/const").asBoolean()).isFalse();
+        assertThat(api.at("/components/schemas/Settings/properties/modelCallsAvailable/type").asText()).isEqualTo("boolean");
+        assertThat(api.at("/components/schemas/Settings/properties/modelCallsAvailable/default").asBoolean()).isFalse();
+        assertThat(api.at("/components/schemas/Settings/properties/modelCallsAvailable").has("const")).isFalse();
+        assertThat(java.util.stream.StreamSupport.stream(api.at("/components/schemas/Settings/properties/unavailableReason/enum")
+            .spliterator(), false).anyMatch(JsonNode::isNull)).isTrue();
         assertThat(api.at("/components/schemas/Enablement/properties").toString()).doesNotContain("apiKey", "accountRef", "networkCheckRef", "secretCheckRef", "sources");
         assertThat(api.path("paths").path("/api/v1/projects/{projectId}/agent/settings").path("put").path("responses").has("428")).isTrue();
         assertThat(api.path("paths").path("/api/v1/projects/{projectId}/agent/settings").path("put").path("responses").has("412")).isTrue();

@@ -358,11 +358,20 @@ class BoundedStoredCredentialUseSourceTest {
                 actorReads.incrementAndGet();
                 if (actorFailure.get() != null) throw actorFailure.get();
                 return new CurrentActor(actorId.get(), Set.of("project:maintain"));
-            }, event -> {
-                assertThat(Boolean.TRUE.equals(inCallback.get())).as("No actor/audit module access under callback lock").isFalse();
-                if (failAudit.get()) throw new IllegalStateException("synthetic private audit failure");
-                audits.add(event);
-                if ("AGENT_CREDENTIAL_USE_REQUESTED".equals(event.action())) onIntent.get().run();
+            }, new io.github.aiarchguard.platform.audit.AuditRecorder() {
+                @Override public void record(AuditEvent event) { recordEvent(event); }
+                @Override public void record(AuditEvent event, LongSupplier remaining) {
+                    if (remaining == null || remaining.getAsLong() <= 0 || Thread.currentThread().isInterrupted()) {
+                        throw new IllegalStateException("Synthetic bounded audit unavailable");
+                    }
+                    recordEvent(event);
+                }
+                private void recordEvent(AuditEvent event) {
+                    assertThat(Boolean.TRUE.equals(inCallback.get())).as("No actor/audit module access under callback lock").isFalse();
+                    if (failAudit.get()) throw new IllegalStateException("synthetic private audit failure");
+                    audits.add(event);
+                    if ("AGENT_CREDENTIAL_USE_REQUESTED".equals(event.action())) onIntent.get().run();
+                }
             }, () -> TRACE, Clock.fixed(Instant.parse("2026-10-15T00:00:00Z"), ZoneOffset.UTC));
             version = service.write(SYNTHETIC_KEY).credentialVersion();
             audits.clear(); actorReads.set(0); source = new StoredCredentialUseSource(service);

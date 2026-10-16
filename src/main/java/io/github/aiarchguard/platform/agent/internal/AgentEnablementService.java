@@ -30,17 +30,18 @@ class AgentEnablementService implements AgentEnablementOperations {
     private final AuditRecorder audit;
     private final TraceIdProvider traces;
     private final Clock clock;
+    private final AgentRuntimeAvailability runtime;
     private final String ownerId;
     private final String deploymentId;
     private final boolean deploymentEnabled;
     AgentEnablementService(ProjectAuthorization projects, CurrentActorProvider actors, CredentialOperations credentials,
             CredentialVersionSource versions, AgentEnablementStore store, AgentSchemaAvailability schema,
-            AuditRecorder audit, TraceIdProvider traces, Clock clock,
+            AuditRecorder audit, TraceIdProvider traces, Clock clock, AgentRuntimeAvailability runtime,
             @Value("${archguard.agent.credentials.owner-id:}") String ownerId,
             @Value("${archguard.agent.credentials.deployment-id:}") String deploymentId,
             @Value("${archguard.agent.enabled:false}") boolean deploymentEnabled) {
         this.projects = projects; this.actors = actors; this.credentials = credentials; this.versions = versions;
-        this.store = store; this.schema = schema; this.audit = audit; this.traces = traces; this.clock = clock;
+        this.store = store; this.schema = schema; this.audit = audit; this.traces = traces; this.clock = clock; this.runtime = runtime;
         this.ownerId = ownerId; this.deploymentId = deploymentId; this.deploymentEnabled = deploymentEnabled;
     }
     @Override public void authorizeWrite(UUID project, String origin, boolean secure) {
@@ -87,9 +88,11 @@ class AgentEnablementService implements AgentEnablementOperations {
     }
     private AgentSettingsView view(UUID project, AgentEnablementStore.Settings value) {
         String reason = !value.enabled() ? "PROJECT_DISABLED" : invalidity(approval(project, value.enablementId()));
-        if (reason == null) reason = !deploymentEnabled ? "DEPLOYMENT_DISABLED" : "LIVE_ADAPTER_NOT_READY";
-        // This slice deliberately has no model port, attempt or network admission.
-        return new AgentSettingsView(value.enabled(), value.revision(), value.enablementId(), false, reason);
+        if (reason == null && !deploymentEnabled) reason = "DEPLOYMENT_DISABLED";
+        if (reason == null && (!runtime.available(project) || !LiveCostPolicy.CONTEXT_VERSION.equals(
+                approval(project, value.enablementId()).acknowledgement().priceCatalogVersion()))) reason = "LIVE_ADAPTER_NOT_READY";
+        // Local availability does not spend, probe a credential, or replace batch/send authorization.
+        return new AgentSettingsView(value.enabled(), value.revision(), value.enablementId(), reason == null, reason);
     }
     private String invalidity(AgentEnablementStore.Approval approval) {
         Instant now = Instant.now(clock);

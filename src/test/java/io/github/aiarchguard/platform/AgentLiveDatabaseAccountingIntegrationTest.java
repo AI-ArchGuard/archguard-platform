@@ -91,6 +91,25 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
         fixture.assertPendingReservation(batch.id(), request);
     }
 
+    @Test void boundedReserveAndSendCheckExplicitlyPropagateTheOriginalBudgetToCredentialMetadata() {
+        var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
+        var remaining = deadline(5);
+        AgentPersonalEnablementIntegrationTest.BOUNDED_METADATA_READS.set(0);
+        AgentPersonalEnablementIntegrationTest.METADATA_BUDGET.set(null);
+        AgentPersonalEnablementIntegrationTest.REQUIRE_BOUNDED_METADATA.set(true);
+        try {
+            assertThat(accounting.reserve(fixture.project, batch.id(), fixture.template, request, remaining).newAttempt()).isTrue();
+            assertThat(AgentPersonalEnablementIntegrationTest.BOUNDED_METADATA_READS.get()).isGreaterThanOrEqualTo(2);
+            assertThat(AgentPersonalEnablementIntegrationTest.METADATA_BUDGET.get()).isSameAs(remaining);
+            int before = AgentPersonalEnablementIntegrationTest.BOUNDED_METADATA_READS.get();
+            var checked = accounting.checkBeforeSend(fixture.project, batch.id(), fixture.template, request, remaining);
+            assertThat(checked.credentialVersion()).isEqualTo(AgentPersonalEnablementIntegrationTest.CREDENTIAL);
+            assertThat(AgentPersonalEnablementIntegrationTest.BOUNDED_METADATA_READS.get()).isGreaterThan(before);
+            assertThat(AgentPersonalEnablementIntegrationTest.METADATA_BUDGET.get()).isSameAs(remaining);
+            fixture.assertPendingReservation(batch.id(), request);
+        } finally { AgentPersonalEnablementIntegrationTest.REQUIRE_BOUNDED_METADATA.set(false); }
+    }
+
     @Test void settingsLockTimesOutBoundedReserveBeforeHolderIsReleased() throws Exception {
         var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
         assertLockWaitEndsBeforeRelease("SELECT project_id FROM agent.project_settings WHERE project_id=? FOR UPDATE", fixture.project,

@@ -302,7 +302,7 @@ class ContextCostPolicyMigrationIntegrationTest extends PostgresIntegrationTestS
     private org.flywaydb.core.api.configuration.FluentConfiguration agentMigration(String url) {
         return Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
             .locations("classpath:db/agent-migration").defaultSchema("public").table("flyway_agent_schema_history")
-            .baselineOnMigrate(true).baselineVersion("8");
+            .baselineOnMigrate(true).baselineVersion("8").target(MigrationVersion.fromVersion("15"));
     }
     private Connection connect(String url) throws SQLException { return DriverManager.getConnection(url, POSTGRES.getUsername(), POSTGRES.getPassword()); }
     private void execute(Connection connection, String sql) throws SQLException { try (var statement = connection.createStatement()) { statement.execute(sql); } }

@@ -7,7 +7,9 @@ import java.util.function.LongSupplier;
 /**
  * Trusted internal boundary, not a credential getter or an HTTP API.
  * The callback runs synchronously on the calling thread and must not retain or log the Key,
- * enter another module, schedule later Key use, or reenter credential operations.
+ * enter database-backed or locking module APIs, schedule later Key use, or reenter credential operations.
+ * The final network callback may recheck an already-captured in-process identity capability;
+ * that check must not access a database or acquire another module's lock.
  * A current version is checked under the same process-local lock used by replacement and deletion.
  */
 public interface CredentialUseSource {

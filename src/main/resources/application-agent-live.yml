@@ -1,0 +1,12 @@
+# Finite transport waits for an explicitly selected personal local stack; does not enable egress.
+# These settings affect this stack's shared Platform pool. Keep deterministic regressions and
+# the final Compose scan/gate checks; this is not a production capacity or latency claim.
+spring:
+  datasource:
+    hikari:
+      connection-timeout: 1000
+      validation-timeout: 250
+      data-source-properties:
+        connectTimeout: 2
+        socketTimeout: 5
+        cancelSignalTimeout: 1

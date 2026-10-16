@@ -42,8 +42,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,6 +54,7 @@ import org.slf4j.MDC;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.AbstractPlatformTransactionManager;
 import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -84,6 +87,68 @@ class LiveRequestDispatcherTest {
         assertUnavailable(() -> dispatcher.dispatch(fixture.project, fixture.request));
         assertThat(fixture.requests.lookups).isZero(); assertThat(fixture.links.lookups).isZero();
         assertThat(fixture.scope.captures).isZero(); assertNoWork();
+    }
+
+    @Test void boundedWorkerDoesNotRenewTheOriginalBudgetAfterClaim() {
+        var nanos = new AtomicLong();
+        var stop = new StopOnlyAccounting(fixture);
+        var database = new CleanupDatabase(fixture, stop.events);
+        fixture.links.onClaim = () -> nanos.set(TimeUnit.SECONDS.toNanos(37));
+        var dispatcher = new LiveRequestDispatcher(fixture.requests, fixture.links, fixture.actors, fixture.scope,
+            new TraceTaskScope(), fixture.boundedTransitions(stop, database), (p, b, t, r, remaining) -> {
+                assertThat(fixture.transactions.commits).isOne();
+                assertThat(remaining.getAsLong()).isEqualTo(TimeUnit.SECONDS.toNanos(3));
+                fixture.executions.add(List.of(p, b, t, r));
+            }, fixture.queue, () -> {}, nanos::get);
+        dispatcher.dispatch(fixture.project, fixture.request);
+        nanos.set(TimeUnit.SECONDS.toNanos(10)); // Time in the queue is not the worker's execution allowance.
+        fixture.queue.runNext();
+        assertThat(fixture.executions).hasSize(1);
+        assertThat(database.transactions).isOne();
+    }
+
+    @Test void boundedClaimCannotFallBackToTheCompatibilityTransaction() {
+        var boundary = fixture.boundedTransitions(new StopOnlyAccounting(fixture), new LiveDatabaseWork() {});
+        fixture.scope.active.set(true); MDC.put("traceId", TRACE);
+        assertUnavailable(() -> boundary.start(fixture.project, fixture.request, () -> TimeUnit.SECONDS.toNanos(30)));
+        assertThat(fixture.links.claims).isZero(); assertThat(fixture.audit).isEmpty();
+        assertThat(fixture.requests.value.view().state()).isEqualTo("QUEUED");
+    }
+
+    @Test void boundedClaimExpiryAfterAuditRollsBackTentativeClaimAndAudit() {
+        var nanos = new AtomicLong();
+        var stop = new StopOnlyAccounting(fixture);
+        var database = new CleanupDatabase(fixture, stop.events);
+        var boundary = new LiveDispatchTransitions(fixture.requests, fixture.links, fixture.projects,
+            fixture.actors, fixture.scope, () -> MDC.get("traceId"), event -> {
+                fixture.audit.add(event); nanos.set(TimeUnit.SECONDS.toNanos(30));
+            }, Clock.fixed(NOW, ZoneOffset.UTC), fixture.transactions, stop, database);
+        fixture.scope.active.set(true); MDC.put("traceId", TRACE);
+        assertThatThrownBy(() -> boundary.start(fixture.project, fixture.request,
+            () -> TimeUnit.SECONDS.toNanos(30) - nanos.get()))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("MODEL_TIMEOUT");
+        assertThat(fixture.requests.value.view().state()).isEqualTo("QUEUED");
+        assertThat(fixture.audit).isEmpty(); assertThat(fixture.transactions.rollbacks).isOne();
+        assertThat(stop.stops).isEmpty(); assertThat(fixture.requests.finishes).isZero();
+    }
+
+    @Test void boundedClaimRechecksTheOriginalBudgetImmediatelyBeforeCommit() {
+        var nanos = new AtomicLong(); var stop = new StopOnlyAccounting(fixture);
+        var database = new CleanupDatabase(fixture, stop.events);
+        var boundary = new LiveDispatchTransitions(fixture.requests, fixture.links, fixture.projects,
+            fixture.actors, fixture.scope, () -> MDC.get("traceId"), event -> {
+                fixture.audit.add(event);
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override public void beforeCommit(boolean readOnly) { nanos.set(TimeUnit.SECONDS.toNanos(30)); }
+                });
+            }, Clock.fixed(NOW, ZoneOffset.UTC), fixture.transactions, stop, database);
+        fixture.scope.active.set(true); MDC.put("traceId", TRACE);
+        assertThatThrownBy(() -> boundary.start(fixture.project, fixture.request,
+            () -> TimeUnit.SECONDS.toNanos(30) - nanos.get()))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("MODEL_TIMEOUT");
+        assertThat(fixture.requests.value.view().state()).isEqualTo("QUEUED"); assertThat(fixture.audit).isEmpty();
+        assertThat(fixture.transactions.commits).isZero(); assertThat(fixture.transactions.rollbacks).isOne();
+        assertThat(stop.stops).isEmpty(); assertThat(fixture.requests.finishes).isZero();
     }
 
     @Test void independentQueueUsesPersistedIdentityTraceAndCanonicalClaimArguments() throws Exception {
@@ -556,7 +621,7 @@ class LiveRequestDispatcherTest {
     private static final class CleanupDatabase implements LiveDatabaseWork {
         final TransactionTemplate transaction;
         final List<String> events;
-        int cleanups;
+        int cleanups, transactions;
         CleanupDatabase(Fixture fixture, List<String> events) {
             transaction = new TransactionTemplate(fixture.transactions);
             transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -564,6 +629,11 @@ class LiveRequestDispatcherTest {
         }
         @Override public <T> T cleanup(Supplier<T> action) {
             cleanups++; events.add("cleanup");
+            return transaction.execute(status -> action.get());
+        }
+        @Override public <T> T transaction(LongSupplier remaining, boolean readOnly, Supplier<T> action) {
+            transactions++; events.add("transaction");
+            assertThat(readOnly).isFalse();
             return transaction.execute(status -> action.get());
         }
     }
@@ -611,6 +681,7 @@ class LiveRequestDispatcherTest {
         int lookups, claims;
         boolean present = true, wins = true;
         RuntimeException lookupFailure, claimFailure;
+        Runnable onClaim = () -> {};
         MemoryLinks(Fixture fixture) {
             this.fixture = fixture;
             link = new Link(fixture.request, fixture.project, fixture.batch, fixture.template, UUID.randomUUID(), UUID.randomUUID(), 1, NOW);
@@ -621,6 +692,7 @@ class LiveRequestDispatcherTest {
         }
         public boolean claim(Link candidate, UUID requester, Instant at) {
             claims++; if (claimFailure != null) throw claimFailure;
+            onClaim.run();
             assertThat(candidate).isEqualTo(link); assertThat(requester).isEqualTo(fixture.owner); assertThat(at).isEqualTo(NOW);
             if (!wins || !"QUEUED".equals(fixture.requests.value.view().state())) return false;
             fixture.requests.state("RUNNING", null, at); return true;

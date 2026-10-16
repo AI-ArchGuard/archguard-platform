@@ -71,6 +71,14 @@ final class CredentialApplicationService implements CredentialOperations {
     @Override public CredentialStatus status() { owner(); return operation("STATUS", false, () -> storage().status()); }
     // Metadata only; callers enforce their own Project authorization.
     CredentialStatus internalStatus() { rejectReentry(); return storage().status(); }
+    CredentialStatus internalStatus(LongSupplier remainingNanos) {
+        rejectReentry();
+        try {
+            var deadline = new CredentialDeadline(remainingNanos);
+            var currentStore = storage(); deadline.remainingNanos();
+            return currentStore.status(deadline::remainingNanos);
+        } catch (RuntimeException unavailable) { throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE); }
+    }
     void internalConsume(UUID expectedVersion, Consumer<String> finalOperation) {
         owner();
         if (expectedVersion == null || finalOperation == null) throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE);
@@ -88,12 +96,12 @@ final class CredentialApplicationService implements CredentialOperations {
         rejectReentry();
         try {
             CredentialDeadline deadline = new CredentialDeadline(remainingNanos);
-            owner();
+            owner(deadline::remainingNanos);
             if (expectedVersion == null || finalOperation == null) throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE);
             EncryptedCredentialStore currentStore = storage();
             deadline.remainingNanos();
             // Intent persistence is outside the slot lock and consumes the original execution budget.
-            audit("USE_REQUESTED", AuditResult.SUCCESS, expectedVersion);
+            audit("USE_REQUESTED", AuditResult.SUCCESS, expectedVersion, deadline::remainingNanos);
             deadline.remainingNanos();
             currentStore.consume(expectedVersion, deadline::remainingNanos, apiKey -> {
                 inCredentialUse.set(true);
@@ -130,12 +138,16 @@ final class CredentialApplicationService implements CredentialOperations {
     }
 
     private void owner() {
+        owner(null);
+    }
+
+    private void owner(LongSupplier remainingNanos) {
         rejectReentry();
         UUID owner;
         try { owner = UUID.fromString(required("owner-id")); }
         catch (RuntimeException failure) { throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE); }
         if (!owner.equals(actors.currentActor().id())) {
-            audit("AUTHORIZE", AuditResult.DENIED, null);
+            audit("AUTHORIZE", AuditResult.DENIED, null, remainingNanos);
             throw new CredentialFailure(CredentialFailure.Kind.DENIED);
         }
     }
@@ -155,10 +167,16 @@ final class CredentialApplicationService implements CredentialOperations {
     }
 
     private void audit(String action, AuditResult result, UUID version) {
+        audit(action, result, version, null);
+    }
+
+    private void audit(String action, AuditResult result, UUID version, LongSupplier remainingNanos) {
         try {
-            audits.record(new AuditEvent(actors.currentActor().id(), null, "AGENT_CREDENTIAL_" + action,
+            var event = new AuditEvent(actors.currentActor().id(), null, "AGENT_CREDENTIAL_" + action,
                 result, traces.currentTraceId(), version == null ? Map.of("provider", "DEEPSEEK")
-                : Map.of("provider", "DEEPSEEK", "credentialVersion", version.toString())));
+                : Map.of("provider", "DEEPSEEK", "credentialVersion", version.toString()));
+            if (remainingNanos == null) audits.record(event);
+            else audits.record(event, remainingNanos);
         } catch (RuntimeException failure) { throw new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE); }
     }
 

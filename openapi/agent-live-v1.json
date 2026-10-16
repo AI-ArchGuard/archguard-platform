@@ -1,0 +1,48 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ArchGuard explicitly bound personal live Agent requests",
+    "version": "0.1.0",
+    "description": "Owner-controlled loopback deployment only. Default closed. Exactly one configured Project and approved synthetic context-policy batch; explanation then summary, at most two unique requests, no replacement or retry. Agent output is untrusted advice and never changes deterministic results. This API is not authorization to spend and never tests a Key or queries an account. All responses, including errors, are no-store."
+  },
+  "x-archguard-default-enabled": false,
+  "x-archguard-request-body-max-bytes": 8192,
+  "security": [{"platformIdentity": []}],
+  "paths": {
+    "/api/v1/projects/{projectId}/agent/live-requests": {
+      "post": {
+        "operationId": "createPersonalLiveAgentRequest",
+        "description": "Requires current OIDC identity, deployment owner AND Project Maintainer, exact Origin, deployment/Project/runtime gates and immutable synthetic batch bindings. Authenticate/authorize before body parsing. Only persisted template data are used; no caller-supplied model input, credential, URL, policy or actor. Same-key replay returns the existing request; a different key cannot allocate a replacement for the same context-policy template, even after crash/failure before any attempt. No provider retry. Query the returned existing request GET endpoint for status and validated citations.",
+        "parameters": [
+          {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "Origin", "in": "header", "required": true, "schema": {"type": "string"}, "description": "Exactly one configured same-origin value; no public-service credential entry."},
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$"}, "description": "Exactly one header; same key is never a request to retry a provider attempt."}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LiveAgentRunInput"}}}},
+        "responses": {
+          "202": {"description": "Created or identical replay. No automatic retry on any asynchronous failure. Location uses the existing Project-authorized request GET endpoint.", "headers": {"Location": {"schema": {"type": "string"}}, "Cache-Control": {"schema": {"const": "no-store"}}}, "content": {"application/json": {"schema": {"$ref": "./agent-v1.json#/components/schemas/AgentRequest"}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "429": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"platformIdentity": {"type": "http", "scheme": "bearer"}},
+    "schemas": {
+      "LiveAgentRunInput": {
+        "type": "object", "additionalProperties": false, "required": ["batchId", "templateRequestId"],
+        "properties": {
+          "batchId": {"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+          "templateRequestId": {"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}
+        }
+      }
+    },
+    "responses": {"Error": {"description": "Stable, redacted API error; no raw input, credential, provider body, storage path or database details.", "content": {"application/json": {"schema": {"$ref": "./agent-v1.json#/components/schemas/ApiError"}}}}}
+  }
+}

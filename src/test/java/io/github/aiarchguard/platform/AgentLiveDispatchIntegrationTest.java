@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.aiarchguard.platform.agent.*;
 import io.github.aiarchguard.platform.agent.internal.*;
+import io.github.aiarchguard.platform.agent.persistence.JdbcLiveDatabaseWork;
 import io.github.aiarchguard.platform.audit.AuditRecorder;
 import io.github.aiarchguard.platform.common.TraceIdProvider;
 import io.github.aiarchguard.platform.identity.AuthenticatedTaskScope;
@@ -220,6 +221,49 @@ class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestS
                     .hasCauseInstanceOf(LiveResponsePort.CallFailure.class);
             } finally { blocker.rollback(); }
             assertThat(state()).isEqualTo("QUEUED"); assertThat(audits()).isZero(); untouchedBudgets();
+        } finally {
+            worker.shutdownNow(); assertThat(worker.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test void originalBudgetCancelsClaimWhileBlockingTransactionStillHoldsItsLock() throws Exception {
+        var worker = Executors.newSingleThreadExecutor();
+        try (Connection blocker = dataSource.getConnection()) {
+            blocker.setAutoCommit(false);
+            int blockerPid;
+            try (var statement = blocker.createStatement(); var row = statement.executeQuery("SELECT pg_backend_pid()")) {
+                assertThat(row.next()).isTrue(); blockerPid = row.getInt(1);
+            }
+            try (var statement = blocker.prepareStatement("SELECT id FROM agent.requests WHERE id=? FOR UPDATE")) {
+                statement.setObject(1, request); statement.executeQuery().close();
+            }
+            var bounded = new LiveDispatchTransitions(requests, links, projects, actors, scope, traces, audit,
+                clock, manager, accounting, new JdbcLiveDatabaseWork(manager, dataSource));
+            var pending = worker.submit(() -> {
+                AgentLiveAccountingIntegrationTest.identity(AgentLiveAccountingIntegrationTest.OWNER);
+                org.slf4j.MDC.put("traceId", "c".repeat(32));
+                long started = System.nanoTime();
+                try { return bounded.start(fixture.project, request,
+                    () -> TimeUnit.SECONDS.toNanos(2) - (System.nanoTime() - started)); }
+                finally { SecurityContextHolder.clearContext(); org.slf4j.MDC.clear(); }
+            });
+            try {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                boolean waiting = false;
+                while (System.nanoTime() < deadline && !pending.isDone()) {
+                    waiting = jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE :pid=ANY(pg_blocking_pids(pid))")
+                        .param("pid", blockerPid).query(Integer.class).single() > 0;
+                    if (waiting) break;
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+                }
+                assertThat(waiting).as("claim really blocks behind the still-open transaction").isTrue();
+                assertThatThrownBy(() -> pending.get(5, TimeUnit.SECONDS))
+                    .hasCauseInstanceOf(LiveResponsePort.CallFailure.class)
+                    .satisfies(failure -> assertThat(failure.getCause()).hasMessage("MODEL_TIMEOUT").hasNoCause());
+                // The blocker is deliberately not committed/released until after bounded work has exited.
+                assertThat(state()).isEqualTo("QUEUED"); assertThat(audits()).isZero(); untouchedBudgets();
+                assertThat(jdbc.sql("SELECT 1").query(Integer.class).single()).isOne();
+            } finally { blocker.rollback(); }
         } finally {
             worker.shutdownNow(); assertThat(worker.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
         }

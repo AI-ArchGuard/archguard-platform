@@ -49,6 +49,9 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
     static final AtomicReference<CredentialStatus> CREDENTIAL_STATE = new AtomicReference<>();
     static final AtomicReference<Instant> TIME = new AtomicReference<>(NOW);
     static final AtomicReference<String> FAIL_AUDIT_ACTION = new AtomicReference<>();
+    static final java.util.concurrent.atomic.AtomicBoolean REQUIRE_BOUNDED_METADATA = new java.util.concurrent.atomic.AtomicBoolean();
+    static final java.util.concurrent.atomic.AtomicInteger BOUNDED_METADATA_READS = new java.util.concurrent.atomic.AtomicInteger();
+    static final AtomicReference<java.util.function.LongSupplier> METADATA_BUDGET = new AtomicReference<>();
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
@@ -294,13 +297,35 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
     }
 
     @TestConfiguration static class Config {
-        @Bean @Primary CredentialVersionSource versionSource() { return CREDENTIAL_STATE::get; }
-        @Bean @Primary AuditRecorder testAudit(JdbcAuditRecorder delegate) {
-            return event -> {
-                if (event.action().equals(FAIL_AUDIT_ACTION.get()) && FAIL_AUDIT_ACTION.compareAndSet(event.action(), null)) {
-                    throw new AgentUnavailableException();
+        @Bean @Primary CredentialVersionSource versionSource() {
+            return new CredentialVersionSource() {
+                @Override public CredentialStatus current() {
+                    if (REQUIRE_BOUNDED_METADATA.get()) throw new IllegalStateException("Synthetic unbounded metadata rejected");
+                    return CREDENTIAL_STATE.get();
                 }
-                delegate.record(event);
+                @Override public CredentialStatus current(java.util.function.LongSupplier remaining) {
+                    BOUNDED_METADATA_READS.incrementAndGet(); METADATA_BUDGET.set(remaining);
+                    if (remaining == null || remaining.getAsLong() <= 0 || Thread.currentThread().isInterrupted()) {
+                        throw new io.github.aiarchguard.platform.agentcredential.CredentialFailure(
+                            io.github.aiarchguard.platform.agentcredential.CredentialFailure.Kind.UNAVAILABLE);
+                    }
+                    return CREDENTIAL_STATE.get();
+                }
+            };
+        }
+        @Bean @Primary AuditRecorder testAudit(JdbcAuditRecorder delegate) {
+            return new AuditRecorder() {
+                @Override public void record(io.github.aiarchguard.platform.audit.AuditEvent event) {
+                    check(event); delegate.record(event);
+                }
+                @Override public void record(io.github.aiarchguard.platform.audit.AuditEvent event, java.util.function.LongSupplier remaining) {
+                    check(event); delegate.record(event, remaining);
+                }
+                private void check(io.github.aiarchguard.platform.audit.AuditEvent event) {
+                    if (event.action().equals(FAIL_AUDIT_ACTION.get()) && FAIL_AUDIT_ACTION.compareAndSet(event.action(), null)) {
+                        throw new AgentUnavailableException();
+                    }
+                }
             };
         }
         @Bean @Primary Clock testClock() {

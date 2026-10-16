@@ -75,6 +75,54 @@ class LiveExecutionCoordinatorTest {
     void execute(LiveExecutionCoordinator core) { core.execute(project, batch, template, request); }
     Consumer<AgentSnapshot> validResources() { return snapshot -> resourceChecks.incrementAndGet(); }
 
+    @Test void productionCoreCannotRenewTheBudgetConsumedByClaim() {
+        var remaining = new AtomicLong(Duration.ofSeconds(3).toNanos());
+        var execution = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
+            boundedFake((version, preflight, operation) -> {
+                preflight.run(); return operation.apply("synthetic-placeholder-not-a-key");
+            }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
+            body -> {}, nanos::get, database, () -> {});
+        execution.execute(project, batch, template, request, remaining::get);
+        assertThat(provider.timeout).isEqualTo(Duration.ofSeconds(3));
+        assertThat(provider.sends.get()).isOne();
+    }
+
+    @Test void identityExpiryDuringCredentialWaitCannotReachFinalHttp() {
+        var active = new AtomicBoolean(true);
+        var keyLock = new AtomicBoolean();
+        var execution = new LiveExecutionCoordinator(requests, accounting, snapshot -> {
+            assertThat(keyLock.get()).isFalse(); resourceChecks.incrementAndGet();
+        }, provider, boundedFake((version, preflight, operation) -> {
+            preflight.run(); active.set(false); keyLock.set(true);
+            try { return operation.apply("synthetic-placeholder-not-a-key"); }
+            finally { keyLock.set(false); }
+        }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
+            body -> assertThat(keyLock.get()).isFalse(), nanos::get, database,
+            () -> { if (!active.get()) throw new io.github.aiarchguard.platform.identity.InactiveAuthenticatedTaskException(); });
+        execute(execution);
+        assertThat(provider.sends.get()).isZero();
+        assertThat(accounting.unknown.get()).isOne();
+        assertThat(accounting.settled.get()).isZero();
+        assertThat(requests.value.view().failure().code()).isEqualTo("AUTHORIZATION_REVOKED");
+    }
+
+    @Test void identityExpiryAfterResponseStillSettlesKnownUsageWithoutDisplayingResult() {
+        var active = new AtomicBoolean(true);
+        provider.onSend = () -> active.set(false);
+        var execution = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
+            boundedFake((version, preflight, operation) -> {
+                preflight.run(); return operation.apply("synthetic-placeholder-not-a-key");
+            }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
+            body -> {}, nanos::get, database,
+            () -> { if (!active.get()) throw new io.github.aiarchguard.platform.identity.InactiveAuthenticatedTaskException(); });
+        execute(execution);
+        assertThat(provider.sends.get()).isOne(); assertThat(accounting.settled.get()).isOne();
+        assertThat(accounting.unknown.get()).isZero();
+        assertThat(requests.value.view().result()).isNull();
+        assertThat(requests.value.view().failure().code()).isEqualTo("AUTHORIZATION_REVOKED");
+        assertThat(requests.value.view().usage().actualCostMicrousd()).isEqualTo(273);
+    }
+
     @Test void contextOverThresholdSettlesKnownUsageButFailsAndStopsWithoutAnotherSend() {
         contextPolicy();
         provider.reply = new LiveResponsePort.Reply(INSUFFICIENT, null,

@@ -2,6 +2,8 @@ package io.github.aiarchguard.platform.agent.internal;
 
 import io.github.aiarchguard.platform.agent.*;
 import io.github.aiarchguard.platform.identity.CurrentActorProvider;
+import io.github.aiarchguard.platform.identity.InactiveAuthenticatedTaskException;
+import io.github.aiarchguard.platform.identity.InvalidCurrentActorException;
 import io.github.aiarchguard.platform.project.ProjectNotFoundException;
 import io.github.aiarchguard.platform.project.ProjectPermissionDeniedException;
 import java.time.Duration;
@@ -16,12 +18,11 @@ import java.util.function.LongSupplier;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
- * Internal execution core, deliberately not a bean/worker/HTTP endpoint.
- * Public construction always denies egress; test-only admission has no runtime configuration.
+ * Internal execution core, not itself a worker/HTTP endpoint.
+ * Public construction always denies egress; controlled same-package wiring selects admission.
  * Caller must already own the persisted requester's trusted identity context.
  */
 public final class LiveExecutionCoordinator {
-    private static final long LIMIT_NANOS = Duration.ofSeconds(30).toNanos();
     private final AgentStore requests;
     private final LiveAccountingOperations accounting;
     private final Consumer<AgentSnapshot> resources;
@@ -33,6 +34,7 @@ public final class LiveExecutionCoordinator {
     private final SendPolicy policy;
     private final LongSupplier nanos;
     private final LiveDatabaseWork database;
+    private final Runnable requireActive;
 
     public LiveExecutionCoordinator(AgentStore requests, LiveAccountingOperations accounting, LiveResourceAuthorizer resources,
             LiveResponsePort responses, CredentialUse credentials, LiveResultTransitions transitions,
@@ -49,22 +51,38 @@ public final class LiveExecutionCoordinator {
             transitions, validator, actors, body -> { throw new AgentUnavailableException(); }, System::nanoTime, database);
     }
 
-    // No production caller/Bean exists; permissive seam is confined to same-package tests.
+    // Compatibility-only test seam; production selects the overload with explicit identity rechecks.
     LiveExecutionCoordinator(AgentStore requests, LiveAccountingOperations accounting, Consumer<AgentSnapshot> resources,
             LiveResponsePort responses, CredentialUse credentials, LiveResultTransitions transitions,
             AgentOutputValidator validator, CurrentActorProvider actors, SendPolicy policy, LongSupplier nanos,
             LiveDatabaseWork database) {
+        this(requests, accounting, resources, responses, credentials, transitions, validator, actors, policy, nanos, database, () -> {});
+    }
+
+    LiveExecutionCoordinator(AgentStore requests, LiveAccountingOperations accounting, Consumer<AgentSnapshot> resources,
+            LiveResponsePort responses, CredentialUse credentials, LiveResultTransitions transitions,
+            AgentOutputValidator validator, CurrentActorProvider actors, SendPolicy policy, LongSupplier nanos,
+            LiveDatabaseWork database, Runnable requireActive) {
         this.requests = requests; this.accounting = accounting; this.resources = resources; this.responses = responses;
         this.credentials = credentials; this.transitions = transitions; this.validator = validator; this.actors = actors;
         this.policy = policy; this.nanos = nanos; this.database = java.util.Objects.requireNonNull(database);
+        this.requireActive = java.util.Objects.requireNonNull(requireActive);
+    }
+
+    void execute(UUID project, UUID batch, UUID template, UUID request, LongSupplier remainingNanos) {
+        execute(project, batch, template, request, new LiveExecutionBudget(nanos, remainingNanos));
     }
 
     public void execute(UUID project, UUID batch, UUID template, UUID request) {
+        execute(project, batch, template, request, new LiveExecutionBudget(nanos));
+    }
+
+    private void execute(UUID project, UUID batch, UUID template, UUID request, LiveExecutionBudget budget) {
         requireNoDatabaseTransaction();
         long started = nanos.getAsLong();
-        LongSupplier remaining = () -> remainingNanos(started);
+        LongSupplier remaining = budget;
         java.util.Optional<AgentSnapshot> selected;
-        try { selected = database.transaction(remaining, true, () -> requests.find(project, request)); }
+        try { requireActive.run(); selected = database.transaction(remaining, true, () -> requests.find(project, request)); }
         catch (RuntimeException failure) { throw preflightFailure(failure); }
         var snapshot = selected.orElseThrow(AgentNotFoundException::new);
         if (!actors.currentActor().id().equals(snapshot.view().requesterId())) throw new ProjectPermissionDeniedException();
@@ -75,15 +93,16 @@ public final class LiveExecutionCoordinator {
             String price = snapshot.view().bindings().priceCatalogVersion();
             if (!LiveCostPolicy.modelProfile(price).equals(snapshot.view().bindings().modelProfileVersion())) throw new AgentEnablementInvalidStateException();
             byte[] body = responses.prepare(snapshot.input());
-            remaining(started); policy.require(body.clone()); validateResources(snapshot, remaining);
-            remaining(started);
+            budget.requireRemaining(); requireActive.run(); policy.require(body.clone()); validateResources(snapshot, remaining);
+            budget.requireRemaining(); requireActive.run();
             var admission = accounting.reserve(project, batch, template, request, remaining);
             // A replay must not send or terminalize the original in-flight executor's request.
             if (!admission.newAttempt()) return;
             ownsAttempt = true;
-            remaining(started);
+            budget.requireRemaining(); requireActive.run();
             var approval = accounting.checkBeforeSend(project, batch, template, request, remaining);
-            validateResources(snapshot, remaining); policy.require(body.clone()); requireRunning(project, request, remaining); remaining(started);
+            validateResources(snapshot, remaining); policy.require(body.clone()); requireRunning(project, request, remaining);
+            budget.requireRemaining(); requireActive.run();
             AtomicBoolean sent = new AtomicBoolean();
             AtomicBoolean preflightStarted = new AtomicBoolean(), preflightCompleted = new AtomicBoolean();
             AtomicBoolean consumerActive = new AtomicBoolean(true), consumerViolated = new AtomicBoolean();
@@ -98,20 +117,22 @@ public final class LiveExecutionCoordinator {
                         consumerViolated.set(true);
                         throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
                     }
-                    remaining(started);
+                    budget.requireRemaining(); requireActive.run();
                     var fresh = accounting.checkBeforeSend(project, batch, template, request, remaining);
                     if (!fresh.equals(approval)) throw new AgentEnablementInvalidStateException();
                     validateResources(snapshot, remaining); policy.require(body.clone()); requireRunning(project, request, remaining);
-                    remaining(started);
+                    budget.requireRemaining(); requireActive.run();
                     preflightCompleted.set(true);
                 }, key -> {
-                    // This callback may hold the credential slot lock. Never enter another module here.
+                    // This callback may hold the credential slot lock. Only the in-memory identity
+                    // capability check is permitted here; Project/resource/accounting SQL stays outside.
                     if (!consumerActive.get() || Thread.currentThread() != caller || !preflightCompleted.get() || consumerViolated.get()) {
                         consumerViolated.set(true);
                         throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
                     }
                     requireNoDatabaseTransaction();
-                    Duration timeout = remaining(started);
+                    requireActive.run();
+                    Duration timeout = budget.requireRemaining();
                     if (!sent.compareAndSet(false, true)) {
                         consumerViolated.set(true);
                         throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
@@ -144,13 +165,13 @@ public final class LiveExecutionCoordinator {
             usage = new AgentRequestView.AgentUsage(reply.usage().inputTokens(), reply.usage().outputTokens(), elapsedMs(started),
                 providerLatency.get(), admission.reservedMicrousd(), outcome.actualMicrousd(), reply.providerResponseId(), reply.actualModelId());
             // Late but billable replies are settled, never displayed as successful results.
-            remaining(started);
+            budget.requireRemaining(); requireActive.run();
             if (LiveCostPolicy.isContext(price) && reply.usage().inputTokens() > LiveCostPolicy.POSTCALL_INPUT_THRESHOLD) {
                 throw new AgentOutputValidator.InvalidOutput("OUTPUT_INVALID");
             }
             if (reply.outputFailureCode() != null) throw new AgentOutputValidator.InvalidOutput("OUTPUT_INVALID");
             var result = validator.validate(reply.rawJson(), snapshot);
-            validateResources(snapshot, remaining); remaining(started);
+            validateResources(snapshot, remaining); budget.requireRemaining(); requireActive.run();
             usage = observedUsage(usage, started);
             transitions.finishBounded(snapshot, result, usage, remaining);
         } catch (RuntimeException failure) {
@@ -186,15 +207,6 @@ public final class LiveExecutionCoordinator {
         if (TransactionSynchronizationManager.isActualTransactionActive()
                 || TransactionSynchronizationManager.isSynchronizationActive()) throw new AgentUnavailableException();
     }
-    private Duration remaining(long started) {
-        long remaining = remainingNanos(started);
-        if (remaining == 0) throw new LiveResponsePort.CallFailure("MODEL_TIMEOUT");
-        return Duration.ofNanos(remaining);
-    }
-    private long remainingNanos(long started) {
-        long elapsed = nanos.getAsLong() - started;
-        return Thread.currentThread().isInterrupted() || elapsed < 0 || elapsed >= LIMIT_NANOS ? 0 : LIMIT_NANOS - elapsed;
-    }
     private long elapsedMs(long started) { return Math.max(0, (nanos.getAsLong() - started) / 1_000_000); }
     private AgentRequestView.AgentUsage observedUsage(AgentRequestView.AgentUsage usage, long started) {
         if (usage == null) return null;
@@ -213,7 +225,8 @@ public final class LiveExecutionCoordinator {
         if (failure instanceof LiveResponsePort.CallFailure safe) return safe.code();
         if (failure instanceof AgentOutputValidator.InvalidOutput invalid) return invalid.code();
         if (failure instanceof AgentQuotaExceededException) return "QUOTA_EXHAUSTED";
-        if (failure instanceof ProjectPermissionDeniedException || failure instanceof ProjectNotFoundException) return "AUTHORIZATION_REVOKED";
+        if (failure instanceof ProjectPermissionDeniedException || failure instanceof ProjectNotFoundException
+                || failure instanceof InactiveAuthenticatedTaskException || failure instanceof InvalidCurrentActorException) return "AUTHORIZATION_REVOKED";
         if (failure instanceof AgentEnablementInvalidStateException) return "MODEL_UNAVAILABLE";
         if (failure instanceof AgentUnavailableException) return "MODEL_UNAVAILABLE";
         return "INTERNAL_ERROR";
@@ -235,7 +248,7 @@ public final class LiveExecutionCoordinator {
      * On the calling thread, run preflight once before acquiring a credential slot lock, then
      * bind the active version atomically while invoking only finalSend once and returning its
      * exact reply. Both callbacks expire when use returns. Do not return plaintext or enter
-     * other modules from finalSend. There is no production egress assembly in this core.
+     * database-backed modules from finalSend. The final identity capability check is local only.
      */
     @FunctionalInterface public interface CredentialUse {
         LiveResponsePort.Reply use(UUID expectedVersion, Runnable preflight, Function<String, LiveResponsePort.Reply> finalSend);

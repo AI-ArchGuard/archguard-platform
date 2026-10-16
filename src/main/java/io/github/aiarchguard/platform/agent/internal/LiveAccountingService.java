@@ -134,7 +134,16 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             + approval.id() + "|" + approval.acknowledgement().credentialVersion() + "|" + prompt + "|" + LiveCostPolicy.modelProfile(price) + "|" + price);
     }
     @Override public AgentRequestView create(UUID project, UUID batchId, UUID templateId, String key, String origin, boolean secure) {
-        return write(project, "agent.live.request.created", () -> {
+        return write(project, "agent.live.request.created", () -> createBody(project, batchId, templateId, key, origin, secure, null));
+    }
+    @Override public AgentRequestView create(UUID project, UUID batchId, UUID templateId, String key, String origin, boolean secure,
+            LongSupplier remainingNanos) {
+        if (remainingNanos == null) throw new AgentUnavailableException();
+        return boundedWrite(project, "agent.live.request.created", remainingNanos,
+            () -> createBody(project, batchId, templateId, key, origin, secure, remainingNanos));
+    }
+    private AgentRequestView createBody(UUID project, UUID batchId, UUID templateId, String key, String origin, boolean secure,
+            LongSupplier remainingNanos) {
             controls.authorizeWrite(project, origin, secure); schema.requireReady();
             if (batchId == null || templateId == null || key == null || key.isBlank() || key.length() > 128
                     || key.chars().anyMatch(c -> c < 33 || c > 126)) throw new AgentInvalidException();
@@ -146,7 +155,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             var replay = requests.findByKey(project, actor, key);
             if (replay.isPresent()) return replay(replay.orElseThrow(), batchId, templateId, digest);
             validateBatch(project, settings, batch);
-            var approval = approval(project, settings.enablementId()); validateApproval(approval);
+            var approval = approval(project, settings.enablementId()); validateApproval(approval, remainingNanos);
             var source = request(project, templateId);
             if (!("FAILED".equals(source.view().state()) || "SUCCEEDED".equals(source.view().state()))
                     || !routing.synthetic(source)) throw new AgentEnablementInvalidStateException();
@@ -163,7 +172,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             var snapshot = new AgentSnapshot(view, liveInput, List.copyOf(source.candidates()));
             validateRequest(snapshot, batch, templateId, "QUEUED"); resources.validate(snapshot);
             // Public domain checks can take time; inventory, credential metadata and expiry are fresh at commit.
-            projects.requireViewer(project); validateBatch(project, settings, batch); validateApproval(approval);
+            projects.requireViewer(project); validateBatch(project, settings, batch); validateApproval(approval, remainingNanos);
             if (!requests.insert(snapshot, key)) return replay(requests.findByKey(project, actor, key).orElseThrow(), batchId, templateId, digest);
             links.insert(new LiveRequestStore.Link(view.id(), project, batchId, templateId, approval.id(),
                 approval.acknowledgement().credentialVersion(), settings.revision(), now));
@@ -173,7 +182,6 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
                 "inputDigest", digest, "modelProfileVersion", bindings.modelProfileVersion()));
             // No afterCommit hook: dispatch, Token admission and bounded trusted identity are separate gates.
             return view;
-        });
     }
     private AgentRequestView replay(AgentSnapshot snapshot, UUID batch, UUID template, String digest) {
         var link = links.find(snapshot.view().projectId(), snapshot.view().id()).orElseThrow(AgentConflictException::new);
@@ -183,12 +191,13 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
         return snapshot.view();
     }
     @Override public Admission reserve(UUID project, UUID batchId, UUID templateId, UUID requestId) {
-        return write(project, "agent.live.reserved", () -> reserveBody(project, batchId, templateId, requestId));
+        return write(project, "agent.live.reserved", () -> reserveBody(project, batchId, templateId, requestId, null));
     }
     @Override public Admission reserve(UUID project, UUID batchId, UUID templateId, UUID requestId, LongSupplier remainingNanos) {
-        return boundedWrite(project, "agent.live.reserved", remainingNanos, () -> reserveBody(project, batchId, templateId, requestId));
+        if (remainingNanos == null) throw new AgentUnavailableException();
+        return boundedWrite(project, "agent.live.reserved", remainingNanos, () -> reserveBody(project, batchId, templateId, requestId, remainingNanos));
     }
-    private Admission reserveBody(UUID project, UUID batchId, UUID templateId, UUID requestId) {
+    private Admission reserveBody(UUID project, UUID batchId, UUID templateId, UUID requestId, LongSupplier remainingNanos) {
             projects.requireViewer(project); schema.requireReady();
             var snapshot = request(project, requestId); sameActor(snapshot);
             var settings = enablements.lockSettings(project); var batch = batch(project, batchId); store.lockBatch(batchId);
@@ -201,7 +210,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             validateBatch(project, settings, batch);
             long reservation = LiveCostPolicy.reservation(batch.costPolicyVersion());
             if (LiveCostPolicy.isContext(batch.costPolicyVersion())) store.requireSerialProgress(batch, requestId);
-            var approval = approval(project, settings.enablementId()); validateApproval(approval);
+            var approval = approval(project, settings.enablementId()); validateApproval(approval, remainingNanos);
             validateRequest(snapshot, batch, templateId, "RUNNING"); validateLink(snapshot, batch, templateId, settings, approval);
             if (projectLimit < 0 || projectLimit > 5_000_000 || deploymentLimit < 0 || deploymentLimit > 20_000_000) throw new AgentUnavailableException();
             LocalDate day = Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate();
@@ -209,7 +218,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             var deploymentUsage = store.lockBudget("DEPLOYMENT", deployment(), day);
             var projectUsage = store.lockBudget("PROJECT", project, day);
             // Budget locks may wait while external inventory, credentials or the UTC day changes.
-            projects.requireViewer(project); validateBatch(project, settings, batch); validateApproval(approval);
+            projects.requireViewer(project); validateBatch(project, settings, batch); validateApproval(approval, remainingNanos);
             snapshot = request(project, requestId); sameActor(snapshot);
             validateRequest(snapshot, batch, templateId, "RUNNING"); validateLink(snapshot, batch, templateId, settings, approval);
             if (LiveCostPolicy.isContext(batch.costPolicyVersion())) store.requireSerialProgress(batch, requestId);
@@ -227,12 +236,13 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             return new Admission(attempt.attemptId(), attempt.reservation(), true);
     }
     @Override public SendApproval checkBeforeSend(UUID project, UUID batchId, UUID templateId, UUID requestId) {
-        return write(project, "agent.live.send_check", () -> checkBeforeSendBody(project, batchId, templateId, requestId));
+        return write(project, "agent.live.send_check", () -> checkBeforeSendBody(project, batchId, templateId, requestId, null));
     }
     @Override public SendApproval checkBeforeSend(UUID project, UUID batchId, UUID templateId, UUID requestId, LongSupplier remainingNanos) {
-        return boundedWrite(project, "agent.live.send_check", remainingNanos, () -> checkBeforeSendBody(project, batchId, templateId, requestId));
+        if (remainingNanos == null) throw new AgentUnavailableException();
+        return boundedWrite(project, "agent.live.send_check", remainingNanos, () -> checkBeforeSendBody(project, batchId, templateId, requestId, remainingNanos));
     }
-    private SendApproval checkBeforeSendBody(UUID project, UUID batchId, UUID templateId, UUID requestId) {
+    private SendApproval checkBeforeSendBody(UUID project, UUID batchId, UUID templateId, UUID requestId, LongSupplier remainingNanos) {
             projects.requireViewer(project); schema.requireReady();
             var snapshot = request(project, requestId); sameActor(snapshot);
             var settings = enablements.lockSettings(project); var batch = batch(project, batchId); store.lockBatch(batchId);
@@ -246,7 +256,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             // Read again after lock waits: recovery may already have terminalized the request.
             snapshot = request(project, requestId); sameActor(snapshot); projects.requireViewer(project);
             validateBatch(project, settings, batch); validateRequest(snapshot, batch, templateId, "RUNNING");
-            var approval = approval(project, settings.enablementId()); validateApproval(approval);
+            var approval = approval(project, settings.enablementId()); validateApproval(approval, remainingNanos);
             validateLink(snapshot, batch, templateId, settings, approval);
             if (LiveCostPolicy.isContext(batch.costPolicyVersion())) store.requireSerialProgress(batch, requestId);
             if (!binding.credentialVersion().equals(approval.acknowledgement().credentialVersion())) throw new AgentEnablementInvalidStateException();
@@ -336,7 +346,12 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
                     .filter(batch.inventoryProof()::equals).isPresent()) throw new AgentEnablementInvalidStateException();
     }
     private void validateApproval(AgentEnablementStore.Approval value) {
-        var input = value.acknowledgement(); var credential = credentials.current(); Instant now = Instant.now(clock);
+        validateApproval(value, null);
+    }
+    private void validateApproval(AgentEnablementStore.Approval value, LongSupplier remainingNanos) {
+        var input = value.acknowledgement();
+        var credential = remainingNanos == null ? credentials.current() : credentials.current(remainingNanos);
+        Instant now = Instant.now(clock);
         if (!deployment().equals(value.deploymentId()) || value.revokedAt() != null || !now.isBefore(input.expiresAt())
                 || !now.isBefore(input.priceCatalogExpiresAt()) || !LiveCostPolicy.supported(input.priceCatalogVersion())
                 || !"SYNTHETIC_ACCEPTANCE".equals(input.dataScope()) || !credential.configured()

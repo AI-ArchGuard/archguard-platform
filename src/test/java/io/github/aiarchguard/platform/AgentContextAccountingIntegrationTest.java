@@ -100,10 +100,13 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(ledger.attempt(project, first)).isEmpty();
         accounting.stopBatch(project, batch.id(), first, "OUTPUT_INVALID");
         assertThat(stopCode(batch.id())).isEqualTo("OUTPUT_INVALID");
-        UUID replacement = insert(batch.id(), explanation, "FINDING_EXPLANATION", true);
-        assertThatThrownBy(() -> accounting.reserve(project, batch.id(), explanation, replacement))
+        assertReplacementLinkRejected(batch.id());
+        assertThatThrownBy(() -> accounting.reserve(project, batch.id(), explanation, first))
             .isInstanceOf(AgentEnablementInvalidStateException.class);
-        assertThat(ledger.attempt(project, replacement)).isEmpty();
+        UUID remaining = insert(batch.id(), summary, "PR_SUMMARY", true);
+        assertThatThrownBy(() -> accounting.reserve(project, batch.id(), summary, remaining))
+            .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThat(ledger.attempt(project, remaining)).isEmpty();
         assertThat(legacy.amount("PROJECT", project, "reserved_microusd")).isZero();
     }
 
@@ -120,15 +123,18 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(stopCode(batch.id())).isEqualTo("OUTPUT_INVALID");
         assertThat(requests.find(project, first).orElseThrow().view().state()).isEqualTo("FAILED");
         assertThat(ledger.attempt(project, first)).isEmpty();
-        UUID replacement = insert(batch.id(), explanation, "FINDING_EXPLANATION", true);
-        assertThatThrownBy(() -> accounting.reserve(project, batch.id(), explanation, replacement))
+        assertReplacementLinkRejected(batch.id());
+        UUID remaining = insert(batch.id(), summary, "PR_SUMMARY", true);
+        assertThatThrownBy(() -> accounting.reserve(project, batch.id(), summary, remaining))
             .isInstanceOf(AgentEnablementInvalidStateException.class);
+        assertThat(ledger.attempt(project, remaining)).isEmpty();
+        assertThat(legacy.amount("PROJECT", project, "reserved_microusd")).isZero();
     }
 
     @Test void newBatchClaimRejectsCrossPolicyProfilesAndEvenACorrectLegacyPair() {
-        var batch = batch(700000);
         for (String[] pair : new String[][]{{LiveAccountingOperations.MODEL_PROFILE, LiveCostPolicy.CONTEXT_VERSION},
                 {LiveCostPolicy.CONTEXT_MODEL_PROFILE, LiveCostPolicy.VERSION}, {LiveAccountingOperations.MODEL_PROFILE, LiveCostPolicy.VERSION}}) {
+            var batch = batch(700000);
             UUID id = insert(batch.id(), explanation, "FINDING_EXPLANATION", true, "QUEUED", pair[0], pair[1]);
             assertThat(links.claim(links.find(project, id).orElseThrow(), AgentLiveAccountingIntegrationTest.OWNER, now)).isFalse();
             assertThat(requests.find(project, id).orElseThrow().view().state()).isEqualTo("QUEUED");
@@ -233,6 +239,17 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         AgentLiveAccountingIntegrationTest.INVENTORY.add(project + ":" + digest);
         return accounting.approve(project, "http://localhost:8083", false,
             new LiveBatchInput(approval, UUID.randomUUID(), templates, digest, now.plusSeconds(3600), 2, cap, true));
+    }
+
+    private void assertReplacementLinkRejected(UUID batch) {
+        long before = jdbc.sql("SELECT count(*) FROM agent.requests WHERE project_id=:id").param("id", project).query(Long.class).single();
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(manager);
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> insert(batch, explanation, "FINDING_EXPLANATION", true)))
+            .isInstanceOf(AgentConflictException.class).hasNoCause();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.requests WHERE project_id=:id").param("id", project).query(Long.class).single())
+            .isEqualTo(before);
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_request_links WHERE project_id=:project AND batch_id=:batch AND template_id=:template")
+            .param("project", project).param("batch", batch).param("template", explanation).query(Long.class).single()).isOne();
     }
 
     private UUID insert(UUID batch, UUID template, String purpose, boolean live) {

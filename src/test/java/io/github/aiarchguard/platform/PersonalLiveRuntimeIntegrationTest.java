@@ -88,10 +88,12 @@ class PersonalLiveRuntimeIntegrationTest {
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
     @Autowired DataSource dataSource;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     @Autowired ConfigurableEnvironment environment;
     @Autowired AgentOperations agents;
     @Autowired AgentStore requests;
     @Autowired AgentEnablementOperations enablements;
+    @Autowired AgentEnablementStore storedEnablements;
     @Autowired LiveAccountingOperations accounting;
     @Autowired LiveAccountingStore ledger;
     @Autowired CredentialOperations credentials;
@@ -125,8 +127,8 @@ class PersonalLiveRuntimeIntegrationTest {
         explanation = template("FINDING_EXPLANATION", null, "explanation-template");
         summary = template("PR_SUMMARY", revision, "summary-template");
         ObjectNode input = mapper.valueToTree(new AgentPersonalEnablementIntegrationTest().input());
-        input.put("schemaVersion", "0.3.0").put("credentialVersion", credential.credentialVersion().toString())
-            .put("priceCatalogVersion", LiveCostPolicy.CONTEXT_VERSION).put("mappingSnapshot", "deepseek-v4.1-flash-2026-10-15")
+        input.put("schemaVersion", "0.4.0").put("credentialVersion", credential.credentialVersion().toString())
+            .put("priceCatalogVersion", LiveCostPolicy.CONTEXT_VERSION).put("mappingSnapshot", "DeepSeek-V4.1-Flash-1017")
             .put("expiresAt", NOW.plusSeconds(3600).toString()).put("priceCatalogExpiresAt", NOW.plusSeconds(3600).toString());
         for (var source : input.path("sources")) ((ObjectNode) source).put("checkedAt", NOW.toString());
         String approvalJson = mvc.perform(post(root() + "/enablements").with(owner()).header("Origin", ORIGIN)
@@ -183,6 +185,59 @@ class PersonalLiveRuntimeIntegrationTest {
         }
         String audits = jdbc.sql("SELECT metadata::text FROM audit.audit_records WHERE project_id=:p").param("p", project).query(String.class).list().toString();
         assertThat(audits).doesNotContain(SyntheticRuntimeLiveAdapter.KEY, "ignore prior instructions", "disclose other projects");
+    }
+
+    @Test void oldContextMappingIsLocallyUnavailableEvenWhenEveryOtherLiveGateIsConfigured() throws Exception {
+        useHistoricalContextMapping();
+        // This fixture explicitly preserves the 0.3.0/2026-10-15 acknowledgement and its own batch.
+        // A current price, matching credential, configured runtime and checks cannot upgrade its mapping.
+        mvc.perform(get(root() + "/settings").with(owner())).andExpect(status().isOk())
+            .andExpect(header().string("Cache-Control", "no-store"))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.enabled").value(true))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.modelCallsAvailable").value(false))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.unavailableReason").value("LIVE_ADAPTER_NOT_READY"));
+        assertThat(adapter.calls.get()).isZero();
+        assertNoLiveRequests();
+    }
+
+    @Test void oldContextMappingCannotCreateOrSendARealRequestButRemainsReadableAndRevocable() throws Exception {
+        useHistoricalContextMapping();
+        PersonalEnablementInput historical = storedEnablements.find(project, approval).orElseThrow().acknowledgement();
+        assertThat(historical.schemaVersion()).isEqualTo("0.3.0");
+        assertThat(historical.mappingSnapshot()).isEqualTo("deepseek-v4.1-flash-2026-10-15");
+        assertRejectedWithoutHttp(submit(project, explanation, "old-mapping-cannot-send", ORIGIN, owner()).andReturn());
+        assertNoLiveRequests();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p")
+            .param("p", project).query(Integer.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM audit.audit_records WHERE action='AGENT_CREDENTIAL_USE_REQUESTED' AND metadata->>'credentialVersion'=:v")
+            .param("v", credentialVersion.toString()).query(Integer.class).single()).isZero();
+        mvc.perform(get(root() + "/enablements/" + approval).with(owner())).andExpect(status().isOk());
+        mvc.perform(post(root() + "/enablements/" + approval + "/revoke").with(owner()).header("Origin", ORIGIN))
+            .andExpect(status().isOk())
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.revoked").value(true));
+        assertThat(storedEnablements.find(project, approval).orElseThrow().acknowledgement()).isEqualTo(historical);
+        assertThat(adapter.calls.get()).isZero();
+    }
+
+    private void useHistoricalContextMapping() throws Exception {
+        identity();
+        var current = ledger.batch(project, batch).orElseThrow();
+        ObjectNode input = mapper.valueToTree(storedEnablements.find(project, approval).orElseThrow().acknowledgement());
+        input.put("schemaVersion", "0.3.0").put("mappingSnapshot", "deepseek-v4.1-flash-2026-10-15");
+        approval = enablements.approve(project, mapper.treeToValue(input, PersonalEnablementInput.class)).id();
+        enablements.update(project, enablements.settings(project).revision(), new AgentSettingsUpdate(true, approval));
+        batch = UUID.randomUUID();
+        var before = current.view();
+        var historical = new LiveBatchView(batch, project, approval, before.approvedBy(), before.approvedAt(),
+            before.manifestSha256(), before.expiresAt(), before.maxRequests(), before.maxCostMicrousd(), false);
+        // Model a record created by the prior producer; do not bypass or alter immutable triggers.
+        new org.springframework.transaction.support.TransactionTemplate(transactions).executeWithoutResult(status ->
+            ledger.insert(new LiveAccountingStore.Batch(historical, current.deploymentId(), current.inventoryId(),
+                current.manifest(), current.inventoryProof(), current.costPolicyVersion())));
+        bindRuntime(Map.of("archguard.agent.live.project-id", project.toString(), "archguard.agent.live.batch-id", batch.toString()));
+        assertThat(storedEnablements.settings(project).enablementId()).isEqualTo(approval);
+        assertThat(ledger.batch(project, batch).orElseThrow().view().enablementId()).isEqualTo(approval);
+        SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId");
     }
 
     @Test void singleWorkerDoesNotSendSummaryBeforeTheExplanationHasSucceededAndSettled() throws Exception {

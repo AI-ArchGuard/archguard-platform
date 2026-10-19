@@ -56,7 +56,8 @@ final class PersonalLivePolicy implements AgentRuntimeAvailability {
                 || batch.view().maxCostMicrousd() > LiveCostPolicy.BATCH_LIMIT
                 || batch.manifest().templates().stream().noneMatch(t -> template.equals(t.templateRequestId()))) throw unavailable();
         var approval = enablements.find(project, batch.view().enablementId()).orElseThrow(AgentUnavailableException::new);
-        if (!reference("network-check-ref").equals(approval.acknowledgement().networkCheckRef())
+        if (!PersonalEnablementPolicy.currentMapping(approval.acknowledgement())
+                || !reference("network-check-ref").equals(approval.acknowledgement().networkCheckRef())
                 || !reference("secret-check-ref").equals(approval.acknowledgement().secretCheckRef())) throw unavailable();
     }
 

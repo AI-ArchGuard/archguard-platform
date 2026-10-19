@@ -108,6 +108,36 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
         assertThat(jdbc.sql("SELECT count(*) FROM agent.budget_usage WHERE scope_id=:id").param("id", project).query(Integer.class).single()).isZero();
     }
 
+    @Test void approved1017InputIsExplicitStrictMetadataOnlyAndCannotEnableOrSpendAutomatically() throws Exception {
+        com.fasterxml.jackson.databind.node.ObjectNode input = mapper.valueToTree(input());
+        input.put("schemaVersion", "0.4.0").put("mappingSnapshot", "DeepSeek-V4.1-Flash-1017")
+            .put("priceCatalogVersion", "deepseek-flash-context-peak-usd-2026-10-15");
+        String created = mvc.perform(post(root() + "/enablements").with(user(OWNER)).header("Origin", "http://localhost:8083")
+            .contentType(MediaType.APPLICATION_JSON).content(input.toString())).andExpect(status().isCreated())
+            .andExpect(header().string("Cache-Control", "no-store")).andReturn().getResponse().getContentAsString();
+        JsonNode view = mapper.readTree(created);
+        assertThat(view.path("modelAlias").asText()).isEqualTo("deepseek-flash");
+        assertThat(view.path("priceCatalogVersion").asText()).isEqualTo("deepseek-flash-context-peak-usd-2026-10-15");
+        assertThat(view.toString()).doesNotContain("schemaVersion", "mappingSnapshot", "allowedResponseModels", "accountRef", "networkCheckRef", "secretCheckRef", "sources");
+        mvc.perform(get(root() + "/enablements/" + view.path("id").asText()).with(user(OWNER)))
+            .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"));
+        mvc.perform(get(root() + "/settings").with(user(OWNER))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.enabled").value(false)).andExpect(jsonPath("$.modelCallsAvailable").value(false));
+        for (var invalid : List.of(input.deepCopy().put("schemaVersion", "0.3.0"),
+                input.deepCopy().put("mappingSnapshot", "deepseek-v4.1-flash-2026-10-15"),
+                input.deepCopy().put("priceCatalogVersion", "deepseek-flash-peak-usd-2026-10-06"),
+                input.deepCopy().put("apiKey", "synthetic-forbidden-key"))) {
+            mvc.perform(post(root() + "/enablements").with(user(OWNER)).header("Origin", "http://localhost:8083")
+                .contentType(MediaType.APPLICATION_JSON).content(invalid.toString())).andExpect(status().isBadRequest());
+        }
+        var broadened = input.deepCopy(); broadened.withArray("allowedResponseModels").add("DeepSeek-V4.1-Flash-1017");
+        mvc.perform(post(root() + "/enablements").with(user(OWNER)).header("Origin", "http://localhost:8083")
+            .contentType(MediaType.APPLICATION_JSON).content(broadened.toString())).andExpect(status().isBadRequest());
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.personal_enablements WHERE project_id=:p").param("p", project).query(Integer.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.requests WHERE project_id=:p").param("p", project).query(Integer.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p").param("p", project).query(Integer.class).single()).isZero();
+    }
+
     @Test void optimisticLockAndMissingPreconditionAreStrict() throws Exception {
         mvc.perform(put(root() + "/settings").with(user(OWNER)).header("Origin", "http://localhost:8083")
             .contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":false,\"enablementId\":null}"))

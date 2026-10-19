@@ -34,9 +34,11 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
     @Autowired AgentEnablementOperations enablements;
+    @Autowired AgentEnablementStore storedEnablements;
     @Autowired AgentStore requests;
     @Autowired LiveRequestStore links;
     @Autowired LiveAccountingOperations accounting;
+    @Autowired LiveRequestOperations creation;
     @Autowired LiveAccountingStore ledger;
     @Autowired io.github.aiarchguard.platform.project.ProjectAuthorization projects;
     @Autowired io.github.aiarchguard.platform.identity.CurrentActorProvider actors;
@@ -56,8 +58,8 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         legacy.prepare(); project = legacy.project; now = legacy.now; explanation = legacy.template;
         var old = new AgentPersonalEnablementIntegrationTest();
         ObjectNode input = mapper.valueToTree(old.input());
-        input.put("schemaVersion", "0.3.0").put("priceCatalogVersion", LiveCostPolicy.CONTEXT_VERSION)
-            .put("mappingSnapshot", "deepseek-v4.1-flash-2026-10-15")
+        input.put("schemaVersion", "0.4.0").put("priceCatalogVersion", LiveCostPolicy.CONTEXT_VERSION)
+            .put("mappingSnapshot", "DeepSeek-V4.1-Flash-1017")
             .put("expiresAt", now.plusSeconds(86400).toString()).put("priceCatalogExpiresAt", now.plusSeconds(86400).toString());
         for (var source : input.path("sources")) ((ObjectNode) source).put("checkedAt", now.toString());
         approval = enablements.approve(project, mapper.treeToValue(input, PersonalEnablementInput.class)).id();
@@ -83,6 +85,74 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(ledger.lockBatch(batch.id()).attempts()).isEqualTo(2);
         assertThat(legacy.amount("PROJECT", project, "reserved_microusd")).isEqualTo(316373);
         assertThat(legacy.amount("PROJECT", project, "spent_microusd")).isEqualTo(273);
+    }
+
+    @Test void oldContextMappingCannotApproveANewBatchOrCreateAndReserveANewLiveAttempt() throws Exception {
+        var historical = historicalContextBatch();
+        assertThat(enablements.settings(project).enablementId()).isEqualTo(approval);
+        assertThat(historical.enablementId()).isEqualTo(approval);
+        assertThatThrownBy(() -> batch(700000)).isInstanceOf(AgentEnablementInvalidStateException.class).hasNoCause();
+        assertThatThrownBy(() -> creation.create(project, historical.id(), explanation,
+            "old-context-create", "http://localhost:8083", false)).isInstanceOf(AgentEnablementInvalidStateException.class).hasNoCause();
+        assertThatThrownBy(() -> creation.create(project, historical.id(), explanation,
+            "old-context-bounded-create", "http://localhost:8083", false, () -> java.util.concurrent.TimeUnit.SECONDS.toNanos(5)))
+            .isInstanceOf(AgentEnablementInvalidStateException.class).hasNoCause();
+        assertThat(requests.findByKey(project, AgentLiveAccountingIntegrationTest.OWNER, "old-context-create")).isEmpty();
+        assertThat(requests.findByKey(project, AgentLiveAccountingIntegrationTest.OWNER, "old-context-bounded-create")).isEmpty();
+        UUID first = insert(historical.id(), explanation, "FINDING_EXPLANATION", true);
+        assertThatThrownBy(() -> accounting.reserve(project, historical.id(), explanation, first))
+            .isInstanceOf(AgentEnablementInvalidStateException.class).hasNoCause();
+        assertThatThrownBy(() -> accounting.reserve(project, historical.id(), explanation, first,
+            () -> java.util.concurrent.TimeUnit.SECONDS.toNanos(5)))
+            .isInstanceOf(AgentEnablementInvalidStateException.class).hasNoCause();
+        assertThat(ledger.attempt(project, first)).isEmpty();
+        assertThat(ledger.lockBatch(historical.id()).attempts()).isZero();
+        assertThat(legacy.amount("PROJECT", project, "reserved_microusd")).isZero();
+    }
+
+    @Test void oldContextAttemptCannotPassEitherSendRecheckButItsAccruedFeeSettlesAtItsOriginalPrice() throws Exception {
+        var historical = historicalContextBatch();
+        UUID first = insert(historical.id(), explanation, "FINDING_EXPLANATION", true);
+        var day = now.atZone(java.time.ZoneOffset.UTC).toLocalDate();
+        ledger.lockBudget("DEPLOYMENT", AgentLiveAccountingIntegrationTest.DEPLOYMENT, day);
+        ledger.lockBudget("PROJECT", project, day);
+        ledger.reserveBudget("DEPLOYMENT", AgentLiveAccountingIntegrationTest.DEPLOYMENT, day, 316373);
+        ledger.reserveBudget("PROJECT", project, day, 316373);
+        ledger.reserveBatch(historical.id(), 316373);
+        var attempt = new LiveAccountingStore.Attempt(first, project, historical.id(), explanation, UUID.randomUUID(),
+            AgentLiveAccountingIntegrationTest.DEPLOYMENT, day, "deepseek-flash-context-peak-usd-2026-10-15", 316373, null, null);
+        ledger.insertAttempt(attempt, approval, AgentPersonalEnablementIntegrationTest.CREDENTIAL,
+            enablements.settings(project).revision(), now);
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, historical.id(), explanation, first))
+            .isInstanceOf(AgentEnablementInvalidStateException.class).hasNoCause();
+        assertThatThrownBy(() -> accounting.checkBeforeSend(project, historical.id(), explanation, first,
+            () -> java.util.concurrent.TimeUnit.SECONDS.toNanos(5)))
+            .isInstanceOf(AgentEnablementInvalidStateException.class).hasNoCause();
+        assertThat(ledger.attempt(project, first).orElseThrow()).isEqualTo(attempt);
+        enablements.revoke(project, approval);
+        var outcome = accounting.settle(project, first, "deepseek-flash-context-peak-usd-2026-10-15",
+            new LiveTokenUsage(1000, 100, 500, 1100, 0));
+        assertThat(outcome.state()).isEqualTo("SETTLED");
+        assertThat(outcome.actualMicrousd()).isEqualTo(273);
+        assertThat(legacy.amount("PROJECT", project, "reserved_microusd")).isZero();
+        assertThat(legacy.amount("PROJECT", project, "spent_microusd")).isEqualTo(273);
+        assertThat(ledger.attempt(project, first).orElseThrow().priceVersion()).isEqualTo("deepseek-flash-context-peak-usd-2026-10-15");
+        assertThat(storedEnablements.find(project, approval).orElseThrow().acknowledgement().schemaVersion()).isEqualTo("0.3.0");
+    }
+
+    private LiveBatchView historicalContextBatch() throws Exception {
+        var current = ledger.batch(project, batch(700000).id()).orElseThrow();
+        ObjectNode input = mapper.valueToTree(storedEnablements.find(project, approval).orElseThrow().acknowledgement());
+        input.put("schemaVersion", "0.3.0").put("mappingSnapshot", "deepseek-v4.1-flash-2026-10-15");
+        approval = enablements.approve(project, mapper.treeToValue(input, PersonalEnablementInput.class)).id();
+        enablements.update(project, enablements.settings(project).revision(), new AgentSettingsUpdate(true, approval));
+        var before = current.view();
+        var historical = new LiveBatchView(UUID.randomUUID(), project, approval, before.approvedBy(), before.approvedAt(),
+            before.manifestSha256(), before.expiresAt(), before.maxRequests(), before.maxCostMicrousd(), false);
+        new org.springframework.transaction.support.TransactionTemplate(manager).executeWithoutResult(status ->
+            ledger.insert(new LiveAccountingStore.Batch(historical, current.deploymentId(), current.inventoryId(),
+                current.manifest(), current.inventoryProof(), current.costPolicyVersion())));
+        return historical;
     }
 
     @Test void newVersionRequestCanBeClaimedExactlyOnceWithoutTreatingItAsLegacy() {

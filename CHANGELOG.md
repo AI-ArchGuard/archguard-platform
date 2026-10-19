@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — approved 1017 mapping
+
+- Add producer acknowledgement Schema and settings/enablement API 0.4.0 with the explicit approved `DeepSeek-V4.1-Flash-1017` mapping, unchanged `deepseek-flash` request/response singleton and existing context price/limits.
+- Centralize current mapping checks for local availability, controlled runtime and context batch/create/reserve/pre-send admission. Preserve immutable 0.2/0.3 schemas, historical read/revocation and settlement by each attempt's original price. No migration, dependency, default-switch, deployment or real-call change; Web/Deploy main CI and fresh concrete runtime bindings remain required.
+
 ## Unreleased — personal batch execution read model
 
 - Add Project-authorized, no-store Batch API 0.3.0 execution observation for context-policy batches: exact immutable template slots, allocated request IDs, separate attempt/outcome/stop and accounting state in one SQL snapshot. Preserve legacy metadata reads, reject inconsistent history, and never expose inputs/secrets or infer retry/admission from absent records.

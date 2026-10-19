@@ -82,8 +82,8 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         legacy.requests = requests; legacy.links = links; legacy.accounting = accounting; legacy.ledger = ledger;
         legacy.prepare(); project = legacy.project; now = legacy.now; explanation = legacy.template;
         ObjectNode input = mapper.valueToTree(new AgentPersonalEnablementIntegrationTest().input());
-        input.put("schemaVersion", "0.3.0").put("priceCatalogVersion", LiveCostPolicy.CONTEXT_VERSION)
-            .put("mappingSnapshot", "deepseek-v4.1-flash-2026-10-15")
+        input.put("schemaVersion", "0.4.0").put("priceCatalogVersion", LiveCostPolicy.CONTEXT_VERSION)
+            .put("mappingSnapshot", "DeepSeek-V4.1-Flash-1017")
             .put("expiresAt", now.plusSeconds(86400).toString()).put("priceCatalogExpiresAt", now.plusSeconds(86400).toString());
         for (var source : input.path("sources")) ((ObjectNode) source).put("checkedAt", now.toString());
         approval = enablements.approve(project, mapper.treeToValue(input, PersonalEnablementInput.class)).id();

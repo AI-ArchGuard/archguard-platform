@@ -39,7 +39,7 @@ class AgentEnablementContractTest {
         var file = Path.of("openapi/agent-enablement-v1.json");
         JsonNode api = mapper.readTree(file.toFile());
         assertThat(api.path("openapi").asText()).isEqualTo("3.1.0");
-        assertThat(api.path("info").path("version").asText()).isEqualTo("0.3.0");
+        assertThat(api.path("info").path("version").asText()).isEqualTo("0.4.0");
         assertThat(api.path("x-archguard-request-body-max-bytes").asInt()).isEqualTo(8192);
         assertThat(api.path("paths").size()).isEqualTo(4);
         assertThat(api.at("/components/schemas/Settings/properties/enabled/default").asBoolean()).isFalse();
@@ -52,9 +52,11 @@ class AgentEnablementContractTest {
         assertThat(api.path("paths").path("/api/v1/projects/{projectId}/agent/settings").path("put").path("responses").has("428")).isTrue();
         assertThat(api.path("paths").path("/api/v1/projects/{projectId}/agent/settings").path("put").path("responses").has("412")).isTrue();
         resolve(api, api, file);
-        var schemaFile = Path.of("contracts/agent-personal-enablement-0.2.0.schema.json");
-        JsonNode body = mapper.readTree(schemaFile.toFile());
-        resolve(body, body, schemaFile);
+        for (String version : new String[] {"0.2.0", "0.3.0", "0.4.0"}) {
+            var schemaFile = Path.of("contracts/agent-personal-enablement-" + version + ".schema.json");
+            JsonNode body = mapper.readTree(schemaFile.toFile());
+            resolve(body, body, schemaFile);
+        }
     }
     private void resolve(JsonNode value, JsonNode root, Path file) throws Exception {
         if (value.isObject()) {
@@ -63,7 +65,8 @@ class AgentEnablementContractTest {
                 if (ref.startsWith("#/")) assertThat(root.at(ref.substring(1)).isMissingNode()).isFalse();
                 else {
                     assertThat(ref).isIn("../contracts/agent-personal-enablement-0.2.0.schema.json",
-                        "../contracts/agent-personal-enablement-0.3.0.schema.json");
+                        "../contracts/agent-personal-enablement-0.3.0.schema.json",
+                        "../contracts/agent-personal-enablement-0.4.0.schema.json");
                     assertThat(Files.isRegularFile(file.getParent().resolve(ref).normalize())).isTrue();
                 }
             }

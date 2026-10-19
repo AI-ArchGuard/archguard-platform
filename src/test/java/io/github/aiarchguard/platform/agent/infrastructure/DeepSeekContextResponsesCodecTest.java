@@ -79,6 +79,7 @@ class DeepSeekContextResponsesCodecTest {
 
     @Test void contextPolicyDoesNotRelaxEnvelopeModelStatusOrSizeValidation() throws Exception {
         reject(envelope(8001, 20, 0).put("model", "other-model"));
+        reject(envelope(8001, 20, 0).put("model", "DeepSeek-V4.1-Flash-1017"));
         reject(envelope(8001, 20, 0).put("status", "incomplete"));
         reject(envelope(8001, 20, 0).put("store", true));
         reject(envelope(8001, 20, 0).put("private-synthetic-field", "private-synthetic-value"));

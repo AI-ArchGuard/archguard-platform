@@ -89,8 +89,8 @@ class AgentEnablementService implements AgentEnablementOperations {
     private AgentSettingsView view(UUID project, AgentEnablementStore.Settings value) {
         String reason = !value.enabled() ? "PROJECT_DISABLED" : invalidity(approval(project, value.enablementId()));
         if (reason == null && !deploymentEnabled) reason = "DEPLOYMENT_DISABLED";
-        if (reason == null && (!runtime.available(project) || !LiveCostPolicy.CONTEXT_VERSION.equals(
-                approval(project, value.enablementId()).acknowledgement().priceCatalogVersion()))) reason = "LIVE_ADAPTER_NOT_READY";
+        if (reason == null && (!PersonalEnablementPolicy.currentMapping(approval(project, value.enablementId()).acknowledgement())
+                || !runtime.available(project))) reason = "LIVE_ADAPTER_NOT_READY";
         // Local availability does not spend, probe a credential, or replace batch/send authorization.
         return new AgentSettingsView(value.enabled(), value.revision(), value.enablementId(), reason == null, reason);
     }

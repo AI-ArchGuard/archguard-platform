@@ -51,6 +51,81 @@ class PersonalEnablementContextPolicyTest {
         assertThat(context.mappingSnapshot()).isEqualTo(CONTEXT_MAPPING);
     }
 
+    @Test void acceptsExplicitApproved1017AcknowledgementWithUnchangedAliasAndContextPrice() throws Exception {
+        PersonalEnablementInput approved = input(approved1017());
+        assertThatCode(() -> PersonalEnablementPolicy.validate(approved, NOW)).doesNotThrowAnyException();
+        assertThat(approved.schemaVersion()).isEqualTo("0.4.0");
+        assertThat(approved.mappingSnapshot()).isEqualTo("DeepSeek-V4.1-Flash-1017");
+        assertThat(approved.modelAlias()).isEqualTo("deepseek-flash");
+        assertThat(approved.allowedResponseModels()).containsExactly("deepseek-flash");
+        assertThat(approved.priceCatalogVersion()).isEqualTo("deepseek-flash-context-peak-usd-2026-10-15");
+    }
+
+    @Test void approved1017CannotBeMixedWithOlderSchemasMappingsPricesOrResponseModelNames() throws Exception {
+        for (String schema : List.of("0.2.0", "0.3.0")) rejected(approved1017().put("schemaVersion", schema));
+        for (String mapping : List.of(LEGACY_MAPPING, CONTEXT_MAPPING, "deepseek-v4.1-flash-1017", "deepseek-flash")) {
+            rejected(approved1017().put("mappingSnapshot", mapping));
+        }
+        rejected(approved1017().put("priceCatalogVersion", LEGACY_PRICE));
+        rejected(approved1017().put("modelAlias", "DeepSeek-V4.1-Flash-1017"));
+        for (List<String> models : List.of(List.<String>of(), List.of("DeepSeek-V4.1-Flash-1017"),
+                List.of("deepseek-flash", "DeepSeek-V4.1-Flash-1017"), List.of("deepseek-flash", "deepseek-flash"))) {
+            ObjectNode body = approved1017();
+            ArrayNode allowed = body.putArray("allowedResponseModels");
+            models.forEach(allowed::add);
+            rejected(body);
+        }
+    }
+
+    @Test void approved1017KeepsOriginalRiskDataSourceExpiryAndCredentialGates() throws Exception {
+        rejected(approved1017().put("riskAccepted", false));
+        rejected(approved1017().put("scope", "ENTERPRISE"));
+        rejected(approved1017().put("dataScope", "PERSONAL_DAILY_USE"));
+        rejected(approved1017().put("expiresAt", NOW.toString()));
+        rejected(approved1017().put("priceCatalogExpiresAt", NOW.toString()));
+        rejected(approved1017().put("expiresAt", NOW.plusSeconds(7 * 86400L + 1).toString()));
+        rejected(approved1017().put("priceCatalogExpiresAt", NOW.plusSeconds(7 * 86400L + 1).toString()));
+        rejected(approved1017().put("priceCatalogExpiresAt", NOW.plusSeconds(1).toString()));
+        rejected(approved1017().put("secretCheckRef", "sk-synthetic-not-a-key"));
+        rejected(approved1017().put("networkCheckRef", ""));
+        ObjectNode missingCredential = approved1017(); missingCredential.remove("credentialVersion"); rejected(missingCredential);
+        ObjectNode unknowns = approved1017(); unknowns.putArray("unknowns"); rejected(unknowns);
+        ObjectNode revocations = approved1017(); revocations.putArray("revocationConditions"); rejected(revocations);
+        ObjectNode sources = approved1017(); sources.putArray("sources"); rejected(sources);
+        ObjectNode stale = approved1017(); ((ObjectNode) stale.path("sources").get(0))
+            .put("checkedAt", NOW.minusSeconds(7 * 86400L + 1).toString()); rejected(stale);
+        ObjectNode mismatch = approved1017(); ((ObjectNode) mismatch.path("sources").get(0))
+            .put("url", "https://api-docs.deepseek.com/quick_start/pricing/"); rejected(mismatch);
+    }
+
+    @Test void approved1017ProducerSchemaIsStrictAndIsolatesAllThreeImmutablePairings() throws Exception {
+        Schema current = fileSchema("contracts/agent-personal-enablement-0.4.0.schema.json");
+        Schema previous = fileSchema("contracts/agent-personal-enablement-0.3.0.schema.json");
+        Schema legacy = fileSchema("contracts/agent-personal-enablement-0.2.0.schema.json");
+        valid(current, approved1017()); invalid(current, context()); invalid(current, legacy());
+        invalid(previous, approved1017()); valid(previous, context());
+        invalid(legacy, approved1017()); valid(legacy, legacy());
+        JsonNode definition = json("contracts/agent-personal-enablement-0.4.0.schema.json");
+        assertThat(names(definition.path("properties"))).containsExactlyInAnyOrder(recordNames(PersonalEnablementInput.class));
+        assertThat(strings(definition.path("required"))).containsExactlyInAnyOrder(recordNames(PersonalEnablementInput.class));
+        for (String field : List.of("apiKey", "inputTokenLimit", "maxCostMicrousd", "policyVersion", "endpoint", "approvedBy")) {
+            invalid(current, approved1017().put(field, "synthetic-forbidden-field"));
+        }
+        for (String field : recordNames(PersonalEnablementInput.class)) {
+            ObjectNode missing = approved1017(); missing.remove(field); invalid(current, missing);
+        }
+        for (String version : List.of("0.2.0", "0.3.0")) invalid(current, approved1017().put("schemaVersion", version));
+        for (String mapping : List.of(LEGACY_MAPPING, CONTEXT_MAPPING, "deepseek-v4.1-flash-1017")) {
+            invalid(current, approved1017().put("mappingSnapshot", mapping));
+        }
+        invalid(current, approved1017().put("priceCatalogVersion", LEGACY_PRICE));
+        invalid(current, approved1017().put("modelAlias", "DeepSeek-V4.1-Flash-1017"));
+        invalid(current, approved1017().put("riskAccepted", false));
+        ObjectNode models = approved1017(); models.putArray("allowedResponseModels").add("DeepSeek-V4.1-Flash-1017"); invalid(current, models);
+        ObjectNode extraModel = approved1017(); extraModel.withArray("allowedResponseModels").add("DeepSeek-V4.1-Flash-1017"); invalid(current, extraModel);
+        ObjectNode extraSource = approved1017(); ((ObjectNode) extraSource.path("sources").get(0)).put("apiKey", "synthetic-forbidden"); invalid(current, extraSource);
+    }
+
     @Test void schemaPriceAndMappingMustMatchExactlyWithoutHybridUpgrade() throws Exception {
         for (ObjectNode original : List.of(legacy(), context())) {
             boolean isLegacy = original.path("schemaVersion").asText().equals("0.2.0");
@@ -143,11 +218,11 @@ class PersonalEnablementContextPolicyTest {
     @Test void apiAcceptsExplicitOldAndNewContractsWithDefaultClosedRuntimeAvailability() throws Exception {
         JsonNode enablement = json("openapi/agent-enablement-v1.json");
         JsonNode batches = json("openapi/agent-batches-v1.json");
-        assertThat(enablement.at("/info/version").asText()).isEqualTo("0.3.0");
+        assertThat(enablement.at("/info/version").asText()).isEqualTo("0.4.0");
         assertThat(batches.at("/info/version").asText()).isEqualTo("0.3.0");
         JsonNode acknowledgementInput = enablement.path("paths").path("/api/v1/projects/{projectId}/agent/enablements")
             .at("/post/requestBody/content/application~1json/schema/oneOf");
-        assertThat(refs(acknowledgementInput)).containsExactlyInAnyOrder("../contracts/agent-personal-enablement-0.2.0.schema.json", "../contracts/agent-personal-enablement-0.3.0.schema.json");
+        assertThat(refs(acknowledgementInput)).containsExactlyInAnyOrder("../contracts/agent-personal-enablement-0.2.0.schema.json", "../contracts/agent-personal-enablement-0.3.0.schema.json", "../contracts/agent-personal-enablement-0.4.0.schema.json");
         JsonNode batchInput = batches.path("paths").path("/api/v1/projects/{projectId}/agent/batches")
             .at("/post/requestBody/content/application~1json/schema/oneOf");
         assertThat(refs(batchInput)).containsExactlyInAnyOrder("../contracts/agent-live-batch-0.1.0.schema.json", "../contracts/agent-live-batch-0.2.0.schema.json");
@@ -177,6 +252,7 @@ class PersonalEnablementContextPolicyTest {
 
     private ObjectNode legacy() { return acknowledgement("0.2.0", LEGACY_PRICE, LEGACY_MAPPING); }
     private ObjectNode context() { return acknowledgement("0.3.0", CONTEXT_PRICE, CONTEXT_MAPPING); }
+    private ObjectNode approved1017() { return acknowledgement("0.4.0", CONTEXT_PRICE, "DeepSeek-V4.1-Flash-1017"); }
     private ObjectNode acknowledgement(String version, String price, String mapping) {
         ObjectNode body = mapper.createObjectNode().put("schemaVersion", version).put("scope", "PERSONAL")
             .put("accountRef", "synthetic-account").put("deploymentRef", "synthetic-deployment")

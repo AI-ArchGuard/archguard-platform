@@ -51,7 +51,16 @@ final class PersonalEnablementPolicy {
         return ("0.2.0".equals(value.schemaVersion()) && PRICE_VERSION.equals(value.priceCatalogVersion())
                 && "deepseek-v4.1-flash-2026-10-06".equals(value.mappingSnapshot()))
             || ("0.3.0".equals(value.schemaVersion()) && CONTEXT_PRICE_VERSION.equals(value.priceCatalogVersion())
-                && "deepseek-v4.1-flash-2026-10-15".equals(value.mappingSnapshot()));
+                && "deepseek-v4.1-flash-2026-10-15".equals(value.mappingSnapshot()))
+            || currentMapping(value);
+    }
+    /** Explicit current acknowledgement only; historical prices and aliases cannot upgrade a mapping. */
+    static boolean currentMapping(PersonalEnablementInput value) {
+        return value != null && "0.4.0".equals(value.schemaVersion())
+            && "DeepSeek-V4.1-Flash-1017".equals(value.mappingSnapshot())
+            && CONTEXT_PRICE_VERSION.equals(value.priceCatalogVersion())
+            && "deepseek-flash".equals(value.modelAlias())
+            && java.util.List.of("deepseek-flash").equals(value.allowedResponseModels());
     }
     private static boolean ref(String value) {
         return value != null && value.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}") && !value.startsWith("sk-");

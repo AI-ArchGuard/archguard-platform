@@ -350,6 +350,10 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     }
     private void validateApproval(AgentEnablementStore.Approval value, LongSupplier remainingNanos) {
         var input = value.acknowledgement();
+        // Context-policy admission is current-only. Historical records and incurred settlement remain unchanged.
+        if (LiveCostPolicy.isContext(input.priceCatalogVersion()) && !PersonalEnablementPolicy.currentMapping(input)) {
+            throw new AgentEnablementInvalidStateException();
+        }
         var credential = remainingNanos == null ? credentials.current() : credentials.current(remainingNanos);
         Instant now = Instant.now(clock);
         if (!deployment().equals(value.deploymentId()) || value.revokedAt() != null || !now.isBefore(input.expiresAt())

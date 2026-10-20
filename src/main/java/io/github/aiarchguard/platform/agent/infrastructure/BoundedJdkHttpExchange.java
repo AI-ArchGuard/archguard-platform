@@ -119,7 +119,7 @@ final class BoundedJdkHttpExchange implements DeepSeekHttpTransport.Exchange, Au
             if (cancelled) return;
             for (ByteBuffer buffer : buffers) {
                 if (buffer.remaining() > DeepSeekResponsesCodec.MAX_RESPONSE_BYTES - bytes.size()) {
-                    result.completeExceptionally(new DeepSeekTransportFailure("OUTPUT_INVALID"));
+                    result.completeExceptionally(new DeepSeekTransportFailure(DeepSeekResponseRejection.Reason.HTTP_BODY_LIMIT));
                     cancel(); return;
                 }
                 byte[] chunk = new byte[buffer.remaining()];

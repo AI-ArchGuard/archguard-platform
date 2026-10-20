@@ -12,9 +12,12 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Unregistered fixed-protocol component; not an AgentModelPort or a credential/egress policy. */
 final class DeepSeekLiveResponseClient implements LiveResponsePort {
+    private static final Logger LOGGER = LoggerFactory.getLogger(DeepSeekLiveResponseClient.class);
     private final DeepSeekResponsesCodec codec;
     private final DeepSeekHttpTransport transport;
     private final ObjectMapper outputMapper;
@@ -44,7 +47,7 @@ final class DeepSeekLiveResponseClient implements LiveResponsePort {
             var accounting = codec.decodeAccounting(response, approvedModelIds, priceVersion);
             // Provider identifiers are untrusted metadata too, not a safe channel for echoed credentials.
             if (sensitiveIdentifier(accounting.responseId(), apiKey) || sensitiveIdentifier(accounting.actualModelId(), apiKey)) {
-                throw new CallFailure("OUTPUT_INVALID");
+                throw new DeepSeekResponseRejection(DeepSeekResponseRejection.Reason.PROVIDER_IDENTIFIER_SENSITIVE);
             }
             var usage = new LiveTokenUsage(accounting.inputTokens(), accounting.outputTokens(), accounting.cachedInputTokens(),
                 accounting.inputTokens() + accounting.outputTokens(), 0);
@@ -53,21 +56,36 @@ final class DeepSeekLiveResponseClient implements LiveResponsePort {
                 raw = codec.decodeOutput(accounting);
                 // JSON escapes can hide an exact credential echo until it becomes visible business text.
                 if (echoesCurrentCredential(raw, apiKey)) {
+                    rejected(DeepSeekResponseRejection.Reason.OUTPUT_CREDENTIAL_ECHO);
                     return new Reply(null, "OUTPUT_INVALID", usage, accounting.responseId(), accounting.actualModelId());
                 }
             }
             catch (IllegalArgumentException rejectedOutput) {
+                rejected(rejectedOutput instanceof DeepSeekResponseRejection classified
+                    ? classified.reason() : DeepSeekResponseRejection.Reason.UNCLASSIFIED);
                 return new Reply(null, "OUTPUT_INVALID", usage, accounting.responseId(), accounting.actualModelId());
             }
             // A JSON object remains untrusted: the execution core owns complete business/citation validation.
             return new Reply(raw, null, usage, accounting.responseId(), accounting.actualModelId());
         } catch (DeepSeekTransportFailure unavailable) {
+            if ("OUTPUT_INVALID".equals(unavailable.getMessage())) rejected(unavailable.reason());
             throw new CallFailure(unavailable.getMessage());
+        } catch (DeepSeekResponseRejection invalidAccounting) {
+            rejected(invalidAccounting.reason());
+            throw new CallFailure("OUTPUT_INVALID");
         } catch (RuntimeException invalidAccounting) {
+            rejected(DeepSeekResponseRejection.Reason.UNCLASSIFIED);
             throw new CallFailure("OUTPUT_INVALID");
         } finally {
             if (response != null) Arrays.fill(response, (byte) 0);
         }
+    }
+
+    private static void rejected(DeepSeekResponseRejection.Reason reason) {
+        // Emit only on the synchronous caller, whose persisted trace is already isolated by TraceTaskScope.
+        LOGGER.atWarn().addKeyValue("event", "agent.provider.response.rejected")
+            .addKeyValue("stage", reason.stage()).addKeyValue("reason", reason.name())
+            .log("Agent provider response rejected");
     }
 
     private static boolean sensitiveIdentifier(String value, String apiKey) {
@@ -93,7 +111,7 @@ final class DeepSeekLiveResponseClient implements LiveResponsePort {
             return false;
         } catch (Exception rejectedOutput) {
             // Never expose a parser exception, the credential, or the rejected business body.
-            throw new IllegalArgumentException("Invalid DeepSeek business output");
+            throw new DeepSeekResponseRejection(DeepSeekResponseRejection.Reason.OUTPUT_JSON);
         }
     }
 }

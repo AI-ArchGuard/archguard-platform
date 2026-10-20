@@ -1,5 +1,7 @@
 package io.github.aiarchguard.platform.agent.infrastructure;
 
+import static io.github.aiarchguard.platform.agent.infrastructure.DeepSeekResponseRejection.Reason.*;
+
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -76,80 +78,96 @@ final class DeepSeekResponsesCodec {
     }
 
     Accounting decodeAccounting(byte[] bytes, Set<String> approvedResponseModels, String priceVersion) {
-        if (bytes == null || bytes.length == 0 || bytes.length > MAX_RESPONSE_BYTES
-                || approvedResponseModels == null || approvedResponseModels.isEmpty()
+        if (bytes == null || bytes.length == 0) throw rejected(HTTP_BODY_EMPTY);
+        if (bytes.length > MAX_RESPONSE_BYTES) throw rejected(HTTP_BODY_LIMIT);
+        if (approvedResponseModels == null || approvedResponseModels.isEmpty()
                 || !LiveCostPolicy.supported(priceVersion)) throw invalid();
         int inputLimit = LiveCostPolicy.isContext(priceVersion) ? LiveCostPolicy.CONTEXT_INPUT_LIMIT : 8000;
         try {
-            JsonNode root = mapper.readTree(bytes);
-            fields(root, ENVELOPE_FIELDS);
-            if (!"response".equals(text(root, "object")) || !"completed".equals(text(root, "status"))) throw invalid();
-            String id = text(root, "id"), model = text(root, "model");
-            if (!id.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-                    || !approvedResponseModels.contains(model)) throw invalid();
+            JsonNode root;
+            try { root = mapper.readTree(bytes); }
+            catch (Exception failure) { throw rejected(RESPONSE_JSON); }
+            fields(root, ENVELOPE_FIELDS, DeepSeekResponseRejection.Reason.ENVELOPE_FIELDS);
+            if (!"response".equals(text(root, "object", ENVELOPE_OBJECT))) throw rejected(ENVELOPE_OBJECT);
+            if (!"completed".equals(text(root, "status", ENVELOPE_STATUS))) throw rejected(ENVELOPE_STATUS);
+            String id = text(root, "id", ENVELOPE_IDENTIFIER), model = text(root, "model", ENVELOPE_MODEL);
+            if (!id.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) throw rejected(ENVELOPE_IDENTIFIER);
+            if (!approvedResponseModels.contains(model)) throw rejected(ENVELOPE_MODEL);
             for (String field : Set.of("error", "incomplete_details", "previous_response_id")) {
-                if (root.hasNonNull(field)) throw invalid();
+                if (root.hasNonNull(field)) throw rejected(ENVELOPE_ERROR);
             }
-            if (root.has("store") && (!root.get("store").isBoolean() || root.get("store").booleanValue())) throw invalid();
-            if (root.has("tools") && (!root.get("tools").isArray() || !root.get("tools").isEmpty())) throw invalid();
-            if (root.has("background") && (!root.get("background").isBoolean() || root.get("background").booleanValue())) throw invalid();
+            if (root.has("store") && (!root.get("store").isBoolean() || root.get("store").booleanValue())) throw rejected(ENVELOPE_STORE);
+            if (root.has("tools") && (!root.get("tools").isArray() || !root.get("tools").isEmpty())) throw rejected(ENVELOPE_TOOLS);
+            if (root.has("background") && (!root.get("background").isBoolean() || root.get("background").booleanValue())) throw rejected(ENVELOPE_BACKGROUND);
             JsonNode usage = root.path("usage");
-            fields(usage, Set.of("input_tokens", "output_tokens", "total_tokens", "input_tokens_details", "output_tokens_details"));
-            int input = count(usage, "input_tokens", inputLimit), out = count(usage, "output_tokens", 1500);
-            if (count(usage, "total_tokens", inputLimit + 1500) != (long) input + out) throw invalid();
+            fields(usage, Set.of("input_tokens", "output_tokens", "total_tokens", "input_tokens_details", "output_tokens_details"), ACCOUNTING_FIELDS);
+            int input = count(usage, "input_tokens", inputLimit, ACCOUNTING_TOKENS);
+            int out = count(usage, "output_tokens", 1500, ACCOUNTING_TOKENS);
+            if (count(usage, "total_tokens", inputLimit + 1500, ACCOUNTING_TOKENS) != (long) input + out) throw rejected(ACCOUNTING_TOKENS);
             JsonNode inputDetails = usage.path("input_tokens_details"), outputDetails = usage.path("output_tokens_details");
-            fields(inputDetails, Set.of("cached_tokens"));
-            fields(outputDetails, Set.of("reasoning_tokens"));
-            int cached = count(inputDetails, "cached_tokens", input);
-            if (count(outputDetails, "reasoning_tokens", 0) != 0) throw invalid();
+            fields(inputDetails, Set.of("cached_tokens"), ACCOUNTING_FIELDS);
+            fields(outputDetails, Set.of("reasoning_tokens"), ACCOUNTING_FIELDS);
+            int cached = count(inputDetails, "cached_tokens", input, ACCOUNTING_CACHE);
+            if (count(outputDetails, "reasoning_tokens", 0, ACCOUNTING_REASONING) != 0) throw rejected(ACCOUNTING_REASONING);
             return new Accounting(root, input, out, cached, id, model);
+        } catch (DeepSeekResponseRejection classified) {
+            throw classified;
         } catch (Exception failure) {
             // No cause: parser/provider text can contain secrets or complete untrusted bodies.
-            throw invalid();
+            throw rejected(UNCLASSIFIED);
         }
     }
 
     String decodeOutput(Accounting accounting) {
         try {
-            if (accounting == null) throw invalid();
+            if (accounting == null) throw rejected(OUTPUT_STRUCTURE);
             JsonNode output = accounting.root().path("output");
-            if (!output.isArray() || output.size() != 1) throw invalid();
+            if (!output.isArray() || output.size() != 1) throw rejected(OUTPUT_STRUCTURE);
             JsonNode message = output.get(0);
-            fields(message, Set.of("id", "type", "role", "status", "content"));
-            if (!"message".equals(text(message, "type")) || !"assistant".equals(text(message, "role"))
-                    || !"completed".equals(text(message, "status"))) throw invalid();
+            fields(message, Set.of("id", "type", "role", "status", "content"), OUTPUT_STRUCTURE);
+            if (!"message".equals(text(message, "type", OUTPUT_STRUCTURE)) || !"assistant".equals(text(message, "role", OUTPUT_STRUCTURE))
+                    || !"completed".equals(text(message, "status", OUTPUT_STRUCTURE))) throw rejected(OUTPUT_STRUCTURE);
             JsonNode content = message.path("content");
-            if (!content.isArray() || content.size() != 1) throw invalid();
+            if (!content.isArray() || content.size() != 1) throw rejected(OUTPUT_STRUCTURE);
             JsonNode item = content.get(0);
-            fields(item, Set.of("type", "text", "annotations", "logprobs"));
-            if (!"output_text".equals(text(item, "type"))) throw invalid();
+            fields(item, Set.of("type", "text", "annotations", "logprobs"), OUTPUT_STRUCTURE);
+            if (!"output_text".equals(text(item, "type", OUTPUT_STRUCTURE))) throw rejected(OUTPUT_STRUCTURE);
             for (String field : Set.of("annotations", "logprobs")) {
-                if (item.has(field) && (!item.get(field).isArray() || !item.get(field).isEmpty())) throw invalid();
+                if (item.has(field) && (!item.get(field).isArray() || !item.get(field).isEmpty())) throw rejected(OUTPUT_STRUCTURE);
             }
-            String raw = text(item, "text");
-            if (!mapper.readTree(raw).isObject()) throw invalid();
+            String raw = text(item, "text", OUTPUT_STRUCTURE);
+            try {
+                JsonNode business = mapper.readTree(raw);
+                if (business == null || !business.isObject()) throw rejected(OUTPUT_JSON);
+            } catch (Exception failure) { throw rejected(OUTPUT_JSON); }
             return raw;
+        } catch (DeepSeekResponseRejection classified) {
+            throw classified;
         } catch (Exception failure) {
             // No cause: parser/provider text can contain secrets or complete untrusted bodies.
-            throw invalid();
+            throw rejected(UNCLASSIFIED);
         }
     }
 
-    private static int count(JsonNode node, String field, int max) {
+    private static int count(JsonNode node, String field, int max, DeepSeekResponseRejection.Reason reason) {
         JsonNode value = node.path(field);
-        if (!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 0 || value.intValue() > max) throw invalid();
+        if (!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 0 || value.intValue() > max) throw rejected(reason);
         return value.intValue();
     }
 
-    private static String text(JsonNode node, String field) {
+    private static String text(JsonNode node, String field, DeepSeekResponseRejection.Reason reason) {
         JsonNode value = node.path(field);
-        if (!value.isTextual() || value.textValue().isBlank()) throw invalid();
+        if (!value.isTextual() || value.textValue().isBlank()) throw rejected(reason);
         return value.textValue();
     }
 
-    private static void fields(JsonNode node, Set<String> allowed) {
-        if (!node.isObject()) throw invalid();
-        node.fieldNames().forEachRemaining(field -> { if (!allowed.contains(field)) throw invalid(); });
+    private static void fields(JsonNode node, Set<String> allowed, DeepSeekResponseRejection.Reason reason) {
+        if (node == null || !node.isObject()) throw rejected(reason);
+        node.fieldNames().forEachRemaining(field -> { if (!allowed.contains(field)) throw rejected(reason); });
+    }
+
+    private static DeepSeekResponseRejection rejected(DeepSeekResponseRejection.Reason reason) {
+        return new DeepSeekResponseRejection(reason);
     }
 
     private static IllegalArgumentException invalid() {

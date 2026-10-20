@@ -23,10 +23,14 @@ final class DeepSeekHttpTransport {
                 .header("Accept", "application/json").POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
             Response response = exchange.exchange(request, timeout);
             if (response == null || response.status() != 200) throw new DeepSeekTransportFailure("MODEL_UNAVAILABLE");
-            if (response.contentType() == null || !response.contentType().matches("(?i)application/json(?:\\s*;\\s*charset=utf-8)?")
-                    || response.body() == null || response.body().length == 0
-                    || response.body().length > DeepSeekResponsesCodec.MAX_RESPONSE_BYTES) {
-                throw new DeepSeekTransportFailure("OUTPUT_INVALID");
+            if (response.contentType() == null || !response.contentType().matches("(?i)application/json(?:\\s*;\\s*charset=utf-8)?")) {
+                throw new DeepSeekTransportFailure(DeepSeekResponseRejection.Reason.HTTP_CONTENT_TYPE);
+            }
+            if (response.body() == null || response.body().length == 0) {
+                throw new DeepSeekTransportFailure(DeepSeekResponseRejection.Reason.HTTP_BODY_EMPTY);
+            }
+            if (response.body().length > DeepSeekResponsesCodec.MAX_RESPONSE_BYTES) {
+                throw new DeepSeekTransportFailure(DeepSeekResponseRejection.Reason.HTTP_BODY_LIMIT);
             }
             return response.body();
         } catch (DeepSeekTransportFailure safe) {

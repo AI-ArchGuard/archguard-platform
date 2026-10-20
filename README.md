@@ -37,6 +37,8 @@ Platform `v0.4.0` 在 `v0.3.0` MVP 控制面之上交付持续治理闭环。当
 
 [批准的 1017 映射跟进](docs/technical-design/v0.5-agent-approved-1017-mapping.md)新增生产者确认输入 0.4.0 与设置/确认 API 0.4.0：显式绑定 `DeepSeek-V4.1-Flash-1017`，请求及唯一允许的响应模型仍为 `deepseek-flash`，原上下文价格与费用/次数限制不变。旧 0.2/0.3 确认保持可读、可撤销及历史结算，但不能授权配置 live runtime 新发送；旧映射本地可用状态为 false。默认出口继续关闭，仍需后续 Web、Deploy 的兼容候选/main CI 和新鲜具体运行绑定，本增量不代表真实两次验收或阶段退出。
 
+[脱敏响应拒绝诊断](docs/technical-design/v0.5-agent-safe-response-diagnostics.md)为离线排查增加固定内部阶段/原因日志，关联已隔离的 traceId，不记录正文、字段值或凭据。公开错误、严格校验、费用及停批语义不变；无法还原先前已丢弃的响应，不代表真实模型故障已修复，也不批准重试、部署或阶段关闭。
+
 个人批次的[执行只读视图](docs/technical-design/v0.5-agent-batch-execution-read.md)由 Batch API 0.3.0 增量提供，供后续 Web 在刷新或响应丢失后找回唯一模板请求、尝试与结算记录。它不是发送许可或供应商账单，不会读取 Key、探测模型、预留费用、补发或修复历史；旧批次仍通过原元数据 GET 读取。默认开关及后续真实验收/发布关卡不变。
 
 个人真实请求的[端到端接线设计](docs/technical-design/v0.5-agent-personal-live-runtime.md)和[独立 live API 0.1.0](openapi/agent-live-v1.json)复用官方托管 DeepSeek API，**无需部署模型**。浏览器只在现有 owner 凭据页面短暂输入 Key，后端加密托管并调用固定官方目标，不让浏览器直连提供方。原 synthetic 请求接口不改变语义。

@@ -114,6 +114,59 @@ class ControlledSyntheticBatchInventoryTest {
         assertThat(resolve()).isEmpty();
     }
 
+    @Test void freshSiblingGenerationCannotRenewTheOldFileAndExpiredOtherEntryPoisonsTheNewFile() throws Exception {
+        var time = new java.util.concurrent.atomic.AtomicReference<>(NOW);
+        Clock clock = new Clock() {
+            @Override public java.time.ZoneId getZone() { return ZoneOffset.UTC; }
+            @Override public Clock withZone(java.time.ZoneId zone) { return Clock.fixed(instant(), zone); }
+            @Override public Instant instant() { return time.get(); }
+        };
+        var oldProvider = new ControlledSyntheticBatchInventory(environment, mapper, clock);
+        var oldProof = oldProvider.resolve(PROJECT, INVENTORY, DIGEST).orElseThrow();
+        byte[] oldBytes = Files.readAllBytes(file);
+        Object oldPermissions = permissions(file), directoryPermissions = permissions(directory);
+        time.set(NOW.plusSeconds(601));
+        assertThat(oldProvider.resolve(PROJECT, INVENTORY, DIGEST)).isEmpty();
+
+        UUID newInventory = UUID.fromString("44444444-4444-4444-8444-444444444444");
+        Path sibling = directory.resolve("inventory-generation-2.json");
+        var fresh = document();
+        ((ObjectNode) fresh.path("entries").get(0)).put("inventoryId", newInventory.toString())
+            .put("reviewedAt", time.get().toString()).put("expiresAt", time.get().plusSeconds(600).toString());
+        Files.write(sibling, mapper.writeValueAsBytes(fresh)); restrict(sibling, false);
+        var newEnvironment = new MockEnvironment().withProperty("archguard.agent.synthetic-inventory.enabled", "true")
+            .withProperty("archguard.agent.synthetic-inventory.file", sibling.toString())
+            .withProperty("archguard.agent.credentials.deployment-id", DEPLOYMENT.toString());
+        newEnvironment.setActiveProfiles("local-compose");
+        var newProvider = new ControlledSyntheticBatchInventory(newEnvironment, mapper, clock);
+        var newProof = newProvider.resolve(PROJECT, newInventory, DIGEST).orElseThrow();
+        assertThat(newProof.fileSha256()).isNotEqualTo(oldProof.fileSha256());
+        assertThat(newProof.fixtureSetVersion()).isEqualTo(oldProof.fixtureSetVersion());
+        assertThat(newProof.fixtureArtifactSha256()).isEqualTo(oldProof.fixtureArtifactSha256());
+        assertThat(newProof.reviewedAt()).isEqualTo(NOW.plusSeconds(601));
+        assertThat(newProof.expiresAt()).isEqualTo(NOW.plusSeconds(1201));
+        assertThat(newProvider.resolve(PROJECT, INVENTORY, DIGEST)).isEmpty();
+        assertThat(oldProvider.resolve(PROJECT, INVENTORY, DIGEST)).isEmpty();
+
+        // The valid matching entry cannot mask an expired, nonmatching inventory entry.
+        ((com.fasterxml.jackson.databind.node.ArrayNode) fresh.path("entries")).add(entry(INVENTORY));
+        Files.write(sibling, mapper.writeValueAsBytes(fresh));
+        assertThat(newProvider.resolve(PROJECT, newInventory, DIGEST)).isEmpty();
+        assertThat(oldProvider.resolve(PROJECT, INVENTORY, DIGEST)).isEmpty();
+        assertThat(Files.readAllBytes(file)).containsExactly(oldBytes);
+        assertThat(permissions(file)).isEqualTo(oldPermissions);
+        assertThat(permissions(directory)).isEqualTo(directoryPermissions);
+    }
+
+    @Test void acceptsExactly24HoursOfReviewValidityButRejectsOneSecondMore() throws Exception {
+        var document = document();
+        var entry = (ObjectNode) document.path("entries").get(0);
+        entry.put("reviewedAt", NOW.toString()).put("expiresAt", NOW.plusSeconds(86400).toString());
+        write(document); assertThat(resolve()).isPresent();
+        entry.put("expiresAt", NOW.plusSeconds(86401).toString());
+        write(document); assertThat(resolve()).isEmpty();
+    }
+
     @Test void parsesOnlyOneStrictBoundedObject() throws Exception {
         String valid = mapper.writeValueAsString(document());
         Files.writeString(file, valid + " ".repeat(32768 - valid.getBytes(StandardCharsets.UTF_8).length));
@@ -225,6 +278,15 @@ class ControlledSyntheticBatchInventoryTest {
     }
     private void write(ObjectNode document) throws Exception {
         Files.write(file, mapper.writeValueAsBytes(document)); restrict(file, false);
+    }
+    private Object permissions(Path path) throws Exception {
+        var posix = Files.getFileAttributeView(path, PosixFileAttributeView.class);
+        if (posix != null) {
+            var attributes = posix.readAttributes();
+            return List.of(attributes.owner(), attributes.group(), attributes.permissions());
+        }
+        var acl = Files.getFileAttributeView(path, AclFileAttributeView.class);
+        return List.of(acl.getOwner(), acl.getAcl());
     }
     private void restrict(Path path, boolean directory) throws Exception {
         if (Files.getFileAttributeView(path, PosixFileAttributeView.class) != null) {

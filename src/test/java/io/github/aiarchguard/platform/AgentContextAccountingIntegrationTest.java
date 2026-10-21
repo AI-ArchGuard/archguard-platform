@@ -239,6 +239,122 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThatThrownBy(() -> accounting.reserve(project, batch.id(), summary, second)).isInstanceOf(AgentEnablementInvalidStateException.class);
     }
 
+    @Test void freshInventoryAndBatchPreserveExpiredRevokedUnknownHistoryAndReserveSeparately() {
+        var oldBatch = batch(700000);
+        UUID oldRequest = insert(oldBatch.id(), explanation, "FINDING_EXPLANATION", true);
+        assertThat(accounting.reserve(project, oldBatch.id(), explanation, oldRequest).reservedMicrousd()).isEqualTo(316373);
+        assertThat(accounting.unknown(project, oldRequest).state()).isEqualTo("UNKNOWN");
+        assertThat(accounting.revoke(project, oldBatch.id(), "http://localhost:8083", false).revoked()).isTrue();
+        var oldStored = ledger.batch(project, oldBatch.id()).orElseThrow();
+        var oldHistory = batchHistory(oldBatch.id(), oldRequest);
+        oldHistory.forEach((table, rows) -> assertThat(rows).as(table).hasSize(1));
+        var oldAudit = auditRows();
+        assertThat(oldAudit).isNotEmpty();
+        var settings = rows("agent.project_settings", "project_id", project);
+        var acknowledgement = rows("agent.personal_enablements", "id", approval);
+        assertThat(settings).hasSize(1);
+        assertThat(acknowledgement).hasSize(1);
+        var credential = AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE.get();
+        var oldAttempt = ledger.attempt(project, oldRequest).orElseThrow();
+        assertThat(oldAttempt.reservation()).isEqualTo(316373);
+        assertThat(oldAttempt.outcome()).isEqualTo("UNKNOWN");
+        assertThat(oldAttempt.actual()).isNull();
+        assertThat(stopCode(oldBatch.id())).isEqualTo("OUTPUT_INVALID");
+
+        Instant oldTime = now, freshTime = now.plusSeconds(3601);
+        AgentPersonalEnablementIntegrationTest.TIME.set(freshTime);
+        try {
+            assertThat(freshTime).isAfter(oldBatch.expiresAt()).isBefore(
+                storedEnablements.find(project, approval).orElseThrow().acknowledgement().expiresAt());
+            assertThat(freshTime.atZone(java.time.ZoneOffset.UTC).toLocalDate())
+                .isEqualTo(now.atZone(java.time.ZoneOffset.UTC).toLocalDate());
+            AgentLiveAccountingIntegrationTest.INVENTORY_SHA.set("a".repeat(64));
+            AgentLiveAccountingIntegrationTest.INVENTORY_REVIEWED_AT.set(freshTime);
+            UUID freshInventory = UUID.randomUUID();
+            // The imported legacy fake ignores inventory UUID and expiry; real reader tests cover those boundaries.
+            var freshBatch = accounting.approve(project, "http://localhost:8083", false,
+                new LiveBatchInput(approval, freshInventory, List.of(explanation, summary), oldBatch.manifestSha256(),
+                    freshTime.plusSeconds(3600), 2, 700000, true));
+            var freshStored = ledger.batch(project, freshBatch.id()).orElseThrow();
+            assertThat(freshBatch.id()).isNotEqualTo(oldBatch.id());
+            assertThat(freshStored.inventoryId()).isEqualTo(freshInventory).isNotEqualTo(oldStored.inventoryId());
+            assertThat(freshStored.deploymentId()).isEqualTo(oldStored.deploymentId());
+            assertThat(freshStored.manifest()).isEqualTo(oldStored.manifest());
+            assertThat(freshStored.manifest().templates()).extracting(LiveManifest.Template::templateRequestId)
+                .containsExactlyInAnyOrder(explanation, summary);
+            assertThat(freshBatch.manifestSha256()).isEqualTo(oldBatch.manifestSha256());
+            assertThat(freshBatch.enablementId()).isEqualTo(approval);
+            assertThat(freshBatch.approvedAt()).isEqualTo(freshTime);
+            assertThat(freshBatch.expiresAt()).isEqualTo(freshTime.plusSeconds(3600));
+            assertThat(freshStored.inventoryProof().fileSha256()).isEqualTo("a".repeat(64))
+                .isNotEqualTo(oldStored.inventoryProof().fileSha256());
+            assertThat(freshStored.inventoryProof().reviewedAt()).isEqualTo(freshTime);
+
+            now = freshTime;
+            UUID freshRequest = insert(freshBatch.id(), explanation, "FINDING_EXPLANATION", true);
+            assertThat(freshRequest).isNotEqualTo(oldRequest);
+            assertThat(requests.find(project, freshRequest).orElseThrow().view().state()).isEqualTo("RUNNING");
+            assertThat(accounting.reserve(project, freshBatch.id(), explanation, freshRequest).reservedMicrousd()).isEqualTo(316373);
+            assertThat(ledger.attempt(project, freshRequest).orElseThrow().attemptId()).isNotEqualTo(oldAttempt.attemptId());
+            assertThat(accounting.checkBeforeSend(project, freshBatch.id(), explanation, freshRequest).credentialVersion())
+                .isEqualTo(AgentPersonalEnablementIntegrationTest.CREDENTIAL);
+            assertThat(jdbc.sql("""
+                SELECT count(*) FROM agent.live_template_request_slots WHERE project_id=:project AND template_id=:template
+                    AND ((batch_id=:oldBatch AND request_id=:oldRequest) OR (batch_id=:newBatch AND request_id=:newRequest))
+                """).param("project", project).param("template", explanation).param("oldBatch", oldBatch.id())
+                .param("oldRequest", oldRequest).param("newBatch", freshBatch.id()).param("newRequest", freshRequest)
+                .query(Integer.class).single()).isEqualTo(2);
+            long rejectedBefore = sendRejections();
+            assertThatThrownBy(() -> accounting.checkBeforeSend(project, oldBatch.id(), explanation, oldRequest))
+                .isInstanceOf(AgentEnablementInvalidStateException.class).hasNoCause();
+            assertThat(sendRejections()).isEqualTo(rejectedBefore + 1);
+            assertThat(batchHistory(oldBatch.id(), oldRequest)).isEqualTo(oldHistory);
+            assertThat(auditRows()).containsAll(oldAudit);
+            assertThat(ledger.batch(project, oldBatch.id()).orElseThrow()).isEqualTo(oldStored);
+            assertThat(ledger.attempt(project, oldRequest).orElseThrow()).isEqualTo(oldAttempt);
+            assertThat(ledger.lockBatch(oldBatch.id()).reserved()).isEqualTo(316373);
+            assertThat(ledger.lockBatch(freshBatch.id()).reserved()).isEqualTo(316373);
+            assertThat(legacy.amount("PROJECT", project, "reserved_microusd")).isEqualTo(632746);
+            assertThat(legacy.amount("PROJECT", project, "spent_microusd")).isZero();
+            assertThat(rows("agent.project_settings", "project_id", project)).isEqualTo(settings);
+            assertThat(rows("agent.personal_enablements", "id", approval)).isEqualTo(acknowledgement);
+            assertThat(AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE.get()).isEqualTo(credential);
+        } finally {
+            now = oldTime;
+            AgentPersonalEnablementIntegrationTest.TIME.set(oldTime);
+            AgentLiveAccountingIntegrationTest.INVENTORY_SHA.set("e".repeat(64));
+            AgentLiveAccountingIntegrationTest.INVENTORY_REVIEWED_AT.set(oldTime);
+        }
+    }
+
+    private java.util.Map<String, List<String>> batchHistory(UUID batch, UUID request) {
+        var history = new java.util.LinkedHashMap<String, List<String>>();
+        history.put("agent.live_batches", rows("agent.live_batches", "id", batch));
+        for (String table : List.of("agent.live_batch_usage", "agent.live_batch_stops", "agent.live_batch_revocations",
+                "agent.live_template_request_slots")) history.put(table, rows(table, "batch_id", batch));
+        history.put("agent.requests", rows("agent.requests", "id", request));
+        for (String table : List.of("agent.live_attempts", "agent.live_outcomes", "agent.live_request_links"))
+            history.put(table, rows(table, "request_id", request));
+        return history;
+    }
+
+    private List<String> rows(String table, String column, UUID id) {
+        return jdbc.sql("SELECT to_jsonb(row)::text FROM " + table + " row WHERE " + column + "=:id")
+            .param("id", id).query(String.class).list();
+    }
+
+    private List<String> auditRows() {
+        return jdbc.sql("SELECT to_jsonb(row)::text FROM audit.audit_records row WHERE project_id=:project ORDER BY id")
+            .param("project", project).query(String.class).list();
+    }
+
+    private long sendRejections() {
+        return jdbc.sql("""
+            SELECT count(*) FROM audit.audit_records WHERE project_id=:project AND action='agent.live.write_rejected'
+                AND metadata->>'operation'='agent.live.send_check'
+            """).param("project", project).query(Long.class).single();
+    }
+
     @Test void outputFailureStopIsAppendOnlyAndCannotRefundKnownCostOrBeUndoneByReplay() {
         var batch = batch(700000); UUID first = insert(batch.id(), explanation, "FINDING_EXPLANATION", true);
         accounting.reserve(project, batch.id(), explanation, first);

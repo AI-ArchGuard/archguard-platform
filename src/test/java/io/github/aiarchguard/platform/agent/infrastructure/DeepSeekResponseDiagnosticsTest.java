@@ -3,6 +3,7 @@ package io.github.aiarchguard.platform.agent.infrastructure;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -101,7 +102,7 @@ class DeepSeekResponseDiagnosticsTest {
 
         withIsolatedTrace(() -> {
             if (scenario.knownUsage()) {
-                var reply = send(client);
+                var reply = assertDoesNotThrow(() -> send(client));
                 assertThat(reply.rawJson()).isNull();
                 assertThat(reply.outputFailureCode()).isEqualTo("OUTPUT_INVALID");
                 assertTrustedUsage(reply);
@@ -142,6 +143,28 @@ class DeepSeekResponseDiagnosticsTest {
         withIsolatedTrace(() -> {
             var reply = send(client);
             assertThat(reply.rawJson()).isEqualTo(expectedBusinessJson);
+            assertThat(reply.outputFailureCode()).isNull();
+            assertTrustedUsage(reply);
+        });
+        assertThat(calls).hasValue(1);
+        assertThat(bytes).containsOnly((byte) 0);
+        assertThat(logs.list).isEmpty();
+    }
+
+    @Test void acceptedInertMetadataIsNotExposedInBusinessReplyOrDiagnostics() throws Exception {
+        ObjectNode root = (ObjectNode) MAPPER.readTree(VALID_ENVELOPE);
+        approvedMetadata(root);
+        byte[] bytes = MAPPER.writeValueAsBytes(root);
+        AtomicInteger calls = new AtomicInteger();
+        var client = new DeepSeekLiveResponseClient(MAPPER, (request, timeout) -> {
+            calls.incrementAndGet();
+            assertThat(request.uri()).isEqualTo(OFFICIAL_ENDPOINT);
+            return new DeepSeekHttpTransport.Response(200, "application/json", bytes);
+        });
+        withIsolatedTrace(() -> {
+            var reply = assertDoesNotThrow(() -> send(client));
+            assertThat(reply.rawJson()).isEqualTo(root.at("/output/0/content/0/text").textValue())
+                .doesNotContain("user", "max_tool_calls", "top_logprobs", "completed_at", "created_at");
             assertThat(reply.outputFailureCode()).isNull();
             assertTrustedUsage(reply);
         });
@@ -227,6 +250,27 @@ class DeepSeekResponseDiagnosticsTest {
         envelope(cases, "nonarray tools", "ENVELOPE_TOOLS", root -> root.put("tools", PRIVATE_BODY));
         envelope(cases, "enabled background", "ENVELOPE_BACKGROUND", root -> root.put("background", true));
         envelope(cases, "nonboolean background", "ENVELOPE_BACKGROUND", root -> root.put("background", PRIVATE_BODY));
+        for (String field : List.of("user", "max_tool_calls", "top_logprobs", "completed_at")) {
+            envelope(cases, "private metadata value " + field, "ENVELOPE_METADATA", root -> root.put(field, PRIVATE_BODY));
+        }
+        envelope(cases, "out-of-order metadata", "ENVELOPE_METADATA", root -> {
+            approvedMetadata(root); root.put("created_at", 3);
+        });
+        envelope(cases, "approved metadata does not hide unknown field", "ENVELOPE_FIELDS", root -> {
+            approvedMetadata(root); root.put(PRIVATE_FIELD, PRIVATE_BODY);
+        });
+        envelope(cases, "approved metadata does not enable tools", "ENVELOPE_TOOLS", root -> {
+            approvedMetadata(root); root.putArray("tools").addObject().put(PRIVATE_FIELD, PRIVATE_BODY);
+        });
+        accounting(cases, "approved metadata does not repair usage", "ACCOUNTING_TOKENS", root -> {
+            approvedMetadata(root); usage(root).put("input_tokens", PRIVATE_BODY);
+        });
+        output(cases, "approved metadata preserves usage on bad business", "OUTPUT_JSON", root -> {
+            approvedMetadata(root); outputText(root).put("text", PRIVATE_PARSER + " {");
+        });
+        output(cases, "zero top_logprobs does not enable output logprobs", "OUTPUT_STRUCTURE", root -> {
+            approvedMetadata(root); outputText(root).putArray("logprobs").add(PRIVATE_BODY);
+        });
         for (String id : List.of("resp-" + KEY, "sk-" + PRIVATE_ID, "SK-" + PRIVATE_ID,
                 "ghp_" + PRIVATE_ID, "github_pat_" + PRIVATE_ID)) {
             envelope(cases, "sensitive provider identifier " + cases.size(), "PROVIDER_IDENTIFIER_SENSITIVE", root -> root.put("id", id));
@@ -310,6 +354,10 @@ class DeepSeekResponseDiagnosticsTest {
     private static ObjectNode outputDetails(ObjectNode root) { return (ObjectNode) root.at("/usage/output_tokens_details"); }
     private static ObjectNode message(ObjectNode root) { return (ObjectNode) root.at("/output/0"); }
     private static ObjectNode outputText(ObjectNode root) { return (ObjectNode) root.at("/output/0/content/0"); }
+
+    private static void approvedMetadata(ObjectNode root) {
+        root.putNull("user").putNull("max_tool_calls").put("top_logprobs", 0).put("completed_at", 2);
+    }
 
     private static LiveResponsePort.Reply send(DeepSeekLiveResponseClient client) {
         return client.send(new byte[] {'{', '}'}, KEY, Duration.ofSeconds(1), Set.of("deepseek-flash"));

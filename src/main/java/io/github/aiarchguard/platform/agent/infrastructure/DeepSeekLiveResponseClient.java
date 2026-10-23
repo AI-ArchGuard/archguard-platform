@@ -71,7 +71,7 @@ final class DeepSeekLiveResponseClient implements LiveResponsePort {
             if ("OUTPUT_INVALID".equals(unavailable.getMessage())) rejected(unavailable.reason());
             throw new CallFailure(unavailable.getMessage());
         } catch (DeepSeekResponseRejection invalidAccounting) {
-            rejected(invalidAccounting.reason());
+            rejected(invalidAccounting);
             throw new CallFailure("OUTPUT_INVALID");
         } catch (RuntimeException invalidAccounting) {
             rejected(DeepSeekResponseRejection.Reason.UNCLASSIFIED);
@@ -85,6 +85,17 @@ final class DeepSeekLiveResponseClient implements LiveResponsePort {
         // Emit only on the synchronous caller, whose persisted trace is already isolated by TraceTaskScope.
         LOGGER.atWarn().addKeyValue("event", "agent.provider.response.rejected")
             .addKeyValue("stage", reason.stage()).addKeyValue("reason", reason.name())
+            .log("Agent provider response rejected");
+    }
+
+    private static void rejected(DeepSeekResponseRejection rejection) {
+        if (rejection.reason() != DeepSeekResponseRejection.Reason.ENVELOPE_UNKNOWN_FIELDS) {
+            rejected(rejection.reason());
+            return;
+        }
+        LOGGER.atWarn().addKeyValue("event", "agent.provider.response.rejected")
+            .addKeyValue("stage", rejection.reason().stage()).addKeyValue("reason", rejection.reason().name())
+            .addKeyValue("unknownFieldCount", rejection.unknownFieldCount())
             .log("Agent provider response rejected");
     }
 

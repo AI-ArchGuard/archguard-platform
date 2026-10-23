@@ -33,6 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
@@ -116,7 +117,7 @@ class DeepSeekResponseDiagnosticsTest {
 
         assertThat(calls).hasValue(1);
         if (scenario.wipedAfterClientReceivesBody()) assertThat(scenario.body()).containsOnly((byte) 0);
-        assertDiagnostic(scenario.stage(), scenario.reason());
+        assertDiagnostic(scenario.stage(), scenario.reason(), scenario.unknownFieldCount());
     }
 
     @Test void unclassifiedOutputInvalidFailureUsesFixedFallbackWithoutReadingExceptionDetails() {
@@ -129,6 +130,46 @@ class DeepSeekResponseDiagnosticsTest {
             .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("OUTPUT_INVALID").hasNoCause());
         assertThat(calls).hasValue(1);
         assertDiagnostic("RESPONSE_VALIDATION", "UNCLASSIFIED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {Integer.MIN_VALUE, -1, 0, 33, Integer.MAX_VALUE})
+    void rejectsOutOfRangeDiagnosticCountsBeforeTheyCanReachTheLogger(int count) {
+        assertThatThrownBy(() -> new DeepSeekResponseRejection(
+                DeepSeekResponseRejection.Reason.ENVELOPE_UNKNOWN_FIELDS, count))
+            .isInstanceOf(IllegalArgumentException.class).hasMessage("Invalid DeepSeek diagnostic classification").hasNoCause();
+    }
+
+    @Test void unrelatedReasonsCannotCarryUnknownFieldCounts() {
+        assertThatThrownBy(() -> new DeepSeekResponseRejection(DeepSeekResponseRejection.Reason.ACCOUNTING_FIELDS, 1))
+            .isInstanceOf(IllegalArgumentException.class).hasMessage("Invalid DeepSeek diagnostic classification").hasNoCause();
+    }
+
+    @Test void unknownFieldReasonCannotBeCreatedWithoutAnObservedCount() {
+        assertThatThrownBy(() -> new DeepSeekResponseRejection(DeepSeekResponseRejection.Reason.ENVELOPE_UNKNOWN_FIELDS))
+            .isInstanceOf(IllegalArgumentException.class).hasMessage("Invalid DeepSeek diagnostic classification").hasNoCause();
+    }
+
+    @Test void consecutiveCallsDoNotCarryUnknownCountsIntoOtherFailuresOrSuccess() throws Exception {
+        ObjectNode root = (ObjectNode) MAPPER.readTree(VALID_ENVELOPE);
+        root.put(PRIVATE_FIELD + KEY, PRIVATE_BODY);
+        byte[][] bodies = {MAPPER.writeValueAsBytes(root), "[]".getBytes(StandardCharsets.UTF_8),
+            VALID_ENVELOPE.getBytes(StandardCharsets.UTF_8)};
+        AtomicInteger calls = new AtomicInteger();
+        var client = new DeepSeekLiveResponseClient(MAPPER, (request, timeout) ->
+            new DeepSeekHttpTransport.Response(200, "application/json", bodies[calls.getAndIncrement()]));
+        withIsolatedTrace(() -> assertThatThrownBy(() -> send(client))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("OUTPUT_INVALID").hasNoCause());
+        assertDiagnostic("RESPONSE_ENVELOPE", "ENVELOPE_UNKNOWN_FIELDS", 1);
+        logs.list.clear();
+        withIsolatedTrace(() -> assertThatThrownBy(() -> send(client))
+            .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("OUTPUT_INVALID").hasNoCause());
+        assertDiagnostic("RESPONSE_ENVELOPE", "ENVELOPE_NOT_OBJECT");
+        logs.list.clear();
+        withIsolatedTrace(() -> assertTrustedUsage(send(client)));
+        assertThat(logs.list).isEmpty();
+        assertThat(calls).hasValue(3);
+        for (byte[] body : bodies) assertThat(body).containsOnly((byte) 0);
     }
 
     @Test void acceptedSyntheticResponseHasNoRejectionEventAndStillWipesReceivedBytes() throws Exception {
@@ -213,6 +254,53 @@ class DeepSeekResponseDiagnosticsTest {
         }
     }
 
+    @ParameterizedTest(name = "loopback HTTP: {0}")
+    @MethodSource("envelopeShapeResponses")
+    void distinguishesEnvelopeShapesAcrossLoopbackHttpWithoutRetryOrResponseDisclosure(RejectedResponse scenario) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicInteger httpRequests = new AtomicInteger();
+        AtomicInteger exchanges = new AtomicInteger();
+        server.createContext("/responses", exchange -> {
+            httpRequests.incrementAndGet();
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, scenario.body().length);
+            try (var output = exchange.getResponseBody()) { output.write(scenario.body()); }
+        });
+        server.start();
+        var http = new BoundedJdkHttpExchange();
+        try {
+            var client = new DeepSeekLiveResponseClient(MAPPER, (request, timeout) -> {
+                exchanges.incrementAndGet();
+                assertThat(request.uri()).isEqualTo(OFFICIAL_ENDPOINT);
+                var builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:"
+                    + server.getAddress().getPort() + "/responses"))
+                    .timeout(timeout).POST(request.bodyPublisher().orElseThrow());
+                request.headers().map().forEach((name, values) -> values.forEach(value -> builder.header(name, value)));
+                return http.exchange(builder.build(), timeout);
+            });
+            withIsolatedTrace(() -> assertThatThrownBy(() -> client.send(new byte[] {'{', '}'}, KEY,
+                    Duration.ofSeconds(2), Set.of("deepseek-flash")))
+                .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("OUTPUT_INVALID").hasNoCause());
+            assertThat(exchanges).hasValue(1);
+            assertThat(httpRequests).hasValue(1);
+            assertDiagnostic(scenario.stage(), scenario.reason(), scenario.unknownFieldCount());
+            http.close();
+            assertThat(http.awaitTermination(Duration.ofSeconds(3))).isTrue();
+        } finally {
+            http.close();
+            server.stop(0);
+        }
+    }
+
+    private static Stream<RejectedResponse> envelopeShapeResponses() throws Exception {
+        ObjectNode root = (ObjectNode) MAPPER.readTree(VALID_ENVELOPE);
+        root.put(PRIVATE_FIELD + KEY + "\r\n🔑", PRIVATE_BODY);
+        return Stream.of(
+            rawCase("nonobject envelope", "RESPONSE_ENVELOPE", "ENVELOPE_NOT_OBJECT", "[]", false),
+            unknownRootCase("unknown envelope field", root, 1));
+    }
+
     private static Stream<RejectedResponse> rejectedResponses() throws Exception {
         List<RejectedResponse> cases = new ArrayList<>();
         cases.add(new RejectedResponse("wrong MIME", "HTTP_RESPONSE", "HTTP_CONTENT_TYPE",
@@ -228,9 +316,26 @@ class DeepSeekResponseDiagnosticsTest {
             VALID_ENVELOPE.replace("\"created_at\":1", "\"created_at\":1,\"created_at\":2"), false));
         cases.add(rawCase("trailing envelope JSON", "RESPONSE_JSON", "RESPONSE_JSON",
             VALID_ENVELOPE + " {\"" + PRIVATE_PARSER + "\":true}", false));
-        cases.add(rawCase("nonobject envelope", "RESPONSE_ENVELOPE", "ENVELOPE_FIELDS", "[]", false));
-
-        envelope(cases, "unknown envelope field", "ENVELOPE_FIELDS", root -> root.put(PRIVATE_FIELD, PRIVATE_BODY));
+        cases.add(rawCase("unknown field does not hide duplicate JSON", "RESPONSE_JSON", "RESPONSE_JSON",
+            VALID_ENVELOPE.replace("\"created_at\":1", "\"created_at\":1,\"" + PRIVATE_FIELD
+                + "\":true,\"" + PRIVATE_FIELD + "\":false"), false));
+        cases.add(rawCase("unknown field does not hide trailing JSON", "RESPONSE_JSON", "RESPONSE_JSON",
+            VALID_ENVELOPE.replace("\"created_at\":1", "\"created_at\":1,\"" + PRIVATE_FIELD + "\":true")
+                + " {\"" + PRIVATE_PARSER + "\":true}", false));
+        for (String raw : List.of("[]", "null", "true", "17", "\"" + PRIVATE_BODY + "\"")) {
+            cases.add(rawCase("nonobject envelope " + cases.size(), "RESPONSE_ENVELOPE", "ENVELOPE_NOT_OBJECT", raw, false));
+        }
+        ObjectNode unknownRoot = (ObjectNode) MAPPER.readTree(VALID_ENVELOPE);
+        unknownRoot.put(PRIVATE_FIELD + KEY + "\r\n🔑", PRIVATE_BODY);
+        cases.add(unknownRootCase("unknown envelope field", unknownRoot, 1));
+        ObjectNode unknownWithBadUsage = unknownRoot.deepCopy();
+        usage(unknownWithBadUsage).put("input_tokens", PRIVATE_BODY);
+        cases.add(unknownRootCase("unknown envelope field precedes usage", unknownWithBadUsage, 1));
+        for (int[] boundary : new int[][] {{2, 2}, {31, 31}, {32, 32}, {33, 32}, {1000, 32}}) {
+            ObjectNode root = (ObjectNode) MAPPER.readTree(VALID_ENVELOPE);
+            for (int index = 0; index < boundary[0]; index++) root.put(PRIVATE_FIELD + index, PRIVATE_BODY);
+            cases.add(unknownRootCase("unknown envelope fields " + boundary[0], root, boundary[1]));
+        }
         envelope(cases, "missing object marker", "ENVELOPE_OBJECT", root -> root.remove("object"));
         envelope(cases, "wrong object marker", "ENVELOPE_OBJECT", root -> root.put("object", PRIVATE_BODY));
         envelope(cases, "missing status", "ENVELOPE_STATUS", root -> root.remove("status"));
@@ -256,9 +361,11 @@ class DeepSeekResponseDiagnosticsTest {
         envelope(cases, "out-of-order metadata", "ENVELOPE_METADATA", root -> {
             approvedMetadata(root); root.put("created_at", 3);
         });
-        envelope(cases, "approved metadata does not hide unknown field", "ENVELOPE_FIELDS", root -> {
-            approvedMetadata(root); root.put(PRIVATE_FIELD, PRIVATE_BODY);
-        });
+        ObjectNode approvedWithUnknown = (ObjectNode) MAPPER.readTree(VALID_ENVELOPE);
+        approvedMetadata(approvedWithUnknown);
+        approvedWithUnknown.put(PRIVATE_FIELD, PRIVATE_BODY);
+        cases.add(unknownRootCase("approved metadata does not hide unknown field", approvedWithUnknown, 1));
+        envelope(cases, "empty object remains missing object marker", "ENVELOPE_OBJECT", ObjectNode::removeAll);
         envelope(cases, "approved metadata does not enable tools", "ENVELOPE_TOOLS", root -> {
             approvedMetadata(root); root.putArray("tools").addObject().put(PRIVATE_FIELD, PRIVATE_BODY);
         });
@@ -349,6 +456,11 @@ class DeepSeekResponseDiagnosticsTest {
         return new RejectedResponse(name, stage, reason, "application/json", raw.getBytes(StandardCharsets.UTF_8), knownUsage, true);
     }
 
+    private static RejectedResponse unknownRootCase(String name, ObjectNode root, int expectedCount) throws Exception {
+        return new RejectedResponse(name, "RESPONSE_ENVELOPE", "ENVELOPE_UNKNOWN_FIELDS", "application/json",
+            MAPPER.writeValueAsBytes(root), false, true, expectedCount);
+    }
+
     private static ObjectNode usage(ObjectNode root) { return (ObjectNode) root.get("usage"); }
     private static ObjectNode inputDetails(ObjectNode root) { return (ObjectNode) root.at("/usage/input_tokens_details"); }
     private static ObjectNode outputDetails(ObjectNode root) { return (ObjectNode) root.at("/usage/output_tokens_details"); }
@@ -382,6 +494,10 @@ class DeepSeekResponseDiagnosticsTest {
     }
 
     private void assertDiagnostic(String stage, String reason) {
+        assertDiagnostic(stage, reason, null);
+    }
+
+    private void assertDiagnostic(String stage, String reason, Integer unknownFieldCount) {
         assertThat(logs.list).as("one fixed diagnostic for a rejected provider response").hasSize(1);
         ILoggingEvent event = logs.list.getFirst();
         assertThat(event.getLevel()).isEqualTo(Level.WARN);
@@ -391,8 +507,11 @@ class DeepSeekResponseDiagnosticsTest {
         assertThat(event.getFormattedMessage()).isEqualTo("Agent provider response rejected");
         assertThat(event.getArgumentArray()).isNullOrEmpty();
         assertThat(event.getThrowableProxy()).isNull();
-        assertThat(event.getKeyValuePairs()).extracting(pair -> pair.key, pair -> pair.value).containsExactlyInAnyOrder(
-            tuple("event", "agent.provider.response.rejected"), tuple("stage", stage), tuple("reason", reason));
+        var expectedPairs = new ArrayList<>(List.of(tuple("event", "agent.provider.response.rejected"),
+            tuple("stage", stage), tuple("reason", reason)));
+        if (unknownFieldCount != null) expectedPairs.add(tuple("unknownFieldCount", unknownFieldCount));
+        assertThat(event.getKeyValuePairs()).extracting(pair -> pair.key, pair -> pair.value)
+            .containsExactlyInAnyOrderElementsOf(expectedPairs);
         assertThat(event.getMDCPropertyMap()).containsExactlyEntriesOf(Map.of("traceId", TRACE));
         String allDiagnosticChannels = event.getFormattedMessage() + Arrays.deepToString(event.getArgumentArray())
             + event.getKeyValuePairs() + event.getMDCPropertyMap();
@@ -402,7 +521,11 @@ class DeepSeekResponseDiagnosticsTest {
     }
 
     private record RejectedResponse(String name, String stage, String reason, String contentType, byte[] body,
-            boolean knownUsage, boolean wipedAfterClientReceivesBody) {
+            boolean knownUsage, boolean wipedAfterClientReceivesBody, Integer unknownFieldCount) {
+        RejectedResponse(String name, String stage, String reason, String contentType, byte[] body,
+                boolean knownUsage, boolean wipedAfterClientReceivesBody) {
+            this(name, stage, reason, contentType, body, knownUsage, wipedAfterClientReceivesBody, null);
+        }
         @Override public String toString() { return name; }
     }
 }

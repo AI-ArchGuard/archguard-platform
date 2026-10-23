@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — bounded envelope rejection diagnostics
+
+- Distinguish non-object response roots from unknown root fields; only the latter carries an integer unknown-field count saturated at 32. Preserve fixed, trace-isolated diagnostics without provider names, values, bodies, credentials or parser details.
+- Keep strict acceptance, request projection, accounting/UNKNOWN reservations, public contracts, dependencies and migrations unchanged. Offline tests only; no deployment, new real call, release or stage-exit claim.
+
 ## Unreleased — approved 1017 mapping
 
 - Add producer acknowledgement Schema and settings/enablement API 0.4.0 with the explicit approved `DeepSeek-V4.1-Flash-1017` mapping, unchanged `deepseek-flash` request/response singleton and existing context price/limits.

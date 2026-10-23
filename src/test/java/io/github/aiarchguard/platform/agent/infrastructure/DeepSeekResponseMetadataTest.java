@@ -65,7 +65,7 @@ class DeepSeekResponseMetadataTest {
     void approvedMetadataCannotHideAnyUnknownRootField(String field) {
         byte[] bytes = wire("\"user\":null,\"max_tool_calls\":null,\"top_logprobs\":0,"
             + "\"created_at\":1,\"completed_at\":2,\"" + field + "\":null");
-        for (String policy : POLICIES) assertRejected(bytes, policy, "ENVELOPE_FIELDS");
+        for (String policy : POLICIES) assertRejected(bytes, policy, "ENVELOPE_UNKNOWN_FIELDS");
     }
 
     @ParameterizedTest(name = "root-only field {0} in {1}")

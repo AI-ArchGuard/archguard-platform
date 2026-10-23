@@ -89,7 +89,7 @@ final class DeepSeekResponsesCodec {
             JsonNode root;
             try { root = mapper.readTree(bytes); }
             catch (Exception failure) { throw rejected(RESPONSE_JSON); }
-            fields(root, ENVELOPE_FIELDS, DeepSeekResponseRejection.Reason.ENVELOPE_FIELDS);
+            envelopeFields(root);
             if (!"response".equals(text(root, "object", ENVELOPE_OBJECT))) throw rejected(ENVELOPE_OBJECT);
             if (!"completed".equals(text(root, "status", ENVELOPE_STATUS))) throw rejected(ENVELOPE_STATUS);
             String id = text(root, "id", ENVELOPE_IDENTIFIER), model = text(root, "model", ENVELOPE_MODEL);
@@ -181,6 +181,17 @@ final class DeepSeekResponsesCodec {
         JsonNode value = node.path(field);
         if (!value.isTextual() || value.textValue().isBlank()) throw rejected(reason);
         return value.textValue();
+    }
+
+    private static void envelopeFields(JsonNode root) {
+        if (root == null || !root.isObject()) throw rejected(ENVELOPE_NOT_OBJECT);
+        int unknown = 0;
+        var names = root.fieldNames();
+        while (names.hasNext()) {
+            if (!ENVELOPE_FIELDS.contains(names.next()) && ++unknown == DeepSeekResponseRejection.UNKNOWN_FIELD_COUNT_LIMIT) break;
+        }
+        // Saturated cardinality only. Never retain or log provider names, values or the parsed root.
+        if (unknown > 0) throw new DeepSeekResponseRejection(ENVELOPE_UNKNOWN_FIELDS, unknown);
     }
 
     private static void fields(JsonNode node, Set<String> allowed, DeepSeekResponseRejection.Reason reason) {

@@ -29,6 +29,11 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+/**
+ * 用真实 Spring HTTP 处理链和独立的 PostgreSQL 测试容器，验证 Project 的对外行为。
+ * 测试身份由 Spring Security 测试工具注入，不表示生产环境可以用用户名代替 OIDC 验签。
+ * 同时查询测试库确认成员关系、并发冲突和审计结果，不连接本地部署中的业务数据库。
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
@@ -48,6 +53,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
         this.jdbcClient = jdbcClient;
     }
 
+    /** 未认证读取返回统一 401，响应头和错误正文复用合法的传入 traceId。 */
     @Test
     void requiresAuthenticationWithAUniformTraceableError() throws Exception {
         mockMvc.perform(get("/api/v1/projects/{id}", UUID.randomUUID())
@@ -59,6 +65,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.details").isMap());
     }
 
+    /** 创建接口同样受认证保护，未认证 POST 不能进入正常创建成功路径。 */
     @Test
     void unauthenticatedCreationIsRejectedBeforeBusinessHandling() throws Exception {
         mockMvc.perform(post("/api/v1/projects")
@@ -69,6 +76,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.traceId").isString());
     }
 
+    /** 非规范请求关联 ID 必须被替换，错误正文与响应头仍指向同一个新 ID。 */
     @Test
     void replacesAnInvalidInboundTraceId() throws Exception {
         MvcResult result = mockMvc.perform(get("/api/v1/projects/{id}", UUID.randomUUID())
@@ -82,6 +90,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .isEqualTo(responseTraceId);
     }
 
+    /** “已登录”不等于有创建权限：缺少 project:create 时拒绝，并保留 DENIED 审计。 */
     @Test
     void deniesCreationWithoutPermissionAndRecordsTheDecision() throws Exception {
         String key = uniqueKey();
@@ -96,6 +105,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(auditCount(key, "DENIED")).isOne();
     }
 
+    /** 无效 key/name 返回字段级校验信息，而不是把输入交给数据库产生内部错误。 */
     @Test
     void validatesRequestsBeforeCallingTheApplicationBoundary() throws Exception {
         mockMvc.perform(post("/api/v1/projects")
@@ -109,6 +119,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.details.fields.name").exists());
     }
 
+    /** 成功创建应同时得到项目、创建者的维护者关系和成功审计，并允许该成员查询。 */
     @Test
     void createsAProjectMembershipAndSuccessAuditThenReadsItForTheMember() throws Exception {
         String key = uniqueKey();
@@ -132,6 +143,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.key").value(key));
     }
 
+    /** 重复 key 使用稳定的 409 错误；成功与冲突两次尝试分别留下审计。 */
     @Test
     void mapsDuplicateKeysToConflictAndRecordsTheFailedAttempt() throws Exception {
         String key = uniqueKey();
@@ -149,6 +161,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(auditCount(key, "CONFLICT")).isOne();
     }
 
+    /** 两个创建者同时争用同一 key，由数据库唯一约束裁决，只能留下一条项目记录。 */
     @Test
     void databaseUniquenessResolvesConcurrentProjectCreation() throws Exception {
         String key = uniqueKey();
@@ -176,6 +189,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(auditCount(key, "CONFLICT")).isOne();
     }
 
+    /** 对非成员而言，已有项目和随机不存在的项目必须呈现相同的 404/错误码。 */
     @Test
     void concealsExistingProjectsFromNonMembers() throws Exception {
         String key = uniqueKey();
@@ -191,6 +205,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.code").value("project.not_found"));
     }
 
+    /** 列表也必须按成员身份隔离：既包含自己的项目，又不能混入另一调用者的项目。 */
     @Test
     void listsOnlyProjectsVisibleToTheCurrentActor() throws Exception {
         String ownKey = uniqueKey();
@@ -213,6 +228,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(items).noneMatch(item -> item.get("key").asText().equals(otherKey));
     }
 
+    /** 超出上限的单页大小属于错误请求，不通过静默截断掩盖客户端的参数问题。 */
     @Test
     void validatesPaginationParameters() throws Exception {
         mockMvc.perform(get("/api/v1/projects")
@@ -222,6 +238,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.code").value("request.malformed"));
     }
 
+    /** 修改会递增版本；旧版本写入应冲突，而 VIEWER 即使提供新版本也无写权限。 */
     @Test
     void updatesAProjectWithOptimisticConcurrencyAndMaintainerAuthorization() throws Exception {
         UUID projectId = createdProjectId(createProject(uniqueKey(), "Before"));
@@ -250,6 +267,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.code").value("authorization.denied"));
     }
 
+    /** 删除同时受角色和版本约束；删除成功后项目不可读，但删除审计仍应存在。 */
     @Test
     void deletesAProjectAtTheExpectedVersionAndRetainsItsAuditRecord() throws Exception {
         UUID projectId = createdProjectId(createProject(uniqueKey(), "Delete me"));
@@ -285,6 +303,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(auditActionCount(projectId, "project.delete", "SUCCESS")).isOne();
     }
 
+    /** 覆盖成员增改删、查看者不可授权及最后维护者保护，避免项目失去维护入口。 */
     @Test
     void managesMembersWhilePreservingAtLeastOneMaintainer() throws Exception {
         UUID projectId = createdProjectId(createProject(uniqueKey(), "Members"));
@@ -325,6 +344,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(jsonPath("$.code").value("project.last_maintainer"));
     }
 
+    /** 默认使用固定测试创建者；不同身份的隔离场景则显式调用 createProjectAs。 */
     private org.springframework.test.web.servlet.ResultActions createProject(String key, String name) throws Exception {
         return createProjectAs(ACTOR, key, name);
     }
@@ -346,11 +366,13 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .content(memberJson(role)));
     }
 
+    /** 只在测试安全上下文中授予窄权限，不能作为生产认证或角色管理的实现。 */
     private static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.UserRequestPostProcessor
             creator(String actorId) {
         return user(actorId).authorities(new SimpleGrantedAuthority("project:create"));
     }
 
+    /** 屏障让两次请求尽量同时进入创建流程，检验竞争而非顺序调用的重复判断。 */
     private Callable<Integer> concurrentCreation(CyclicBarrier barrier, String actorId, String body) {
         return () -> {
             barrier.await();
@@ -387,6 +409,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
         return "p" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     }
 
+    /** 直接核对测试库中的维护者关系，避免只凭 HTTP 响应推断持久化已成功。 */
     private int memberCount(UUID projectId, UUID actorId) {
         return jdbcClient.sql("""
                 SELECT count(*) FROM project.project_members
@@ -398,6 +421,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .single();
     }
 
+    /** 创建类审计携带受控 projectKey，以此把同一合成项目的尝试与审计关联起来。 */
     private int auditCount(String projectKey, String result) {
         return jdbcClient.sql("""
                 SELECT count(*) FROM audit.audit_records
@@ -424,6 +448,7 @@ class ProjectApiIntegrationTest extends PostgresIntegrationTestSupport {
             .single();
     }
 
+    /** 项目删除后仍能按稳定 UUID 查审计，证明审计不随项目行被级联删除。 */
     private int auditActionCount(UUID projectId, String action, String result) {
         return jdbcClient.sql("""
                 SELECT count(*) FROM audit.audit_records

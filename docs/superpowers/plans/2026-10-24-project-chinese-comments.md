@@ -90,8 +90,8 @@
 
 ## 后续待办（本批不冒充完成）
 
-- [x] Platform：Project、Repository、RuleSet及各批次列明的测试。
-- [ ] Platform：ScanJob、Finding、Governance、Agent、文档/凭据、身份/通用/审计及尚未列明的测试。
+- [x] Platform：Project、Repository、RuleSet、ScanJob、Finding及各批次列明的测试。
+- [ ] Platform：Governance、Agent、文档/凭据、身份/通用/审计及尚未列明的测试。
 - [ ] Scanner：生产与测试；固定 Java扫描输入用相邻说明解释。
 - [ ] Web：手写源码与测试，生成声明保持原样。
 - [ ] Deploy/Samples/Docs工具：脚本注释；运行配置及固定输入不改。
@@ -158,3 +158,41 @@
 - 完整 Maven verify 成功：942项、939通过、0失败/错误、3项 Windows-disabled 符号链接测试跳过（名称同第一批记录），本批未声称运行这些 POSIX 路径。
 - 80个本地阅读链接、空白和允许文件范围检查通过；本批一次独立评审无 Critical/Important/Minor 发现。
 - 仅纠正一条无对应实现的旧 janitor 重试说明，没有实现新清理逻辑；SQL、YAML、接口、断言、配置、契约/fixture、依赖和CI不变。
+
+## Task 7: 第三批 ScanJob／Finding 基线（2026-10-25）
+
+**Files:** 本计划、既有规范；沿用忽略目录中的 AST 工具和测试日志。
+
+**Interfaces:** 输入第二批提交 `a83536db93d869b7579c72c35d95d6c83136c5d7`；输出供 Task8/9 使用的累计116文件清单和既有测试基线。
+
+- [x] 核对隔离工作树及原用户修改，阅读 README、AGENTS、MVP 需求/设计与 ADR-0004/0005/0006。
+- [x] 运行 `ResultReportConsumerTest,GovernanceApiIntegrationTest` 相关基线；预期7项通过，不把它们说成真实 Runner 端到端证明。
+- [x] 扩充本地 AST 清单至116文件并自测；预期修改前116文件可执行AST一致，已有中文说明覆盖74个。
+
+## Task 8: 扫描调度、结果接受与处置中文注释
+
+**Files:** `src/main/java/io/github/aiarchguard/platform/scanjob/` 全部20个 Java 文件；`src/main/java/io/github/aiarchguard/platform/finding/` 全部21个 Java 文件；`src/test/java/io/github/aiarchguard/platform/finding/internal/ResultReportConsumerTest.java`。
+
+**Interfaces:** 保留所有签名、状态、SQL、字符串、配置和断言；两模块分别由互不重叠的注释协作者处理，根执行者拥有测试和阅读文档。
+
+- [x] 为41个生产类型和1个测试类型补中文职责说明，并解释主要方法和关键分支。
+- [x] 按实际代码区分幂等键/请求摘要、lease/attempt token、取消请求/进程退出、执行状态/规则结论、报告Schema/语义校验、处置/确定性Finding。
+- [x] 不把数据库单条原子更新、Finding批量写入和任务完成误写成跨模块全局事务；说明邮箱原子移动的降级与尽力清理边界。
+- [x] 累计116文件 AST 保持一致、116个顶层类型有中文说明，前两批74文件不动；先运行相关7项测试，再执行完整 Maven verify。
+
+## Task 9: 第三批阅读指南、评审与本地交付
+
+**Files:** 新建 `docs/code-reading/scanjob-finding.zh-CN.md`，更新 README 阅读入口及规范批次记录。
+
+**Interfaces:** 从提交扫描到邮箱调度、结果校验/存储、查询与人工处置的真实源码导航，消费 Task8 的只注释差异。
+
+- [x] 补阅读顺序和实际限制，检查所有本地源码链接、空白及允许范围。
+- [x] 对本批差异作一次独立评审，重点检查取消、重试、固定版本、原始报告/规范化数据和事务/授权的描述。
+- [x] 保存本地提交并记录实际测试和跳过项；全项目剩余覆盖保持待办，不推送、部署或调用模型。
+
+## 第三批实际验证（2026-10-25）
+
+- 首次相关基线中报告消费3项通过，集成4项因 Docker 未运行而初始化失败；用户启动 Docker 后重跑7项全部通过，修改后7项亦全部通过，0失败/错误/跳过。未调整测试或配置来绕过失败。
+- 累计116个 Java 文件与 `a83536d` 可执行 AST 一致，116个顶层类型有中文说明；前两批74文件及本批范围外资源未改变。
+- 完整 `mvnw --batch-mode --no-transfer-progress verify` 成功：942项、939通过、0失败/错误、3项既有 Windows-disabled 符号链接测试跳过；93份 JUnit XML 汇总一致。跳过项仍为 `ControlledSyntheticBatchInventoryTest.rejectsSymbolicLinksForBothFileAndParent`、`EncryptedCredentialConsumptionTest.symlinkMasterOrCiphertextNeverPermitsConsumption`、`EncryptedCredentialStoreTest.symlinksCannotSelectMasterOrCiphertext`；本批不声称运行了这些路径。
+- 允许范围为42个 Java 文件和4份说明，共46文件；114个本地阅读链接及空白检查通过。一次独立评审无 Critical/Important，指出1处报告大小下限的单位歧义，已仅将注释修正为“1 字节到 50 MiB”；未改阈值或逻辑。修正后再次确认116文件 AST 一致、相关7项通过，最终完整检查亦成功，仍为942项中939通过、3项 Windows 条件跳过，93份 XML 汇总一致。本批以本地提交交付，没有推送、部署或模型调用。

@@ -37,6 +37,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * GitHub 治理适配器：维护授权后的仓库绑定，并把验签、时间和顺序检查通过的 Webhook 变为 PR head 事实。
+ * 只处理最小修订元数据，不 clone/fetch，不持有 Git 访问令牌，也不替 CI 发布外部状态或证明 Git ancestry。
+ */
 @Service
 class GithubGovernanceApplicationService implements GithubGovernanceOperations {
     private static final int MAX_WEBHOOK_BYTES = 2 * 1024 * 1024;
@@ -66,6 +70,10 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
         this.mapper = mapper; this.clock = clock; this.webhookSecret = webhookSecret;
     }
 
+    /**
+     * Maintainer 用 GitHub 数字仓库 ID 建立不可变绑定并审计；owner/name 只供展示。
+     * 相同稳定 ID 重放复用旧绑定，不借重放修改展示名，也不能把已有绑定换成另一仓库。
+     */
     @Override @Transactional
     public GithubRepositoryLinkView link(UUID projectId, UUID repositoryId, String externalId,
             String ownerName, String repositoryName) {
@@ -93,11 +101,13 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
             traceIds.currentTraceId(), Map.of("repositoryId", repositoryId, "providerRepositoryId", id)));
         return value;
     }
+    /** Viewer 读取本项目仓库的绑定，不能从展示名推断外部稳定身份。 */
     @Override public GithubRepositoryLinkView link(UUID projectId, UUID repositoryId) {
         projects.requireViewer(projectId);
         repositories.get(projectId, repositoryId);
         return links.find(projectId, repositoryId).orElseThrow(GithubLinkNotFoundException::new);
     }
+    /** Viewer 读取已接收的 PR head 与当前门禁指针，不向 GitHub 发起实时查询。 */
     @Override public GithubPullRequestView pullRequest(UUID projectId, UUID repositoryId, String externalId) {
         projects.requireViewer(projectId);
         repositories.get(projectId, repositoryId);
@@ -106,12 +116,17 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
             .orElseThrow(GithubPullRequestNotFoundException::new);
     }
 
+    /**
+     * Webhook 以原始正文 HMAC 建立入口信任，不使用普通项目成员授权；Secret 缺失时失败关闭。
+     * 同事务保存 delivery、条件推进 head、追加实际应用历史并封存处置，错误签名在入库前拒绝。
+     */
     @Override @Transactional
     public GithubWebhookResult receive(UUID deliveryId, String eventType, String signature, byte[] payload) {
         if (webhookSecret == null || webhookSecret.isBlank()) throw new GithubWebhookUnavailableException();
         if (payload == null || payload.length == 0 || payload.length > MAX_WEBHOOK_BYTES) {
             throw new InvalidGithubWebhookException("Webhook payload size is invalid");
         }
+        // 先验签再识别重放，已有 delivery 也不能让无效签名绕过验证。
         verifySignature(signature, payload);
         String digest = SubmissionContract.sha256(payload);
         var existing = webhooks.delivery(deliveryId);
@@ -130,6 +145,7 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
         Instant now = Instant.now(clock);
         GithubPullRequestView pr = null;
         if (pullRequestEvent && link != null) pr = parsePullRequest(root, link);
+        // GitHub 没有独立签名时间戳头，使用签名正文中的 updated_at；过去/未来超过十分钟都不推进 head。
         boolean staleTime = pr != null && Duration.between(pr.eventAt(), now).abs().compareTo(EVENT_WINDOW) > 0;
         GithubWebhookDisposition disposition = !pullRequestEvent ? GithubWebhookDisposition.IGNORED
             : link == null ? GithubWebhookDisposition.UNLINKED
@@ -140,11 +156,14 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
             return replay(deliveryId, digest, webhooks.delivery(deliveryId).orElseThrow());
         }
         if (disposition == GithubWebhookDisposition.RECEIVED) {
+            // 数据库只接受严格更新的 eventAt；更早或同时间事件均不能覆盖当前 head。
             disposition = webhooks.applyPullRequest(pr, deliveryId, now)
                 ? GithubWebhookDisposition.APPLIED : GithubWebhookDisposition.STALE;
             if (disposition == GithubWebhookDisposition.APPLIED) {
+                // 仅实际应用的签名事件进入修订史，避免按报告到达次序或无效事件猜测 PR 前驱。
                 webhooks.recordAppliedHead(pr, deliveryId);
                 GithubPullRequestView currentPr = pr;
+                // 报告可能先完成、Webhook 后到；仍以当前 head 条件挂接，迟到报告不能回退指针。
                 submissions.latestCompletedGateForPullRequest(pr.projectId(), pr.repositoryId(),
                     pr.externalId(), pr.headSha()).ifPresent(gateId ->
                     webhooks.attachGateIfCurrent(currentPr.projectId(), currentPr.repositoryId(),
@@ -159,6 +178,7 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
         return new GithubWebhookResult(deliveryId, disposition, false);
     }
 
+    /** 从签名正文提取 PR 编号、SHA、目标分支和事件时间；不把 baseSha 当作祖先关系的独立证明。 */
     private GithubPullRequestView parsePullRequest(JsonNode root, GithubRepositoryLinkView link) {
         JsonNode pr = root.path("pull_request");
         String number = SubmissionContract.numericId(root.path("number").asText(""), "Pull request ID");
@@ -171,12 +191,14 @@ class GithubGovernanceApplicationService implements GithubGovernanceOperations {
         return new GithubPullRequestView(link.projectId(), link.repositoryId(), number,
             head, base, branch, eventAt, null, null);
     }
+    /** delivery 幂等绑定原始正文摘要；相同 ID 换正文是冲突，重放复用原处置而不再次应用 head。 */
     private GithubWebhookResult replay(UUID id, String digest, GithubWebhookStore.Delivery previous) {
         if (!previous.payloadSha256().equals(digest)) {
             throw new GovernanceConflictException("Webhook delivery ID is bound to different bytes");
         }
         return new GithubWebhookResult(id, previous.disposition(), true);
     }
+    /** 严格接受小写 sha256 头，以 Secret 对原始字节计算 HMAC，再恒定时间比较摘要字节。 */
     private void verifySignature(String signature, byte[] payload) {
         if (signature == null || !signature.matches("sha256=[0-9a-f]{64}")) {
             throw new InvalidGithubWebhookException("Webhook signature is invalid");

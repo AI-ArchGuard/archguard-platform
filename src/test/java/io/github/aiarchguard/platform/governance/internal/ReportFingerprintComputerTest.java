@@ -9,6 +9,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 用最小逻辑报告核对 platform-finding-v1 指纹及稳定性；固定文本块和预期向量保持原样。
+ * 本类直接调用指纹器，不证明该最小片段通过完整的 Result 接收 Schema。
+ */
 class ReportFingerprintComputerTest {
     private final ReportFingerprintComputer computer = new ReportFingerprintComputer(new ObjectMapper());
     private static final String REPORT = """
@@ -35,6 +39,7 @@ class ReportFingerprintComputerTest {
         }
         """;
 
+    /** 运行期 ID、位置、严重性和展示消息改变，不应改变同一逻辑违规的指纹。 */
     @Test void matchesPublishedSampleVectorWithoutScannerIdsOrLocations() {
         FindingSnapshot original = computer.compute(bytes(REPORT), "samples:java-architecture-violations").getFirst();
         assertThat(original.fingerprint()).isEqualTo("1735a8929ba30e01c35b56a2c9503f110d4e36296fd0d7ed4381af1d4733b6e0");
@@ -46,6 +51,7 @@ class ReportFingerprintComputerTest {
             .isEqualTo(original.fingerprint());
     }
 
+    /** 违规区分字段或逻辑实体身份改变，应得到不同指纹。 */
     @Test void changesInRuleOrLogicalEntityChangeFingerprint() {
         String original = computer.compute(bytes(REPORT), "samples:java-architecture-violations").getFirst().fingerprint();
         assertThat(computer.compute(bytes(REPORT.replace("internal-module-access\"]", "another-violation\"]")),
@@ -54,6 +60,7 @@ class ReportFingerprintComputerTest {
             "samples:java-architecture-violations").getFirst().fingerprint()).isNotEqualTo(original);
     }
 
+    /** 同报告重复逻辑违规和错误项目身份必须拒绝，不能生成含糊的比较快照。 */
     @Test void rejectsDuplicateLogicalFindingAndWrongProject() {
         String duplicate = REPORT.replace("}]\n}", "},{\"id\":\"finding_two\",\"rule\":{\"id\":\"archguard.internal-module-access\",\"version\":\"0.1.0\"},\"subjectId\":\"dependency_one\",\"severity\":\"high\",\"extensions\":{\"archguard.violation\":[\"internal-module-access\"]}}]\n}");
         assertThatThrownBy(() -> computer.compute(bytes(duplicate), "samples:java-architecture-violations"))

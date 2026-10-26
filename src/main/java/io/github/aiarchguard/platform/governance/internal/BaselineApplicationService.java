@@ -28,6 +28,10 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * 基线应用用例：在项目授权和仓库/规则版本归属校验后，把成功扫描提升为不可变版本或与活动版本比较。
+ * 通过 ScanJob 公开接口读取报告，由指纹计算器形成快照，再交给存储端口保存版本、选择史与比较事实。
+ */
 @Service
 class BaselineApplicationService implements BaselineOperations {
     private final ProjectAuthorization projects;
@@ -50,6 +54,10 @@ class BaselineApplicationService implements BaselineOperations {
         this.audit = audit; this.traceIds = traceIds; this.clock = clock;
     }
 
+    /**
+     * Maintainer 将成功扫描提升到指定比较空间，并在同一事务内选择该版本、记录审计。
+     * commitSha 是调用者提交的修订断言；这里不读取 Git，也不证明提交的祖先关系。
+     */
     @Override @Transactional
     public BaselineVersionView promote(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId, UUID scanJobId, String commitSha) {
@@ -59,12 +67,14 @@ class BaselineApplicationService implements BaselineOperations {
         RepositoryView repository = repositoryAndRules(projectId, repositoryId, ruleSetVersionId);
         ScanJobResult report = successfulJob(projectId, repositoryId, ruleSetVersionId, scanJobId);
         List<FindingSnapshot> snapshots = fingerprints.compute(report.canonicalJson(), repository.scannerIdentity());
+        // 同一空间的行锁串行化版本分配与活动选择；不同分支或 RuleSetVersion 不共享这把锁。
         BaselineScope scope = store.lockOrCreate(projectId, repositoryId, branch, ruleSetVersionId);
         BaselineVersionView existing = store.byJob(scope.id(), scanJobId).orElse(null);
         UUID actorId = actors.currentActor().id();
         Instant now = Instant.now(clock);
         BaselineVersionView version;
         if (existing != null) {
+            // 同一空间内，同一扫描只能绑定一份不可变元数据；重复提升复用内容，后面仍追加一次选择记录。
             if (!existing.commitSha().equals(commit) || !existing.reportSha256().equals(report.sha256())) {
                 throw new GovernanceConflictException("The scan job is already bound to different baseline metadata");
             }
@@ -79,6 +89,7 @@ class BaselineApplicationService implements BaselineOperations {
         return selected;
     }
 
+    /** 只切换同空间的活动指针并追加选择史，不改写已封存的基线内容。 */
     @Override @Transactional
     public BaselineVersionView select(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId, UUID baselineVersionId) {
@@ -96,6 +107,7 @@ class BaselineApplicationService implements BaselineOperations {
         return selected;
     }
 
+    /** Viewer 读取当前活动版本；空间或活动指针缺失时显式报无基线，不推导为空基线。 */
     @Override public BaselineVersionView active(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId) {
         projects.requireViewer(projectId);
@@ -107,6 +119,7 @@ class BaselineApplicationService implements BaselineOperations {
         return store.version(scope.id(), scope.activeVersionId()).orElseThrow(BaselineNotFoundException::new);
     }
 
+    /** Viewer 列出确切分支和规则版本空间的历史；尚未建立空间时返回空列表。 */
     @Override public List<BaselineVersionView> list(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId) {
         projects.requireViewer(projectId);
@@ -116,6 +129,10 @@ class BaselineApplicationService implements BaselineOperations {
             .map(scope -> store.versions(scope.id())).orElseGet(List::of);
     }
 
+    /**
+     * Maintainer 将成功候选与锁定时选中的确切基线版本比较，并保存三类 Finding 快照及审计。
+     * 相同基线版本和候选任务复用比较；以后切换活动版本不会改变已有比较。
+     */
     @Override @Transactional
     public ComparisonView compare(UUID projectId, UUID repositoryId, String targetBranch,
             UUID ruleSetVersionId, UUID candidateJobId) {
@@ -130,11 +147,13 @@ class BaselineApplicationService implements BaselineOperations {
         if (scope.activeVersionId() == null) throw new BaselineNotFoundException();
         BaselineVersionView baseline = store.version(scope.id(), scope.activeVersionId())
             .orElseThrow(BaselineNotFoundException::new);
+        // 不能把不同算法的指纹混入同一集合运算，也不自动迁移历史基线。
         if (!ReportFingerprintComputer.VERSION.equals(baseline.fingerprintVersion())) {
             throw new GovernanceConflictException("The active baseline uses an incompatible fingerprint version");
         }
         ComparisonView existing = store.comparison(baseline.id(), candidateJobId).orElse(null);
         if (existing != null) {
+            // 任务 ID 只是追溯标识；报告摘要变化时拒绝复用旧比较。
             if (!existing.candidateReportSha256().equals(report.sha256())) {
                 throw new GovernanceConflictException("Candidate report changed after comparison");
             }
@@ -149,11 +168,13 @@ class BaselineApplicationService implements BaselineOperations {
         return comparison;
     }
 
+    /** 使用其他模块的公开边界核对归属，不直接查询其数据库表。 */
     private RepositoryView repositoryAndRules(UUID projectId, UUID repositoryId, UUID versionId) {
         RepositoryView repository = repositories.get(projectId, repositoryId);
         ruleSets.requireVersion(projectId, repositoryId, versionId);
         return repository;
     }
+    /** 扫描执行成功与“没有违规”不同；成功且含违规的报告仍可用于基线与比较。 */
     private ScanJobResult successfulJob(UUID projectId, UUID repositoryId, UUID versionId, UUID jobId) {
         ScanJobView job = jobs.get(projectId, jobId);
         if (!job.repositoryId().equals(repositoryId) || !job.ruleSetVersionId().equals(versionId)) {

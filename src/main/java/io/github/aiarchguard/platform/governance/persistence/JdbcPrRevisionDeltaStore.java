@@ -6,11 +6,20 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+/**
+ * PR 修订差异所需的候选快照定位器；只查已完成提交关联的门禁与比较。
+ * 这里不计算基线门禁，也不从报告到达顺序或 Git ancestry 猜测前一 head。
+ */
 @Repository
 public class JdbcPrRevisionDeltaStore implements PrRevisionDeltaStore {
     private final JdbcClient jdbc;
     public JdbcPrRevisionDeltaStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
+    /**
+     * 在确切项目、仓库、PR、head、分支和规则集版本内选最新已完成候选。
+     * 上层 GovernanceReadService 在 REPEATABLE_READ 只读事务中读取当前 head、前驱及双方快照，
+     * 并确认当前候选门禁确实是当前 head 所关联的门禁；无候选时返回空而不假定空集合。
+     */
     @Override public Optional<Candidate> candidate(UUID projectId, UUID repositoryId, String externalId,
             String headSha, String targetBranch, UUID ruleSetVersionId) {
         return jdbc.sql("""

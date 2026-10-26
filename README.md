@@ -4,7 +4,7 @@ ArchGuard 的核心业务平台，初期采用 Java/Spring Boot 模块化单体�
 
 ## 中文代码阅读
 
-从 [Project 模块中文阅读指南](docs/code-reading/project-module.zh-CN.md)开始，再读 [Repository 与 RuleSet 中文阅读指南](docs/code-reading/repository-ruleset.zh-CN.md)及 [ScanJob 与 Finding 中文阅读指南](docs/code-reading/scanjob-finding.zh-CN.md)，可按 HTTP 入口、应用接口、权限与事务、领域对象、数据库适配器和测试的顺序理解代码。当前中文注释覆盖 Project、Repository、RuleSet、ScanJob、Finding 模块及各批次列明的测试，其他模块和仓库仍分批推进；只补注释和说明，不改变业务逻辑或部署状态。
+从 [Project 模块中文阅读指南](docs/code-reading/project-module.zh-CN.md)开始，再读 [Repository 与 RuleSet](docs/code-reading/repository-ruleset.zh-CN.md)、[ScanJob 与 Finding](docs/code-reading/scanjob-finding.zh-CN.md)和 [Governance 中文阅读指南](docs/code-reading/governance.zh-CN.md)，可按 HTTP 入口、应用接口、权限与事务、领域对象、数据库适配器和测试的顺序理解代码。当前中文注释覆盖上述六个模块及各批次列明的测试，其他模块和仓库仍分批推进；只补注释和说明，不改变业务逻辑或部署状态。
 
 ## 当前状态
 

@@ -90,8 +90,8 @@
 
 ## 后续待办（本批不冒充完成）
 
-- [x] Platform：Project、Repository、RuleSet、ScanJob、Finding及各批次列明的测试。
-- [ ] Platform：Governance、Agent、文档/凭据、身份/通用/审计及尚未列明的测试。
+- [x] Platform：Project、Repository、RuleSet、ScanJob、Finding、Governance及各批次列明的测试。
+- [ ] Platform：Agent、文档/凭据、身份/通用/审计及尚未列明的测试（包括其余治理契约/迁移测试）。
 - [ ] Scanner：生产与测试；固定 Java扫描输入用相邻说明解释。
 - [ ] Web：手写源码与测试，生成声明保持原样。
 - [ ] Deploy/Samples/Docs工具：脚本注释；运行配置及固定输入不改。
@@ -196,3 +196,43 @@
 - 累计116个 Java 文件与 `a83536d` 可执行 AST 一致，116个顶层类型有中文说明；前两批74文件及本批范围外资源未改变。
 - 完整 `mvnw --batch-mode --no-transfer-progress verify` 成功：942项、939通过、0失败/错误、3项既有 Windows-disabled 符号链接测试跳过；93份 JUnit XML 汇总一致。跳过项仍为 `ControlledSyntheticBatchInventoryTest.rejectsSymbolicLinksForBothFileAndParent`、`EncryptedCredentialConsumptionTest.symlinkMasterOrCiphertextNeverPermitsConsumption`、`EncryptedCredentialStoreTest.symlinksCannotSelectMasterOrCiphertext`；本批不声称运行了这些路径。
 - 允许范围为42个 Java 文件和4份说明，共46文件；114个本地阅读链接及空白检查通过。一次独立评审无 Critical/Important，指出1处报告大小下限的单位歧义，已仅将注释修正为“1 字节到 50 MiB”；未改阈值或逻辑。修正后再次确认116文件 AST 一致、相关7项通过，最终完整检查亦成功，仍为942项中939通过、3项 Windows 条件跳过，93份 XML 汇总一致。本批以本地提交交付，没有推送、部署或模型调用。
+
+## Task 10: 第四批 Governance 基线（2026-10-26）
+
+**Files:** 本计划、既有注释规范；忽略目录中的 AST 工具与验证日志。
+
+**Interfaces:** 以第三批提交 `72262f57b3104c6bd3702253b1faed4695113f66` 为基线，沿用隔离工作树；为 Task11/12 提供累计204文件保行为证据。
+
+- [x] 核对工作树、已完成批次和原用户修改；阅读 Governance 需求、3B–3G 设计、ADR-0008/0009 及实际代码。
+- [x] 运行 `FindingClassifierTest,GatePolicyTest,ReportFingerprintComputerTest,SubmissionContractTest,GovernanceApiIntegrationTest,GovernanceCiApiIntegrationTest` 基线；预期20项通过，0失败/错误/跳过。
+- [x] 扩展 AST 工具至204个文件，自测并记录初始中文说明数量；可执行结构预期全部相同。
+
+## Task 11: Governance 全链路中文注释
+
+**Files:** `src/main/java/io/github/aiarchguard/platform/governance/` 全部82个生产 Java 文件（根目录42、internal24、persistence7、web9）；`src/test/java/io/github/aiarchguard/platform/governance/internal/` 全部4个测试及 `GovernanceApiIntegrationTest.java`、`GovernanceCiApiIntegrationTest.java`。
+
+**Interfaces:** 公共类型及 Web、内部算法/应用服务、JDBC 存储按不重叠集合分工；根执行者拥有6个测试与阅读文档。签名、注解、配置、SQL、字面量、契约、fixture 和断言不变。
+
+- [x] 为82个生产类型和6个测试类型补中文职责说明，解释主要方法、调用关系及关键分支。
+- [x] 明确比较空间、逻辑指纹/扫描ID、基线版本/活动选择、三类集合差、例外有效区间、门禁与CI退出码；不把人工处置写成门禁例外。
+- [x] 按实际事务解释报告导入、门禁求值及完成关联的分段恢复；区别幂等与恰好一次、提交状态与异步执行。
+- [x] 按代码解释 Webhook 签名/时间窗/head顺序、PR修订差异与基线比较、只读视图、MVC失败审计覆盖；不推导Git ancestry或公网验收。
+- [x] 累计204文件 AST 一致且顶层中文说明齐全，原116文件不动；相关20项及完整 Maven verify 通过，跳过项如实记录。
+
+## Task 12: Governance 阅读指南与本地交付
+
+**Files:** 新建 `docs/code-reading/governance.zh-CN.md`；更新 README、注释规范及本计划。
+
+**Interfaces:** 用实际源码导航串联 Task11，讲解从成功报告到基线、比较、门禁及CI/Web消费的路径，不复制或修改机器契约。
+
+- [x] 完成阅读顺序、现有边界和测试意图；本地链接、允许范围及空白检查通过。
+- [x] 一次独立评审本批差异，核对不可变/事务/并发、身份/来源与状态及测试覆盖描述；准确性问题在只注释范围内修正。
+- [x] 保存本地提交和真实验证记录；其他模块、剩余契约测试和其他仓库保持待办，不推送、合并、部署或调用模型。
+
+## 第四批实际验证（2026-10-26）
+
+- 相关6个测试类共20项，基线和修改后均通过，0失败/错误/跳过；涉及真实测试 PostgreSQL 与本地 MockMvc，不代表真实 GitHub/CI 投递。
+- 累计204个 Java 文件与 `72262f5` 可执行 AST 一致，204个顶层类型有中文说明；原116文件及范围外资源未改变。
+- 本批范围为88个 Java 文件和4份说明，共92文件；154个本地阅读链接和空白检查通过。Java 仅替换3处原英文自然语言说明，其余为新增注释；SQL、字符串、注解、断言及固定数据不变。
+- 一次独立评审无 Critical/Important/Minor 发现，另核对新指南39个本地链接；没有待修文案。
+- 本批完整 `mvnw --batch-mode --no-transfer-progress verify` 成功：942项、939通过、0失败/错误、3项既有 Windows 11 条件跳过，93份 JUnit XML 汇总一致。跳过的3个符号链接测试与第三批记录同名，未声称在本机执行这些路径。本批以本地提交交付，不推送、合并、部署或调用模型。

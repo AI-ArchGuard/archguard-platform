@@ -13,11 +13,16 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+/**
+ * 有期限策略例外及撤销历史的 JDBC 存储适配器。
+ * 是否在求值时刻有效由上层策略按生效、到期和撤销时间判断，这里不改写原例外。
+ */
 @Repository
 public class JdbcPolicyExceptionStore implements PolicyExceptionStore {
     private final JdbcClient jdbc;
     public JdbcPolicyExceptionStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
+    /** 按项目、仓库、分支、规则集版本及规则或指纹范围写入新例外事实。 */
     @Override public void insert(PolicyExceptionRecord value) {
         jdbc.sql("""
             INSERT INTO governance.policy_exceptions(id,project_id,repository_id,target_branch,rule_set_version_id,
@@ -31,12 +36,14 @@ public class JdbcPolicyExceptionStore implements PolicyExceptionStore {
             .param("actor", value.createdBy()).param("created", Timestamp.from(value.createdAt())).update();
     }
 
+    /** 按项目和仓库限定例外 ID，并连同可能存在的撤销版本读取。 */
     @Override public Optional<PolicyExceptionRecord> find(UUID projectId, UUID repositoryId, UUID exceptionId) {
         return jdbc.sql(select() + " WHERE e.project_id=:project AND e.repository_id=:repository AND e.id=:id")
             .param("project", projectId).param("repository", repositoryId).param("id", exceptionId)
             .query(JdbcPolicyExceptionStore::map).optional();
     }
 
+    /** 返回范围内全部历史例外，包括未生效、已到期和已撤销项，按创建时间及 ID 升序。 */
     @Override public List<PolicyExceptionRecord> list(UUID projectId, UUID repositoryId, String branch, UUID rules) {
         return jdbc.sql(select() + """
              WHERE e.project_id=:project AND e.repository_id=:repository
@@ -45,6 +52,7 @@ public class JdbcPolicyExceptionStore implements PolicyExceptionStore {
             .param("branch", branch).param("rules", rules).query(JdbcPolicyExceptionStore::map).list();
     }
 
+    /** 追加撤销版本；唯一 exception_id 使重复撤销返回 false，原例外行不变。 */
     @Override public boolean revoke(UUID exceptionId, UUID versionId, String reason, UUID actorId, Instant at) {
         return jdbc.sql("""
             INSERT INTO governance.policy_exception_revocations(exception_id,version_id,reason,revoked_by,revoked_at)
@@ -53,6 +61,7 @@ public class JdbcPolicyExceptionStore implements PolicyExceptionStore {
             .param("actor", actorId).param("at", Timestamp.from(at)).update() == 1;
     }
 
+    /** 左连接撤销事实，使无撤销记录的例外也保留在结果中。 */
     private static String select() {
         return """
             SELECT e.*,r.version_id AS revocation_version_id,r.reason AS revocation_reason,

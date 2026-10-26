@@ -24,6 +24,10 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 用真实测试 PostgreSQL 和 MockMvc 验证基线、比较、门禁、例外及项目权限。
+ * 前置仓库、规则和扫描由测试夹具直接准备；不执行 Scanner，也不证明生产 OIDC 登录链路。
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
@@ -36,6 +40,7 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
         this.mvc = mvc; this.jdbc = jdbc; this.mapper = mapper;
     }
 
+    /** 提升和重选基线保留不可变版本，并按不同参考集合得到新增或已解决的问题。 */
     @Test void promotesImmutableVersionsAndClassifiesNewAndResolved() throws Exception {
         Fixture fixture = fixture(true);
         UUID firstJob = job(fixture, emptyReport(fixture.identity()));
@@ -80,6 +85,7 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
             .param("project", fixture.project()).query(Long.class).single()).isEqualTo(6);
     }
 
+    /** 非成员看到隐藏式未找到；即使任务可见，也不能替换为其他项目的规则版本。 */
     @Test void concealsCrossProjectBaselinesAndRejectsWrongRuleSetVersion() throws Exception {
         Fixture own = fixture(true);
         Fixture other = fixture(false);
@@ -99,6 +105,7 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isNotFound());
     }
 
+    /** 例外影响使用新键发起的后续求值，原 FAIL 门禁和已封存历史保持不变。 */
     @Test void gatePersistsImmutableFailureAndExceptionAllowsOnlyNewEvaluation() throws Exception {
         Fixture fixture = fixture(true);
         UUID baselineJob = job(fixture, emptyReport(fixture.identity()));
@@ -158,6 +165,7 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
             .param("project", fixture.project()).query(Long.class).single()).isEqualTo(3);
     }
 
+    /** 无基线为 ERROR/64，未成功任务为 ERROR/70；复用异义键和跨项目写入分别拒绝。 */
     @Test void missingBaselineReturnsPersistedConfigurationErrorAndCrossProjectWritesAreDenied() throws Exception {
         Fixture own = fixture(true);
         Fixture other = fixture(false);
@@ -191,6 +199,7 @@ class GovernanceApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isNotFound());
     }
 
+    /** 直接准备资源和可选 Maintainer 成员关系，只为隔离本套治理用例的前置条件。 */
     private Fixture fixture(boolean member) {
         UUID project = UUID.randomUUID(), repository = UUID.randomUUID(), ruleSet = UUID.randomUUID(), rules = UUID.randomUUID();
         String identity = "test:" + project;

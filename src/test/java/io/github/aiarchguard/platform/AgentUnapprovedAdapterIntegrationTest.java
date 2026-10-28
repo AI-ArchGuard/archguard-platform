@@ -17,6 +17,9 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 验证仅开启 Agent 总开关仍不能使用未经批准的提供方。完整 Spring/数据库路径应返回 MODEL_UNAVAILABLE，且不占用预算。
+ */
 @SpringBootTest(properties = "archguard.agent.enabled=true")
 @AutoConfigureMockMvc
 class AgentUnapprovedAdapterIntegrationTest extends PostgresIntegrationTestSupport {
@@ -24,6 +27,7 @@ class AgentUnapprovedAdapterIntegrationTest extends PostgresIntegrationTestSuppo
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
 
+    // 开关不是适配器准入证据，缺少获批模型时在费用预留前失败。
     @Test void enablingFlagAloneCannotCallAnUnapprovedProvider() throws Exception {
         var fixture = AgentExplanationIntegrationTest.fixture(jdbc);
         Map<String, Object> body = new HashMap<>();

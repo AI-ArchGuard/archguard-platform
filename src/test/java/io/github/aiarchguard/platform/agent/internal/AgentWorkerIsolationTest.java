@@ -24,7 +24,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-/** Wrong routing must never turn a non-synthetic request into synthetic work. */
+/**
+ * 验证旧合成 worker 不会消费 live 请求或畸形绑定，也不能通过失败分支改写它们。所有端口均为内存替身，重点检查错误路由的零副作用。
+ *
+ * Wrong routing must never turn a non-synthetic request into synthetic work.
+ */
 class AgentWorkerIsolationTest {
     private static final Instant NOW = Instant.parse("2026-10-12T00:00:00Z");
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
@@ -60,6 +64,7 @@ class AgentWorkerIsolationTest {
     @ParameterizedTest
     @ValueSource(strings = {"live-profile", "profile", "protocol", "model", "price", "schema", "prompt",
         "input-prompt", "input-schema", "input-purpose", "missing-bindings", "missing-input"})
+    // 各种非合成或失配绑定在账本和模型前拒绝。
     void queuedNonSyntheticOrMalformedBindingCannotReachSyntheticLedgerOrModel(String change) {
         store.value = snapshot("QUEUED", change);
         AgentSnapshot before = store.value;
@@ -69,6 +74,7 @@ class AgentWorkerIsolationTest {
         assertUntouched(before);
     }
 
+    // 排队拒绝不赋予终结 live 请求的权限。
     @Test void queueRejectionCannotTerminalizeALiveRequest() {
         store.value = snapshot("QUEUED", "live-profile");
         AgentSnapshot before = store.value;
@@ -88,6 +94,7 @@ class AgentWorkerIsolationTest {
         assertUntouched(before);
     }
 
+    // 直接调用旧状态迁移也不能绕过路由隔离。
     @Test void directSyntheticTransitionsCannotMutateLiveRequests() {
         store.value = snapshot("QUEUED", "live-profile");
         AgentSnapshot queued = store.value;
@@ -123,6 +130,7 @@ class AgentWorkerIsolationTest {
         assertUntouched(running);
     }
 
+    // 关联读取失败不能被解释为“无关联”后退回合成路径。
     @Test void unavailableAssociationReadCannotFallBackToSyntheticWork() {
         linksUnavailable = true;
         store.value = snapshot("QUEUED", "unchanged");
@@ -133,6 +141,7 @@ class AgentWorkerIsolationTest {
         assertUntouched(before);
     }
 
+    // 保留原合成请求的正向路径，隔离不能误伤原有流程。
     @Test void unchangedSyntheticRequestStillUsesItsOwnWorkerAndLedger() {
         store.value = snapshot("QUEUED", "unchanged");
 
@@ -146,6 +155,7 @@ class AgentWorkerIsolationTest {
         assertThat(audit).hasSize(2);
     }
 
+    // 统一检查请求内容和各副作用计数，不能只凭一次异常判断隔离成功。
     private void assertUntouched(AgentSnapshot before) {
         assertThat(store.value).isSameAs(before);
         assertThat(store.writes.get()).isZero();

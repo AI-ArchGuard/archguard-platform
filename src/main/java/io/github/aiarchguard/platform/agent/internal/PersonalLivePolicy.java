@@ -10,7 +10,10 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Component;
 
-/** One explicitly bound synthetic acceptance batch; never wildcard authorization. */
+/**
+ * 个人真实运行的本地准入策略，绑定唯一项目及批次并检查 profile、开关、HTTP 安全属性和数据库有限等待配置；
+ * 可用状态不探测供应商。
+ */
 @Component
 final class PersonalLivePolicy implements AgentRuntimeAvailability {
     private final Environment environment;
@@ -28,6 +31,9 @@ final class PersonalLivePolicy implements AgentRuntimeAvailability {
         catch (RuntimeException unavailable) { return false; }
     }
 
+    /**
+     * 同时要求个人 OIDC profile、独立 live 开关、凭据入口和安全 JVM/有限数据库等待配置；任何缺项均失败关闭。
+     */
     void requireConfigured() {
         if (!environment.acceptsProfiles(Profiles.of("local-compose & oidc"))
                 || !enabled("archguard.agent.enabled") || !enabled("archguard.agent.live.enabled")
@@ -47,7 +53,7 @@ final class PersonalLivePolicy implements AgentRuntimeAvailability {
         finite(pool, "connectTimeout", 2); finite(pool, "socketTimeout", 5); finite(pool, "cancelSignalTimeout", 1);
     }
 
-    /** Must run inside the caller's original bounded database transaction. */
+    /** 在原有界事务中核对唯一配置项目/批次及当前确认的检查引用；不能自动选择最新批准或用新批次恢复次数。 */
     void requireBatch(UUID project, UUID batchId, UUID template) {
         requireConfigured();
         if (!id("project-id").equals(project) || !id("batch-id").equals(batchId) || template == null) throw unavailable();

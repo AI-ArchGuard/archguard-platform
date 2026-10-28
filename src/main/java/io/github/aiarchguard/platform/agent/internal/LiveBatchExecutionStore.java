@@ -4,7 +4,7 @@ import io.github.aiarchguard.platform.agent.LiveBatchExecutionView;
 import java.util.Optional;
 import java.util.UUID;
 
-/** One read snapshot; implementations must not allocate, claim, reserve, settle or repair history. */
+/** 一次一致性读取的存储端口；实现只观察模板槽、请求、尝试和结算，不创建、领取、预留、结算或修补历史。 */
 public interface LiveBatchExecutionStore {
     Optional<LiveBatchExecutionView> load(UUID projectId, UUID batchId);
 }

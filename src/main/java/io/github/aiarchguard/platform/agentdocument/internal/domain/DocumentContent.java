@@ -13,6 +13,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.regex.Pattern;
 
+/** 领域值对象：严格文本校验、原始字节摘要及稳定片段划分，不解释或执行正文指令。 */
 public record DocumentContent(String text, String sha256, int byteSize, List<Fragment> fragments) {
     public static final int MAX_BYTES = 262144;
     private static final int MAX_PARAGRAPHS = 128;
@@ -23,6 +24,7 @@ public record DocumentContent(String text, String sha256, int byteSize, List<Fra
 
     public DocumentContent { fragments = List.copyOf(fragments); }
 
+    /** 接受有界严格 UTF-8，排除明显凭据和控制字符，再生成可追溯片段。 */
     public static DocumentContent parse(byte[] bytes) {
         if (bytes == null || bytes.length == 0) throw new InvalidDocumentException("Document must not be empty");
         if (bytes.length > MAX_BYTES) throw new DocumentTooLargeException();
@@ -49,6 +51,7 @@ public record DocumentContent(String text, String sha256, int byteSize, List<Fra
         List<Fragment> fragments = new ArrayList<>();
         for (int start = 0; start < text.length();) {
             int end = Math.min(text.length(), start + FRAGMENT_CHARS);
+            // 长度及偏移采用 UTF-16 字符单位；边界后退一位，避免拆开 Unicode 代理对。
             if (end < text.length() && Character.isHighSurrogate(text.charAt(end - 1))) end--;
             String fragment = text.substring(start, end);
             fragments.add(new Fragment(fragments.size(), start, fragment, sha256(fragment.getBytes(StandardCharsets.UTF_8))));
@@ -58,6 +61,7 @@ public record DocumentContent(String text, String sha256, int byteSize, List<Fra
         return new DocumentContent(text, sha256(bytes), bytes.length, fragments);
     }
 
+    /** 空白行分隔非空段落，连续正文行算同一段，限制复杂度而不重写原文。 */
     private static int paragraphCount(String text) {
         int count = 0;
         boolean inParagraph = false;
@@ -68,10 +72,12 @@ public record DocumentContent(String text, String sha256, int byteSize, List<Fra
         return count;
     }
 
+    /** 对传入字节计算十六进制摘要，正文摘要与片段摘要均使用此算法。 */
     public static String sha256(byte[] bytes) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
         catch (NoSuchAlgorithmException exception) { throw new IllegalStateException(exception); }
     }
 
+    /** 顺序片段：索引和原文偏移稳定，摘要按片段 UTF-8 字节计算。 */
     public record Fragment(int index, int startOffset, String content, String sha256) {}
 }

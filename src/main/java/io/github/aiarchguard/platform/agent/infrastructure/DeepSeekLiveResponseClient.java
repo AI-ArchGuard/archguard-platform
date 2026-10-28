@@ -15,7 +15,9 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Unregistered fixed-protocol component; not an AgentModelPort or a credential/egress policy. */
+/**
+ * 受控真实链使用的固定协议客户端，通过惰性生产适配器创建。先独立校验模型和计费用量，再抽取业务文本；无效业务仍可保留合法费用依据。
+ */
 final class DeepSeekLiveResponseClient implements LiveResponsePort {
     private static final Logger LOGGER = LoggerFactory.getLogger(DeepSeekLiveResponseClient.class);
     private final DeepSeekResponsesCodec codec;
@@ -38,12 +40,17 @@ final class DeepSeekLiveResponseClient implements LiveResponsePort {
         return send(body, apiKey, remaining, approvedModelIds, io.github.aiarchguard.platform.agent.LiveCostPolicy.VERSION);
     }
 
+    /**
+     * 先验证封装、模型与计费用量，后处理业务 JSON；
+     * 业务失败仍返回合法 usage，封装/用量或敏感标识失败则不提供可信费用依据，响应字节最终清零。
+     */
     @Override public Reply send(byte[] body, String apiKey, Duration remaining, Set<String> approvedModelIds, String priceVersion) {
         if (approvedModelIds == null || approvedModelIds.isEmpty()
                 || !io.github.aiarchguard.platform.agent.LiveCostPolicy.supported(priceVersion)) throw new CallFailure("MODEL_UNAVAILABLE");
         byte[] response = null;
         try {
             response = transport.post(body, apiKey, remaining);
+            // 不把“响应是 JSON”视为可信；封装、模型与 usage 通过后，才有独立计费依据。
             var accounting = codec.decodeAccounting(response, approvedModelIds, priceVersion);
             // Provider identifiers are untrusted metadata too, not a safe channel for echoed credentials.
             if (sensitiveIdentifier(accounting.responseId(), apiKey) || sensitiveIdentifier(accounting.actualModelId(), apiKey)) {
@@ -105,6 +112,9 @@ final class DeepSeekLiveResponseClient implements LiveResponsePort {
             || normalized.startsWith("github_pat_");
     }
 
+    /**
+     * 在解析后的字符串值和字段名中检查当前 Key 的精确回显，覆盖 JSON 转义；不承诺识别拆分、变形编码或历史 Key。
+     */
     private boolean echoesCurrentCredential(String raw, String apiKey) {
         try {
             var nodes = new ArrayDeque<JsonNode>();

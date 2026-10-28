@@ -12,8 +12,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 离线对照个人确认 Schema、DTO 与设置 API，锁定严格字段和默认关闭语义。配置可读不代表 Key 可读或真实模型已经启用。
+ */
 class AgentEnablementContractTest {
     private final ObjectMapper mapper = new ObjectMapper();
+    // 合法确认与逐项非法变异同时校验，防止 Schema 与运行时字段分离。
     @Test void acknowledgementSchemaMatchesRuntimeAndRejectsUntrustedFields() throws Exception {
         var path = Path.of("contracts/agent-personal-enablement-0.2.0.schema.json");
         try (var stream = Files.newInputStream(path)) {
@@ -35,6 +39,7 @@ class AgentEnablementContractTest {
         }
     }
 
+    // 增量设置入口保持乐观锁和凭据不回读，所有本地引用须解析成功。
     @Test void additiveApiHasLockedSettingsNoKeyReadAndResolvableReferences() throws Exception {
         var file = Path.of("openapi/agent-enablement-v1.json");
         JsonNode api = mapper.readTree(file.toFile());
@@ -58,6 +63,7 @@ class AgentEnablementContractTest {
             resolve(body, body, schemaFile);
         }
     }
+    // 按本地契约位置递归解析引用，不执行外部获取。
     private void resolve(JsonNode value, JsonNode root, Path file) throws Exception {
         if (value.isObject()) {
             if (value.has("$ref")) {

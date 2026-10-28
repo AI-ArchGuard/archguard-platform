@@ -9,10 +9,14 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.oauth2.jwt.Jwt;
 
+/**
+ * 验证本地 JWT 验证器及权限映射中的 audience、UUID subject 与 HTTPS 端点。直接构造的 JWT 不证明真实签名或发现服务可用。
+ */
 class OidcTokenValidationTest {
     private static final String ACTOR = "11111111-1111-1111-1111-111111111111";
 
     @Test
+    // token 必须包含配置 audience，避免误用其他服务 token。
     void requiresTheConfiguredAudience() {
         OidcAudienceValidator validator = new OidcAudienceValidator("archguard-platform");
 
@@ -22,6 +26,7 @@ class OidcTokenValidationTest {
     }
 
     @Test
+    // 已验证 subject 必须能映射为 UUID 业务身份。
     void requiresUuidSubjects() {
         OidcActorSubjectValidator validator = new OidcActorSubjectValidator();
 
@@ -30,6 +35,7 @@ class OidcTokenValidationTest {
     }
 
     @Test
+    // scope/scp 统一为应用权限名，不携带框架前缀。
     void mapsStandardScopesToUnprefixedApplicationPermissions() {
         var authentication = OidcSecurityConfiguration.jwtAuthenticationConverter()
             .convert(jwt(ACTOR, List.of("archguard-platform")));
@@ -42,6 +48,7 @@ class OidcTokenValidationTest {
     }
 
     @Test
+    // issuer 与 JWKS 地址均须 HTTPS，防止配置降级。
     void rejectsNonHttpsIdentityEndpoints() {
         assertThatIllegalArgumentException()
             .isThrownBy(() -> new OidcProperties("http://identity.example.test", "archguard-platform", null, false))

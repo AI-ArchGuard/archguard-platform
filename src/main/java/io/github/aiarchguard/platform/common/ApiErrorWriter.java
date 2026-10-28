@@ -7,6 +7,7 @@ import java.util.Map;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 
+/** 供安全过滤器等尚未进入 MVC 的路径写统一 JSON 错误；traceId 由前置过滤器建立。 */
 @Component
 public class ApiErrorWriter {
     private final ObjectMapper objectMapper;

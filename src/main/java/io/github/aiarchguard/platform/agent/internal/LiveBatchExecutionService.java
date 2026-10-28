@@ -7,7 +7,9 @@ import io.github.aiarchguard.platform.project.ProjectAuthorization;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 
-/** Historical observation only: no credential, inventory, admission or model dependency. */
+/**
+ * 只读执行视图的应用服务：先核验当前项目 Viewer 与 Schema，再读持久化快照；不依赖凭据、来源清单、发送准入或模型。
+ */
 @Service
 final class LiveBatchExecutionService implements LiveBatchExecutionOperations {
     private final ProjectAuthorization projects;

@@ -16,6 +16,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+/**
+ * 用可回滚内存事务验证结果写入在动作后、审计后和提交前都复核期限。关注成功结果与审计的原子性，不证明真实数据库锁等待可取消。
+ */
 class LiveResultTransitionsTest {
     LiveExecutionCoordinatorTest fixture;
     AtomicBoolean expired;
@@ -28,6 +31,7 @@ class LiveResultTransitionsTest {
         return new AgentRequestView.AgentResult(null, List.of(), List.of(), List.of(), List.of(), "NONE");
     }
     Runnable guard() { return () -> { if (expired.get()) throw new LiveResponsePort.CallFailure("MODEL_TIMEOUT"); }; }
+    // 包装存储和审计注入精确过期时点，观察写过之后能否被同一事务回滚。
     LiveResultTransitions writer(Runnable afterWrite, Runnable afterAudit) {
         return writer(afterWrite, afterAudit, false);
     }
@@ -50,15 +54,18 @@ class LiveResultTransitionsTest {
         assertThat(fixture.requests.value.view().state()).isEqualTo("RUNNING");
         assertThat(fixture.requests.value.view().result()).isNull();
     }
+    // 已经过期时不能先写再补偿。
     @Test void expiryBeforeTransactionWriteNeverTouchesRequest() {
         expired.set(true); timeout(writer(() -> {}, () -> {})); assertThat(writes).hasValue(0);
     }
+    // 即使存储动作已发生，随后过期也必须回滚成功。
     @Test void expiryAfterStoreWriteRollsBackSuccess() {
         timeout(writer(() -> expired.set(true), () -> {})); assertThat(writes).hasValue(1);
     }
     @Test void expiryAfterAuditRollsBackSuccess() {
         timeout(writer(() -> {}, () -> expired.set(true))); assertThat(writes).hasValue(1);
     }
+    // 较早提交回调使预算失效时，最终提交检查仍须阻止提交。
     @Test void expiryInAnEarlierCommitHookStillRollsBackSuccess() {
         timeout(writer(() -> {}, () -> TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public int getOrder() { return Integer.MIN_VALUE; }
@@ -67,6 +74,7 @@ class LiveResultTransitionsTest {
         assertThat(writes).hasValue(1);
     }
 
+    // 旧构造器不提供有界保证，禁止回退到无界成功或失败写入。
     @Test void legacyWriterCannotFallBackToUnboundedSuccessOrFailurePersistence() {
         var legacy = writer(() -> {}, () -> {});
         assertThatThrownBy(() -> legacy.finishBounded(fixture.original, result(), null, () -> 5_000_000_000L))
@@ -87,6 +95,7 @@ class LiveResultTransitionsTest {
         boundedTimeout(writer(() -> expired.set(true), () -> {}, true)); assertThat(writes).hasValue(1);
     }
 
+    // 有界路径同样保证审计后过期不会留下成功结果。
     @Test void boundedExpiryAfterAuditStillRollsBackSuccess() {
         boundedTimeout(writer(() -> {}, () -> expired.set(true), true)); assertThat(writes).hasValue(1);
     }

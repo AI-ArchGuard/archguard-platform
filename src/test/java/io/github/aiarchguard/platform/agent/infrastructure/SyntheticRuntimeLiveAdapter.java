@@ -28,7 +28,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
-/** Test-only fake HTTP exchange; production codec, client and version-bound credential bridge remain real. */
+/**
+ * 测试专用假 HTTP 适配器：复用生产编解码器、客户端与版本绑定凭据桥，仅替换交换和故障时序。响应与用量都是合成数据，不构成真实调用或账单证据。
+ *
+ * Test-only fake HTTP exchange; production codec, client and version-bound credential bridge remain real.
+ */
 public final class SyntheticRuntimeLiveAdapter implements LiveAdapterBundle {
     public static final String KEY = "synthetic-end-to-end-runtime-credential-only";
     public final AtomicInteger calls = new AtomicInteger();
@@ -101,6 +105,7 @@ public final class SyntheticRuntimeLiveAdapter implements LiveAdapterBundle {
         return new DeepSeekHttpTransport.Response(200, "application/json", mapper.writeValueAsBytes(envelope));
     }
 
+    // 只从获批输入引用构造合成输出，供端到端 Schema 与引用校验。
     private ObjectNode output(AgentModelPort.ModelInput input) {
         boolean summary = "PR_SUMMARY".equals(input.purpose());
         String finding = summary ? input.findings().getFirst().findingRef() : input.findingRef();
@@ -129,6 +134,7 @@ public final class SyntheticRuntimeLiveAdapter implements LiveAdapterBundle {
         });
         return done.get(2, TimeUnit.SECONDS);
     }
+    // 故障注入闩锁有有限等待，中断时保留调用方标记。
     private static void await(CountDownLatch latch) {
         try { if (!latch.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Synthetic exchange gate timed out"); }
         catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IllegalStateException("Synthetic exchange interrupted"); }

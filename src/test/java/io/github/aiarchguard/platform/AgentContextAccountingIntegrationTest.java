@@ -22,6 +22,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 验证当前上下文费用策略在真实账本中的独立版本、保守预留和解释/摘要顺序。固定时钟、来源和凭据元数据为替身，不发送模型请求或推断供应商账单。
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -69,6 +72,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
 
     @AfterEach void clear() { Thread.interrupted(); SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId"); }
 
+    // 预留使用上下文金额；摘要须等解释业务成功且费用结算，不只看结算记录。
     @Test void independentPolicyReserves316373AndSecondWaitsForValidatedSuccessNotJustSettlement() {
         var batch = batch(700000); UUID first = insert(batch.id(), explanation, "FINDING_EXPLANATION", true);
         UUID second = insert(batch.id(), summary, "PR_SUMMARY", true);
@@ -87,6 +91,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(legacy.amount("PROJECT", project, "spent_microusd")).isEqualTo(273);
     }
 
+    // 旧映射只保留历史读取/结算，不得批准、创建或预留新工作。
     @Test void oldContextMappingCannotApproveANewBatchOrCreateAndReserveANewLiveAttempt() throws Exception {
         var historical = historicalContextBatch();
         assertThat(enablements.settings(project).enablementId()).isEqualTo(approval);
@@ -110,6 +115,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(legacy.amount("PROJECT", project, "reserved_microusd")).isZero();
     }
 
+    // 发送许可与历史费用分开，失去当前映射许可不抹掉旧价格的已发生费用。
     @Test void oldContextAttemptCannotPassEitherSendRecheckButItsAccruedFeeSettlesAtItsOriginalPrice() throws Exception {
         var historical = historicalContextBatch();
         UUID first = insert(historical.id(), explanation, "FINDING_EXPLANATION", true);
@@ -165,6 +171,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(ledger.attempt(project, first)).isEmpty();
     }
 
+    // 尚无 attempt 的可信预检失败仍可停批，不能通过替代请求继续。
     @Test void trustedPreflightFailureBeforeAnAttemptStillStopsReplacementRequests() {
         var batch = batch(700000); UUID first = insert(batch.id(), explanation, "FINDING_EXPLANATION", true);
         assertThat(ledger.attempt(project, first)).isEmpty();
@@ -211,6 +218,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         }
     }
 
+    // 观察阈值超限保留可信用量并原子停批，不依赖结果终态先落库。
     @Test void overObservationThresholdSettlesKnownCostAndAtomicallyStopsEvenIfResultIsNotYetFailed() {
         var batch = batch(700000); UUID first = insert(batch.id(), explanation, "FINDING_EXPLANATION", true);
         UUID second = insert(batch.id(), summary, "PR_SUMMARY", true);
@@ -228,6 +236,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(stopCode(batch.id())).isEqualTo("INPUT_TOKEN_LIMIT");
     }
 
+    // 未知用量不退款，停批后也不允许换请求再试。
     @Test void unknownUsageKeepsTheFullReservationAndStopsNoReplacementAttempt() {
         var batch = batch(700000); UUID first = insert(batch.id(), explanation, "FINDING_EXPLANATION", true);
         UUID second = insert(batch.id(), summary, "PR_SUMMARY", true);
@@ -239,6 +248,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThatThrownBy(() -> accounting.reserve(project, batch.id(), summary, second)).isInstanceOf(AgentEnablementInvalidStateException.class);
     }
 
+    // 新批准不能重置旧失效或未知费用历史，新增预留必须单独计入。
     @Test void freshInventoryAndBatchPreserveExpiredRevokedUnknownHistoryAndReserveSeparately() {
         var oldBatch = batch(700000);
         UUID oldRequest = insert(oldBatch.id(), explanation, "FINDING_EXPLANATION", true);
@@ -392,6 +402,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(ledger.lockBatch(batch.id()).attempts()).isZero();
     }
 
+    // 选择新确认不升级旧 attempt 的冻结费用策略。
     @Test void legacyAttemptStillSettlesItsOwn4200PolicyAfterNewConfirmationIsSelected() {
         UUID id = historicalAttempt(LiveCostPolicy.VERSION);
         var outcome = accounting.settle(project, id, LiveCostPolicy.VERSION, new LiveTokenUsage(1000, 100, 500, 1100, 0));
@@ -401,6 +412,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(enablements.settings(project).enablementId()).isEqualTo(approval);
     }
 
+    // 未知历史价格不能猜测成新旧费率，原预留继续保留。
     @Test void unrecognizedHistoricPriceNeverUsesNewOrLegacyRatesAndRetainsOriginalReservation() {
         UUID id = historicalAttempt("historical-unknown-price");
         assertThat(accounting.settle(project, id, "historical-unknown-price", new LiveTokenUsage(1, 0, 0, 1, 0)).state()).isEqualTo("UNKNOWN");
@@ -466,6 +478,7 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         return id;
     }
 
+    // 只在需要测试摘要准入的场景显式写入合成解释成功事实，不调用提供方。
     private void succeeded(UUID request) {
         assertThat(requests.finish(request, new AgentRequestView.AgentResult("Synthetic", List.of(), List.of(), List.of(), List.of(), "INSUFFICIENT"),
             null, null, now)).isTrue();

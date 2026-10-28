@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+/** 项目文档 HTTP 适配层：读取 multipart/JSON，授权和版本语义交给应用接口。 */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/documents")
 final class DocumentController {
@@ -37,6 +38,7 @@ final class DocumentController {
         this.mapper = mapper.copy().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
     }
 
+    /** 新建返回 201，幂等重放返回 200；两者 Location 均指向确切不可变版本。 */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     ResponseEntity<DocumentVersionView> upload(@PathVariable UUID projectId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
@@ -53,29 +55,34 @@ final class DocumentController {
         return ResponseEntity.status(uploaded.replay() ? 200 : 201).location(location).body(uploaded.version());
     }
 
+    /** 分页读取不含正文的文档列表。 */
     @GetMapping
     DocumentPage list(@PathVariable UUID projectId,
             @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
         return documents.list(projectId, page, size);
     }
 
+    /** 读取指定文档的版本摘要列表。 */
     @GetMapping("/{documentId}/versions")
     DocumentVersionPage listVersions(@PathVariable UUID projectId, @PathVariable UUID documentId,
             @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
         return documents.listVersions(projectId, documentId, page, size);
     }
 
+    /** 以完整层级身份读取正文，归属不符由应用层统一隐藏。 */
     @GetMapping("/{documentId}/versions/{versionId}")
     DocumentVersionView get(@PathVariable UUID projectId, @PathVariable UUID documentId,
             @PathVariable UUID versionId) {
         return documents.getVersion(projectId, documentId, versionId);
     }
 
+    /** 供版本引用直接解析，仍在项目授权边界内。 */
     @GetMapping("/versions/{versionId}")
     DocumentVersionView getById(@PathVariable UUID projectId, @PathVariable UUID versionId) {
         return documents.getVersionById(projectId, versionId);
     }
 
+    /** 严格拒绝未知 JSON 字段，检索只消费明确版本集合，不触发模型或网络。 */
     @PostMapping(value = "/search", consumes = MediaType.APPLICATION_JSON_VALUE)
     SearchResponse search(@PathVariable UUID projectId, @RequestBody String json) {
         SearchRequest request;

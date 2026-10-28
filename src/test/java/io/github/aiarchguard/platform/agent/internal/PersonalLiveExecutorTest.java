@@ -11,7 +11,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证个人执行器惰性初始化、有界排队及关闭资源的行为。用可控任务和资源替身观察运行中任务、队列与中断，不调用真实模型。
+ */
 class PersonalLiveExecutorTest {
+    // 关闭同时停止运行中工作、丢弃待执行项，并实际等待两个资源结束。
     @Test void closeStopsInFlightDiscardsQueuedWorkAndReallyAwaitsBothResources() throws Exception {
         var bundle = new FakeBundle(); var executor = new PersonalLiveExecutor(bundle);
         var entered = new CountDownLatch(1); var exited = new CountDownLatch(1);
@@ -36,6 +40,7 @@ class PersonalLiveExecutorTest {
         } finally { executor.close(); }
     }
 
+    // 构造不启动工作或适配器，队列容量受限以避免无限积压。
     @Test void constructionDoesNotInitializeAdapterOrStartWorkAndQueueIsBounded() throws Exception {
         var bundle = new FakeBundle(); var executor = new PersonalLiveExecutor(bundle);
         var entered = new CountDownLatch(1);
@@ -50,6 +55,7 @@ class PersonalLiveExecutorTest {
         } finally { executor.close(); }
     }
 
+    // 清理保留调用方中断，未使用的适配器包也必须关闭。
     @Test void cleanupPreservesCallerInterruptAndClosesUnusedBundle() {
         var bundle = new FakeBundle(); var executor = new PersonalLiveExecutor(bundle);
         Thread.currentThread().interrupt();

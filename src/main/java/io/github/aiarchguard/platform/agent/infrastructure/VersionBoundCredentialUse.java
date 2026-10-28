@@ -12,7 +12,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
-/** Not a bean: adding a trusted consumer does not assemble or authorize a real model client. */
+/**
+ * 把凭据模块的版本绑定消费桥接到真实执行核心。preflight 在密钥锁外运行，最终发送回调限同线程且只调用一次；
+ * 已收到的合法用量不因清理失败被抹去。
+ */
 final class VersionBoundCredentialUse implements LiveExecutionCoordinator.CredentialUse {
     private static final long MAX_NANOS = Duration.ofSeconds(30).toNanos();
     private final CredentialUseSource source;
@@ -29,6 +32,10 @@ final class VersionBoundCredentialUse implements LiveExecutionCoordinator.Creden
         return useInternal(expectedVersion, remainingNanos, preflight, finalSend);
     }
 
+    /**
+     * 在取密钥锁前运行 preflight；用当前版本消费回调做最终发送，同线程/单次/同步作用域到期保护防止保存回调后重用。
+     * 已收到回复先保留，再处理迟到或清理失败。
+     */
     private LiveResponsePort.Reply useInternal(UUID expectedVersion, LongSupplier remainingNanos, Runnable preflight,
             Function<String, LiveResponsePort.Reply> finalSend) {
         if (expectedVersion == null || preflight == null || finalSend == null) throw unavailable();

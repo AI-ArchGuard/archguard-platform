@@ -5,7 +5,9 @@ import io.github.aiarchguard.platform.agent.LiveCostPolicy;
 import io.github.aiarchguard.platform.agent.LiveTokenUsage;
 import java.time.Instant;
 
-/** Public price snapshot, NOT owner approval or supplier invoice evidence. */
+/**
+ * 不可变公开价格快照的基础设施门面，委托领域费用策略计算预留及实际费用；不是 owner 批准、实时价格发现或供应商发票。
+ */
 final class DeepSeekPriceSnapshot {
     static final String VERSION = LiveCostPolicy.VERSION;
     private DeepSeekPriceSnapshot() { }

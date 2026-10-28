@@ -4,7 +4,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-/** Data/operations acknowledgement only. Not a batch, fee grant, or live-call authorization. */
+/**
+ * 个人数据及操作风险确认输入，绑定凭据版本、模型映射和价格来源；不授予批次费用或单次调用权限，toString 省略详情。
+ */
 public record PersonalEnablementInput(String schemaVersion, String scope, String accountRef, String deploymentRef,
         Instant expiresAt, List<Source> sources, List<String> unknowns, Boolean riskAccepted,
         String modelAlias, String mappingSnapshot, List<String> allowedResponseModels,

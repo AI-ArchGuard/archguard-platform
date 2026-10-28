@@ -15,9 +15,11 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.EnumSet;
 import java.util.List;
 
+/** 凭据文件安全边界：校验真实路径、文件类型及私有权限，生产路径不修改操作员 ACL。 */
 final class PrivateCredentialFiles {
     private PrivateCredentialFiles() { }
 
+    /** 拒绝相对/未规范化/链接路径；POSIX 禁止组和其他人权限，Windows 仅 owner/SYSTEM 可 allow。 */
     static void check(Path path, boolean directory) throws IOException {
         if (!path.isAbsolute() || !path.normalize().equals(path) || !path.toRealPath().equals(path)
                 || (directory ? !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)
@@ -37,6 +39,7 @@ final class PrivateCredentialFiles {
         }
     }
 
+    /** 临时密文创建时即带私有权限，避免先公开创建再收紧的时间窗口。 */
     static FileAttribute<?> privateAttribute(Path directory) throws IOException {
         if (Files.getFileAttributeView(directory, PosixFileAttributeView.class) != null) {
             return PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"));
@@ -50,7 +53,7 @@ final class PrivateCredentialFiles {
         };
     }
 
-    // Setup helper used only for synthetic test files; production does not change an operator's ACL.
+    // 仅为合成测试文件设置权限；生产不修改或修复操作员配置的 ACL。
     static void restrict(Path path, boolean directory) throws IOException {
         if (Files.getFileAttributeView(path, PosixFileAttributeView.class) != null) {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(directory ? "rwx------" : "rw-------"));

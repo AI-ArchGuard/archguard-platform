@@ -31,7 +31,10 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** PostgreSQL work bounds after connection acquisition, not a new pool or an egress permit. */
+/**
+ * 将原执行剩余期限应用到独立 PostgreSQL 事务，连接取得后设置本事务锁/语句超时并复核提交前期限；
+ * 不修改共享池，池获取与提交回执仍有独立限制。
+ */
 @Component
 public final class JdbcLiveDatabaseWork implements LiveDatabaseWork {
     private static final long MAX_NANOS = Duration.ofSeconds(30).toNanos();
@@ -44,6 +47,10 @@ public final class JdbcLiveDatabaseWork implements LiveDatabaseWork {
         this.transactions = transactions; this.source = source; jdbc = JdbcClient.create(source);
     }
 
+    /**
+     * 验证事务管理器绑定相同 DataSource，再用 REQUIRES_NEW 设置本事务 PostgreSQL 超时；
+     * 连接迟到时先验剩余期限，过期不执行 action。
+     */
     @Override public <T> T transaction(LongSupplier remainingNanos, boolean readOnly, Supplier<T> action) {
         try {
             if (action == null || !(transactions instanceof DataSourceTransactionManager manager)
@@ -76,6 +83,7 @@ public final class JdbcLiveDatabaseWork implements LiveDatabaseWork {
         } catch (RuntimeException failure) { throw safe(failure); }
     }
 
+    /** 清理以独立五秒预算尝试保存费用/失败；暂清中断仅用于收尾，最后恢复原中断及清理中新中断，不给发送恢复机会。 */
     @Override public <T> T cleanup(Supplier<T> action) {
         boolean previouslyInterrupted = Thread.interrupted();
         try { return transaction(() -> CLEANUP_NANOS, false, action); }
@@ -85,6 +93,7 @@ public final class JdbcLiveDatabaseWork implements LiveDatabaseWork {
         }
     }
 
+    /** 把超时 SQLState 和已知业务错误重建为无底层 cause 的稳定异常；未知数据库/解析异常统一不可用。 */
     private static RuntimeException safe(RuntimeException failure) {
         if (failure instanceof QueryTimeoutException || failure instanceof TransactionTimedOutException
                 || Thread.currentThread().isInterrupted() || timeoutState(failure)) return timeout();

@@ -17,6 +17,10 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+/**
+ * 请求快照的 JDBC 实现；
+ * 数据库幂等唯一键防重复插入，状态更新带 CAS 条件，原合成 claim 还核验完整绑定并排除 live 关联。
+ */
 @Repository
 public class JdbcAgentStore implements AgentStore {
     private final JdbcClient jdbc;
@@ -27,6 +31,7 @@ public class JdbcAgentStore implements AgentStore {
         this.mapper = mapper;
     }
 
+    /** 依赖项目/请求者/幂等键唯一约束在并发下只插入一次；摘要是否匹配由应用服务读取胜者后判断。 */
     @Override
     public boolean insert(AgentSnapshot snapshot, String key) {
         AgentRequestView view = snapshot.view();
@@ -62,6 +67,7 @@ public class JdbcAgentStore implements AgentStore {
             .param("project", projectId).param("id", requestId).query(this::map).optional();
     }
 
+    /** 仅允许原合成配置的 QUEUED→RUNNING，SQL 再排除 live 关联，形成路由判定之外的持久化防线。 */
     @Override
     public boolean claim(UUID id, Instant at) {
         return jdbc.sql("""
@@ -110,6 +116,7 @@ public class JdbcAgentStore implements AgentStore {
             """).param("id", id).param("failure", json(failure)).param("at", Timestamp.from(at)).update() == 1;
     }
 
+    /** 只更新 RUNNING 行，已被恢复或其他执行者终结时返回 false；结果、用量与审计事务由上层控制。 */
     @Override
     public boolean finish(UUID id, AgentRequestView.AgentResult result, AgentRequestView.AgentFailure failure,
             AgentRequestView.AgentUsage usage, Instant at) {
@@ -136,6 +143,7 @@ public class JdbcAgentStore implements AgentStore {
             """).param("cutoff", Timestamp.from(cutoff)).param("limit", limit).query(this::map).list();
     }
 
+    /** 恢复阶段再次比较当前状态和时间，避免过期列表取出后将已刷新或已完成的请求误终结。 */
     @Override public boolean expire(UUID id, Instant cutoff, AgentRequestView.AgentFailure failure, Instant at) {
         return jdbc.sql("""
             UPDATE agent.requests SET state='FAILED', failure=CAST(:failure AS jsonb), updated_at=:at

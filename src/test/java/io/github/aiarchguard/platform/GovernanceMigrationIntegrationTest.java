@@ -12,10 +12,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
+/**
+ * 在容器 PostgreSQL 验证治理及相邻历史版本的迁移与不可变数据保护。独立数据库种入旧版本记录后升级，检查历史校验和及终态事实不被改写。
+ */
 @SpringBootTest
 class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired JdbcClient jdbc;
 
+    // 干净库升级后直接尝试修改封存基线，检查数据库而非仅服务层的不可变约束。
     @Test void cleanDatabaseAndSealedBaselineAreImmutable() {
         assertThat(jdbc.sql("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='governance' AND table_name='baseline_versions')")
             .query(Boolean.class).single()).isTrue();
@@ -53,6 +57,7 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             """).param("id", version).param("sha", "d".repeat(64)).update()).isInstanceOf(Exception.class);
     }
 
+    // 从 V2 历史升级，已发布迁移及已有业务行必须保留。
     @Test void upgradesAnExistingV2DatabaseWithoutRewritingItsMigrations() throws Exception {
         String database = "archguard_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         String rootUrl = POSTGRES.getJdbcUrl();
@@ -107,6 +112,7 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
         migrateAgentSchema(url);
     }
 
+    // 较新历史升级同样验证旧迁移与已有事实，不能只证明空库可建表。
     @Test void upgradesV7WithoutRewritingHistory() throws Exception {
         String database = "archguard_agent_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try (var connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(),
@@ -140,6 +146,7 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
         assertThat(latest.migrate().migrationsExecuted).isZero();
     }
 
+    // Agent 增量不应重新解释或修改已经终结的请求历史。
     @Test void upgradesV10WithoutChangingTerminalAgentHistory() throws Exception {
         String database = "archguard_enablement_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try (var connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
@@ -175,6 +182,7 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
         }
     }
 
+    // 后续账本迁移不能改写已有风险确认和项目设置。
     @Test void upgradesV11WithoutChangingAcknowledgementsOrSettings() throws Exception {
         String database = "archguard_live_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try (var connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());

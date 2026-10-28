@@ -15,18 +15,19 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Component;
 
-/** Captures only immutable identity evidence, never a Jwt, bearer token or caller SecurityContext. */
+/** 只捕获不可变身份、权限与到期时间，不把 Jwt、Bearer Token 或调用方上下文带到异步线程。 */
 @Component
 final class OidcTaskScope implements AuthenticatedTaskScope {
     private final Clock clock;
 
     OidcTaskScope(Clock clock) { this.clock = clock; }
 
+    /** 捕获时校验真实 JWT 和请求者；执行时一次性消费并再次检查时效，finally 恢复线程原上下文。 */
     @Override public Runnable capture(UUID expectedRequester, Runnable task) {
         Objects.requireNonNull(expectedRequester);
         Objects.requireNonNull(task);
         var current = SecurityContextHolder.getContext().getAuthentication();
-        // A captured task cannot recursively mint new continuations or extend its authority.
+        // 后台任务使用独立认证类型，不能再递归捕获新任务来延长权限寿命。
         if (!(current instanceof JwtAuthenticationToken oidc) || !oidc.isAuthenticated()) throw unavailable();
         UUID requester;
         try {
@@ -65,6 +66,7 @@ final class OidcTaskScope implements AuthenticatedTaskScope {
         return new InactiveAuthenticatedTaskException();
     }
 
+    /** 内部任务身份没有凭据；禁止外部通过 setAuthenticated(true) 将其重新激活。 */
     private static final class TaskAuthentication extends AbstractAuthenticationToken {
         private final String requester;
         private final Instant expiresAt;

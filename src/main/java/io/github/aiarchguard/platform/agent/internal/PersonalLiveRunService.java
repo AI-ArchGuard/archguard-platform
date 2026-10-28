@@ -17,7 +17,10 @@ import io.github.aiarchguard.platform.project.ProjectPermissionDeniedException;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 
-/** Explicit personal entry; existing synthetic requests never change provider implicitly. */
+/**
+ * 独立 live HTTP 入口的应用服务：先核对部署及精确批次，再有界创建持久化请求，QUEUED 才显式调度；
+ * 拒绝审计独立清理，不隐式切换原合成请求。
+ */
 @Service
 final class PersonalLiveRunService implements AgentLiveRunOperations {
     private final AgentEnablementOperations controls;
@@ -39,6 +42,9 @@ final class PersonalLiveRunService implements AgentLiveRunOperations {
         if (!policy.available(project)) throw new AgentUnavailableException();
         runtime.requireAvailable();
     }
+    /**
+     * HTTP 申请阶段共享有限预算完成策略核验与创建；持久化成功后才显式调度，worker 的执行预算从后台开始时另行建立。
+     */
     @Override public AgentRequestView run(UUID project, LiveAgentRunInput input, String key, String origin, boolean secure) {
         var budget = new LiveExecutionBudget(System::nanoTime);
         try {

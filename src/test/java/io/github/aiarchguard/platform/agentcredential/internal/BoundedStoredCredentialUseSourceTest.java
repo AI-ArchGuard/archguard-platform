@@ -31,12 +31,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.env.MockEnvironment;
 
+/** 覆盖服务到同一缓存存储的有界消费链：意图审计、原期限、重入、脱敏和真实锁竞争。 */
 class BoundedStoredCredentialUseSourceTest {
     private static final String SYNTHETIC_KEY = "synthetic-bounded-credential-only";
     private static final long MAX_NANOS = TimeUnit.SECONDS.toNanos(30);
     private static final String TRACE = "a".repeat(32);
     @TempDir Path root;
 
+    /** 仅实现旧消费的来源收到有界请求时直接拒绝，不能偷偷回退无界路径。 */
     @Test void legacyImplementationsFailClosedWithoutCallingTheirUnboundedConsumer() {
         var legacyCalls = new AtomicInteger(); var callbackCalls = new AtomicInteger();
         CredentialUseSource legacy = (version, operation) -> {
@@ -46,6 +48,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(legacyCalls).hasValue(0); assertThat(callbackCalls).hasValue(0);
     }
 
+    /** 当前版本在调用线程同步消费，之前只有版本意图审计，锁内不补完成审计。 */
     @Test void boundedCurrentVersionConsumesSynchronouslyAfterOnlyTheVersionIntentAudit() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger(); Thread caller = Thread.currentThread();
         fixture.source.consume(fixture.version, () -> MAX_NANOS, key -> {
@@ -62,6 +65,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertSafeAudits(fixture);
     }
 
+    /** 非正或超过 30 秒预算全部零消费，审计内容仍须安全。 */
     @Test void zeroNegativeAndOverThirtySecondBudgetsNeverReachTheCallback() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         for (long remaining : new long[]{0, -1, Long.MIN_VALUE, MAX_NANOS + 1, Long.MAX_VALUE}) {
@@ -70,6 +74,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(0); assertSafeAudits(fixture);
     }
 
+    /** 供应器抛出私有异常也不泄露细节，不执行回调且不损坏后续消费。 */
     @Test void throwingDeadlineIsSanitizedAndCannotConsumeOrPoisonTheSlot() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         assertUnavailable(() -> fixture.source.consume(fixture.version, () -> {
@@ -82,6 +87,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(1); assertSafeAudits(fixture);
     }
 
+    /** 版本、期限或回调任一缺失均安全拒绝，不访问最终 Key 使用函数。 */
     @Test void nullVersionDeadlineOrCallbackFailsClosed() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         assertUnavailable(() -> fixture.source.consume(null, () -> MAX_NANOS, key -> calls.incrementAndGet()));
@@ -90,6 +96,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(0); assertSafeAudits(fixture);
     }
 
+    /** 已中断线程零消费且保留标志；测试清理后可再次正常使用来源。 */
     @Test void alreadyInterruptedCallerDoesNotConsumeAndKeepsItsInterruptFlag() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
@@ -103,6 +110,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(1); assertSafeAudits(fixture);
     }
 
+    /** 锁外意图审计耗尽原预算后不能继续消费，也不能重新计时。 */
     @Test void expiryDuringIntentAuditUsesTheOriginalDeadlineAndPreventsCallback() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger(); var remaining = new AtomicLong(MAX_NANOS);
         var deadlineReads = new AtomicInteger();
@@ -117,6 +125,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(1); assertSafeAudits(fixture);
     }
 
+    /** 意图持久化失败在解密消费前终止，当前版本保持不变。 */
     @Test void failedIntentAuditNeverReachesTheCallbackOrChangesTheVersion() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger(); fixture.failAudit.set(true);
         assertUnavailable(() -> fixture.source.consume(fixture.version, () -> MAX_NANOS, key -> calls.incrementAndGet()));
@@ -125,6 +134,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(new StoredCredentialVersionSource(fixture.service).current().credentialVersion()).isEqualTo(fixture.version);
     }
 
+    /** 身份提供器的未知异常安全转换，不泄露秘密、不消费、不写成功审计。 */
     @Test void unexpectedActorFailureIsSanitizedWithoutConsumptionOrAudit() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         fixture.actorFailure.set(new IllegalStateException(SYNTHETIC_KEY + root, new IllegalArgumentException("private identity")));
@@ -135,6 +145,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(1);
     }
 
+    /** 配置提供器抛错时零消费、零审计，并隐藏私有原因。 */
     @Test void unexpectedConfigurationFailureIsSanitizedWithoutConsumptionOrAudit() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger(); fixture.failConfiguration.set(true);
         assertUnavailable(() -> fixture.source.consume(fixture.version, () -> MAX_NANOS, key -> calls.incrementAndGet()));
@@ -144,6 +155,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(1);
     }
 
+    /** 即使已知安全分类异常附带不安全 cause/suppressed，也须重建为只含分类的失败。 */
     @Test void knownCredentialFailureCannotCarryPrivateCauseOrSuppressedDetails() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         var unsafe = new CredentialFailure(CredentialFailure.Kind.DENIED);
@@ -156,6 +168,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(0); assertThat(fixture.audits).isEmpty();
     }
 
+    /** 有界路径仍区分 owner 拒绝与不可用，拒绝审计不能伴随消费。 */
     @Test void nonOwnerStillReceivesDeniedWithoutConsumption() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger(); fixture.actorId.set(UUID.randomUUID());
         assertThatThrownBy(() -> fixture.source.consume(fixture.version, () -> MAX_NANOS, key -> calls.incrementAndGet()))
@@ -165,6 +178,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(fixture.audits.getFirst().result()).isEqualTo(AuditResult.DENIED);
     }
 
+    /** 有界回调内再次消费必须先拒绝，身份、审计和嵌套供应器均不被访问。 */
     @Test void boundedReentryFailsBeforeActorAuditAndDeadlineAccess() throws Exception {
         var fixture = fixture(); var nestedCalls = new AtomicInteger(); var nestedDeadlineReads = new AtomicInteger();
         fixture.source.consume(fixture.version, () -> MAX_NANOS, key -> {
@@ -182,6 +196,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(fixture.audits).containsExactly(fixture.intent()); assertSafeAudits(fixture);
     }
 
+    /** 旧回调同样不能经新有界入口重入，两个入口共享服务作用域。 */
     @Test void legacyCallbackCannotReenterTheBoundedSourceBeforeIdentityOrAudit() throws Exception {
         var fixture = fixture(); var nestedCalls = new AtomicInteger();
         fixture.source.consume(fixture.version, key -> {
@@ -195,6 +210,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(nestedCalls).hasValue(0); assertThat(fixture.audits).containsExactly(fixture.intent());
     }
 
+    /** 回调先产生副作用再失败也只执行一次；来源不自动重试或补锁内完成审计。 */
     @Test void knownCallbackSideEffectSurvivesSafeFailureWithoutCompletionAuditOrRetry() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         assertUnavailable(() -> fixture.source.consume(fixture.version, () -> MAX_NANOS, key -> {
@@ -209,6 +225,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(fixture.audits).containsExactly(fixture.intent(), fixture.intent()); assertSafeAudits(fixture);
     }
 
+    /** 有界来源读取同一缓存槽位，管理替换/删除后旧版本不能开始。 */
     @Test void replacementAndDeletionRemainVisibleToTheBoundedSource() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         var replacement = fixture.service.write("synthetic-bounded-replacement-only");
@@ -221,21 +238,25 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(calls).hasValue(1); assertThat(new StoredCredentialVersionSource(fixture.service).current().configured()).isFalse();
     }
 
+    /** 兼容回调占槽时，有界等待者按期限提前退出，证明不存在第二锁域。 */
     @Test void boundedWaitTimesOutWhileLegacyCallbackStillOwnsTheSameCachedStore() throws Exception {
         var fixture = fixture();
         assertBlockedWaitEndsBeforeLegacyRelease(fixture, false, false);
     }
 
+    /** 兼容回调占槽时，有界等待者可中断退出且不留下迟到回调。 */
     @Test void boundedWaitCanBeInterruptedWhileLegacyCallbackStillOwnsTheSameCachedStore() throws Exception {
         var fixture = fixture();
         assertBlockedWaitEndsBeforeLegacyRelease(fixture, true, false);
     }
 
+    /** 意图审计缩短剩余时间后，随后的真实锁等待必须沿用缩短后的期限。 */
     @Test void timeSpentInIntentAuditCannotResetTheRemainingStoreWait() throws Exception {
         var fixture = fixture();
         assertBlockedWaitEndsBeforeLegacyRelease(fixture, false, true);
     }
 
+    /** 先观察实际争锁，再验证持有者仍未释放时等待者已退出，最后回收线程并排查迟到回调。 */
     private void assertBlockedWaitEndsBeforeLegacyRelease(Fixture fixture, boolean interrupt, boolean shrinkDuringAudit) throws Exception {
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var done = new CountDownLatch(1);
         var waiterAudited = new CountDownLatch(1); var lateCallbacks = new AtomicInteger();
@@ -296,6 +317,7 @@ class BoundedStoredCredentialUseSourceTest {
         assertThat(lateCallbacks).hasValue(1);
     }
 
+    /** 只在观察到真实阻塞状态后返回，避免调度时序造成假阳性。 */
     private static void awaitActualWait(Thread waiter, CountDownLatch done) {
         long observationDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         while (System.nanoTime() < observationDeadline) {

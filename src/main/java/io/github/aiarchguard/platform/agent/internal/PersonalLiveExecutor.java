@@ -10,7 +10,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Small, dedicated executor; constructing it must neither start a thread nor initialize HTTP. */
+/**
+ * 个人真实链专用的单 worker、小容量队列；构造时不启动线程或初始化 HTTP。
+ * 关闭丢弃排队任务、中断在途并检查适配器资源实际回收。
+ */
 final class PersonalLiveExecutor implements Executor, AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicReference<Thread> worker = new AtomicReference<>();
@@ -29,6 +32,7 @@ final class PersonalLiveExecutor implements Executor, AutoCloseable {
     void requireOpen() { if (!isOpen()) throw new AgentUnavailableException(); }
     boolean isOpen() { return !closed.get() && !workers.isShutdown(); }
 
+    /** 先停队列与在途任务，再关闭 HTTP/DNS 资源并等待实际结束；恢复原中断标志，未终止时明确失败。 */
     @Override public void close() {
         boolean wasInterrupted = Thread.interrupted(), interrupted = false, failed = false;
         try {
@@ -46,6 +50,7 @@ final class PersonalLiveExecutor implements Executor, AutoCloseable {
         if (failed) throw new AgentUnavailableException();
     }
 
+    /** worker 与适配器共享本次关闭剩余等待时间；禁止 worker 等自己退出，避免自等待死锁。 */
     boolean awaitTermination(Duration timeout) throws InterruptedException {
         long remaining = Objects.requireNonNull(timeout).toNanos(), started = System.nanoTime();
         if (remaining <= 0 || Thread.currentThread() == worker.get()) return false;

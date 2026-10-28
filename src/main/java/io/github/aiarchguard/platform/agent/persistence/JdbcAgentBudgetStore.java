@@ -6,6 +6,9 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+/**
+ * 原合成预算的 JDBC 实现，按部署再项目的顺序锁定 UTC 日记录；在应用事务内一起预留/结算，真实调用使用另一套账本。
+ */
 @Repository
 public class JdbcAgentBudgetStore implements AgentBudgetStore {
     private static final UUID DEPLOYMENT = new UUID(0, 0);
@@ -15,6 +18,7 @@ public class JdbcAgentBudgetStore implements AgentBudgetStore {
 
     public JdbcAgentBudgetStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
+    /** 按固定部署→项目顺序创建并锁日额度，验证两级 spent+reserved 后一起增加预留；调用方事务保证原子性。 */
     @Override
     public boolean reserve(UUID projectId, LocalDate day, long estimate) {
         if (estimate < 0 || estimate > 100_000) return false;
@@ -29,6 +33,7 @@ public class JdbcAgentBudgetStore implements AgentBudgetStore {
         return true;
     }
 
+    /** 实际费用不能高于原合成预留；使用原 UTC 日同时扣预留、加已花费，缺失预留必须抛错而非静默成功。 */
     @Override
     public void settle(UUID projectId, LocalDate day, long reserved, long actual) {
         if (reserved < 0 || actual < 0 || actual > reserved) {

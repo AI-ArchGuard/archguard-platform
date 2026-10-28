@@ -8,6 +8,9 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * 验证个人风险确认的固定来源、未知事项、撤销条件、期限及版本组合。历史记录保持可读，但只有显式当前模型映射可授权新上下文策略准入。
+ */
 final class PersonalEnablementPolicy {
     static final String PRICE_VERSION = io.github.aiarchguard.platform.agent.LiveCostPolicy.VERSION;
     static final String CONTEXT_PRICE_VERSION = io.github.aiarchguard.platform.agent.LiveCostPolicy.CONTEXT_VERSION;
@@ -23,6 +26,9 @@ final class PersonalEnablementPolicy {
         "PROTOCOL", "https://api-docs.deepseek.com/guides/responses_api/");
     private PersonalEnablementPolicy() { }
 
+    /**
+     * 按显式 Schema/映射/价格组合核对确认，来源 URL 只是固定材料引用，代码不会联网核对材料或替用户接受未知风险。
+     */
     static void validate(PersonalEnablementInput value, Instant now) {
         if (value == null || !profile(value) || !"PERSONAL".equals(value.scope())
                 || !Boolean.TRUE.equals(value.riskAccepted()) || !"SYNTHETIC_ACCEPTANCE".equals(value.dataScope())

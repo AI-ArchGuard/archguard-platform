@@ -11,7 +11,10 @@ import io.github.aiarchguard.platform.agent.AgentModelPort;
 import io.github.aiarchguard.platform.agent.LiveCostPolicy;
 import java.util.Set;
 
-/** Offline wire codec only. No model port, Spring bean, Secret access or network capability. */
+/**
+ * 纯离线 Responses 编解码器；
+ * 编码固定最小投影与严格输出 Schema，解码分别校验封装/用量和业务文本，无网络、Secret 或模型端口能力。
+ */
 final class DeepSeekResponsesCodec {
     static final String MODEL = "deepseek-flash";
     static final int MAX_RESPONSE_BYTES = 65536;
@@ -41,6 +44,10 @@ final class DeepSeekResponsesCodec {
         }
     }
 
+    /**
+     * 仅序列化最小 ModelInput，将文档作为数据字段并附固定指令/Schema；
+     * 完整包装一同计入 6,000 UTF-8 字节限制，该限制不是输入 Token 上界证明。
+     */
     byte[] encode(AgentModelPort.ModelInput input) {
         if (input == null || !"0.1.0".equals(input.schemaVersion())) throw invalid();
         boolean summary = "PR_SUMMARY".equals(input.purpose());
@@ -79,6 +86,9 @@ final class DeepSeekResponsesCodec {
         return decodeAccounting(bytes, approvedResponseModels, LiveCostPolicy.VERSION);
     }
 
+    /**
+     * 先严格解析根白名单、固定模型及惰性元数据，再校验输入/输出/缓存/总 Token；与业务输出拆开，避免已发生费用被文本拒绝掩盖。
+     */
     Accounting decodeAccounting(byte[] bytes, Set<String> approvedResponseModels, String priceVersion) {
         if (bytes == null || bytes.length == 0) throw rejected(HTTP_BODY_EMPTY);
         if (bytes.length > MAX_RESPONSE_BYTES) throw rejected(HTTP_BODY_LIMIT);
@@ -121,6 +131,9 @@ final class DeepSeekResponsesCodec {
         }
     }
 
+    /**
+     * 只接受一条完成的 assistant 文本消息及 JSON 对象内容；完整业务 Schema、引用和建议校验仍在执行核心完成。
+     */
     String decodeOutput(Accounting accounting) {
         try {
             if (accounting == null) throw rejected(OUTPUT_STRUCTURE);
@@ -152,6 +165,9 @@ final class DeepSeekResponsesCodec {
         }
     }
 
+    /**
+     * 只允许已批准四字段的惰性形式；completed_at 非空才要求有界 created_at 并比较先后，不给缺省值补时间。
+     */
     private static void validateMetadata(JsonNode root) {
         for (String field : Set.of("user", "max_tool_calls")) {
             if (root.hasNonNull(field)) throw rejected(ENVELOPE_METADATA);
@@ -183,6 +199,7 @@ final class DeepSeekResponsesCodec {
         return value.textValue();
     }
 
+    /** 未知根字段仍全部拒绝，只记录饱和于 32 的数量；32 表示至少 32 个，不保留任何字段名或值。 */
     private static void envelopeFields(JsonNode root) {
         if (root == null || !root.isObject()) throw rejected(ENVELOPE_NOT_OBJECT);
         int unknown = 0;

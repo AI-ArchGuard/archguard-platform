@@ -31,6 +31,9 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 
+/**
+ * 验证结果与脱敏审计同事务，而已结算费用独立保留。真实 PostgreSQL 锁和审计故障覆盖提交前期限；此测试手工装配结果写入，不注册真实模型核心。
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -81,6 +84,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
         return jdbc.sql("SELECT count(*) FROM audit.audit_records WHERE project_id=:p AND action LIKE 'agent.live.result_%'")
             .param("p", fixture.project).query(Long.class).single();
     }
+    // 统一检查 live 已结算金额与旧合成账本隔离，结果写入不得变更费用事实。
     void chargeStillSettled() {
         assertThat(ledger.attempt(fixture.project, snapshot.view().id()).orElseThrow().outcome()).isEqualTo("SETTLED");
         assertThat(fixture.amount("PROJECT", fixture.project, "spent_microusd")).isEqualTo(273);
@@ -89,6 +93,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
             .param("p", fixture.project).query(Integer.class).single()).isZero();
     }
 
+    // 成功结果和元数据审计同时提交，不修改旧合成预算。
     @Test void resultAndMetadataAuditCommitTogetherWithoutSyntheticBudgetChanges() {
         writer.finishChecked(snapshot, result(), usage, () -> {});
         var view = requests.find(fixture.project, snapshot.view().id()).orElseThrow().view();
@@ -101,6 +106,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
             .doesNotContain("Synthetic evidence", "model_input", "synthetic-placeholder");
     }
 
+    // 结果审计失败只回滚该结果事务，既有结算不能被撤销。
     @Test void resultAuditFailureRollsBackOnlyResultAndCannotEraseSettledCharge() {
         AgentPersonalEnablementIntegrationTest.FAIL_AUDIT_ACTION.set("agent.live.result_succeeded");
         assertThatThrownBy(() -> writer.finishChecked(snapshot, result(), usage, () -> {}))
@@ -112,6 +118,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
         assertThat(resultAudits()).isOne(); chargeStillSettled();
     }
 
+    // 恢复先写终态后，迟到成功不能覆盖或重复审计。
     @Test void recoveryTerminalStateIsNeverOverwrittenOrAuditedAgain() {
         assertThat(requests.failRunning(snapshot.view().id(), new AgentRequestView.AgentFailure("INTERNAL_ERROR", "Recovered"), fixture.now)).isTrue();
         writer.finishChecked(snapshot, result(), usage, () -> {});
@@ -119,6 +126,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
         assertThat(resultAudits()).isZero(); chargeStillSettled();
     }
 
+    // 等待请求行锁期间过期，解锁后也不能提交成功或审计。
     @Test void expiryWhileWaitingForResultRowLockRollsBackSuccessAndItsAudit() throws Exception {
         AtomicBoolean expired = new AtomicBoolean();
         var executor = Executors.newSingleThreadExecutor();
@@ -162,6 +170,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
         assertThat(resultAudits()).isZero(); chargeStillSettled();
     }
 
+    // 局部结果持久化能力不能被误认为真实模型已经装配。
     @Test void liveCoreIsNotRegisteredAndExistingSettingsStillDenyModelCalls() {
         assertThat(context.getBeansOfType(LiveExecutionCoordinator.class)).isEmpty();
         assertThat(context.getBeansOfType(LiveResponsePort.class)).isEmpty();
@@ -169,6 +178,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
         assertThat(enablements.settings(fixture.project).modelCallsAvailable()).isFalse();
     }
 
+    // 有界结果路径应在锁持有者释放前结束，费用仍保持已结算。
     @Test void boundedResultLockTimesOutBeforeHolderReleaseAndCannotEraseSettledUsage() throws Exception {
         var bounded = new LiveResultTransitions(requests, audit, clock, manager, database);
         var executor = Executors.newSingleThreadExecutor();
@@ -215,6 +225,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
         assertThat(resultAudits()).isZero(); chargeStillSettled();
     }
 
+    // 中断后的失败落库采用独立有限清理，同时保留可信用量。
     @Test void interruptedBoundedFailureFinalizationUsesIndependentCleanupAndRetainsUsage() {
         var bounded = new LiveResultTransitions(requests, audit, clock, manager, database);
         Thread.currentThread().interrupt();
@@ -229,6 +240,7 @@ class AgentLiveResultIntegrationTest extends AgentLiveDatabaseIntegrationTestSup
         assertThat(resultAudits()).isOne(); chargeStillSettled();
     }
 
+    // 用数据库阻塞状态确认写入真正等锁，避免时序测试只验证线程启动。
     private void awaitActualBlock(int pid, Future<?> write) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (System.nanoTime() < deadline) {

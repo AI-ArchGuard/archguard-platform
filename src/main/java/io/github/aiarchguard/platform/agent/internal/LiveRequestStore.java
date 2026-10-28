@@ -4,7 +4,9 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Immutable request-to-approval association, separate from model attempts and public request DTOs. */
+/**
+ * 不可变请求与批次、模板、确认、凭据和设置修订号的关联端口；精确关联领取与费用尝试分开，claim 本身不预留模型费用。
+ */
 public interface LiveRequestStore {
     record Link(UUID requestId, UUID projectId, UUID batchId, UUID templateId, UUID enablementId,
             UUID credentialVersion, long settingsRevision, Instant createdAt) { }

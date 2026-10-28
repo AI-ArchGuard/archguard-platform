@@ -10,11 +10,13 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+/** 凭据入口固定错误映射，不公开存储异常、输入、路径或秘密。 */
 @RestControllerAdvice(assignableTypes = CredentialController.class)
 @Order(Ordered.HIGHEST_PRECEDENCE)
 final class CredentialExceptionHandler {
     private final TraceIdProvider traces;
     CredentialExceptionHandler(TraceIdProvider traces) { this.traces = traces; }
+    /** 输入/授权/不可用分别映射为 400/403/503，携带 traceId 但不附加内部详情。 */
     @ExceptionHandler(CredentialFailure.class)
     ResponseEntity<ApiError> failed(CredentialFailure failure) {
         int status = switch (failure.kind()) { case INVALID -> 400; case DENIED -> 403; case UNAVAILABLE -> 503; };

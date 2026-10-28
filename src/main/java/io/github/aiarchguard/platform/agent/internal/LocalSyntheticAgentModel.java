@@ -13,7 +13,9 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
-/** Local, network-free acceptance fixture. Not an external model or generated advice. */
+/**
+ * 仅本地显式 profile 和开关启用的无网络验收适配器；输出固定合成内容与用量，可构造错误/超时场景，不代表真实质量或账单。
+ */
 @Component
 @Primary
 @Profile("local-compose & agent-synthetic")
@@ -34,6 +36,7 @@ final class LocalSyntheticAgentModel implements AgentModelPort {
     @Override public boolean syntheticOnly() { return true; }
     @Override public boolean available() { return true; }
 
+    /** 按配置生成固定成功、非法输出、非法引用或超时场景；保留原校验链路以验收编排，不产生真实网络费用。 */
     @Override public ModelResponse explain(ModelInput input) throws Exception {
         if ("TIMEOUT".equals(scenario)) Thread.sleep(35000);
         if ("UNAVAILABLE".equals(scenario)) throw new IllegalStateException("Local synthetic unavailable");

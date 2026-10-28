@@ -8,6 +8,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
+/**
+ * 验证容器 PostgreSQL 上核心迁移创建预期 Schema/表，并在再次迁移时保持幂等。只覆盖当前测试断言列出的对象和迁移状态。
+ */
 @SpringBootTest
 class DatabaseMigrationIntegrationTest extends PostgresIntegrationTestSupport {
     private final Flyway flyway;
@@ -20,6 +23,7 @@ class DatabaseMigrationIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    // 从系统目录核对预期数据库对象确实存在。
     void createsExpectedSchemasAndTables() {
         assertThat(schemaExists("project")).isTrue();
         assertThat(schemaExists("audit")).isTrue();
@@ -42,6 +46,7 @@ class DatabaseMigrationIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    // 初次应用后再次迁移应无待执行项，避免重复改写结构。
     void migrationIsIdempotentAfterInitialApplication() {
         assertThat(flyway.migrate().migrationsExecuted).isZero();
     }

@@ -6,7 +6,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证独立上下文费用策略的版本、保守预留与合法用量范围，同时锁定旧默认策略。所有金额由合成用量确定性计算。
+ */
 class LiveContextCostPolicyTest {
+    // 旧默认与显式旧版本结果保持一致，新增策略不能改变历史费用。
     @Test void legacyDefaultAndExplicitPolicyRemainExactlyFrozen() {
         assertThat(LiveCostPolicy.VERSION).isEqualTo("deepseek-flash-peak-usd-2026-10-06");
         assertThat(LiveCostPolicy.RESERVATION).isEqualTo(4200);
@@ -22,6 +26,7 @@ class LiveContextCostPolicyTest {
         assertThatThrownBy(() -> LiveCostPolicy.cost(LiveCostPolicy.VERSION, above)).isInstanceOf(AgentInvalidException.class);
     }
 
+    // 上下文策略有独立版本与按完整上界估算的保守预留。
     @Test void contextPolicyHasAnIndependentImmutableVersionAndConservativeReservation() {
         assertThat(LiveCostPolicy.CONTEXT_VERSION).isEqualTo("deepseek-flash-context-peak-usd-2026-10-15");
         assertThat(LiveCostPolicy.CONTEXT_MODEL_PROFILE).isEqualTo("deepseek-personal-0.2.0");
@@ -38,6 +43,7 @@ class LiveContextCostPolicyTest {
         assertThat(2 * LiveCostPolicy.CONTEXT_RESERVATION).isEqualTo(632746).isLessThanOrEqualTo(LiveCostPolicy.BATCH_LIMIT);
     }
 
+    // 超过观察阈值仍可有可信费用，不能直接降格为 UNKNOWN。
     @Test void inputAboveTheObservationThresholdRemainsBillableInsteadOfBecomingUnknown() {
         assertThat(LiveCostPolicy.cost(LiveCostPolicy.CONTEXT_VERSION, new LiveTokenUsage(8000, 0, 0, 8000, 0))).isEqualTo(2400);
         assertThat(LiveCostPolicy.cost(LiveCostPolicy.CONTEXT_VERSION, new LiveTokenUsage(8001, 0, 0, 8001, 0))).isEqualTo(2401);
@@ -52,12 +58,14 @@ class LiveContextCostPolicyTest {
             .isEqualTo(8092);
     }
 
+    // 按获批高峰费率聚合后统一取整，避免逐段取整改变总价。
     @Test void contextCostUsesTheSamePeakRatesAndOnlyOneFinalRounding() {
         assertThat(LiveCostPolicy.cost(LiveCostPolicy.CONTEXT_VERSION, new LiveTokenUsage(100, 20, 40, 120, 0))).isEqualTo(43);
         assertThat(LiveCostPolicy.cost(LiveCostPolicy.CONTEXT_VERSION, new LiveTokenUsage(1, 0, 1, 1, 0))).isOne();
         assertThat(LiveCostPolicy.cost(LiveCostPolicy.CONTEXT_VERSION, new LiveTokenUsage(0, 0, 0, 0, 0))).isZero();
     }
 
+    // 未知版本不能被猜测成旧价格或模型配置。
     @Test void unknownVersionsCannotSelectLegacyPricesOrProfiles() {
         for (String unknown : new String[] {null, "", "unknown", "deepseek-flash-context-peak-usd-2026-10-16"}) {
             assertThat(LiveCostPolicy.supported(unknown)).isFalse();

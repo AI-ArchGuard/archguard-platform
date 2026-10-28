@@ -6,6 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 
+/** OIDC 启动参数及 URI 结构校验；allowHttp 还需由安全配置限制为 local-compose。 */
 @Validated
 @ConfigurationProperties("archguard.identity.oidc")
 record OidcProperties(
@@ -21,6 +22,7 @@ record OidcProperties(
         }
     }
 
+    /** 禁止相对地址、用户信息与片段；这里只验证结构，不探测远端身份服务。 */
     private static void requireSecureUri(String property, String value, boolean allowHttp) {
         if (!StringUtils.hasText(value)) {
             throw new IllegalArgumentException(property + " must be an absolute HTTPS URI");

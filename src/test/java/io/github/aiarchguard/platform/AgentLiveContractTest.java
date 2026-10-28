@@ -11,8 +11,12 @@ import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 离线验证独立 live API 只选择已有批次与模板，并复用已经校验的结果读取。调用方不能提交 Key、模型、任意输入或自行决定策略。
+ */
 class AgentLiveContractTest {
     private final ObjectMapper mapper = new ObjectMapper();
+    // 发送选择面固定为两个 ID，额外敏感或策略字段不属于公共输入。
     @Test void liveApiCannotAcceptCredentialsInputModelOrCallerPolicyAndReusesValidatedResults() throws Exception {
         var file = Path.of("openapi/agent-live-v1.json");
         var api = mapper.readTree(file.toFile());
@@ -43,6 +47,7 @@ class AgentLiveContractTest {
         }
         resolve(api, api, file);
     }
+    // 递归检查本地引用目标，确保独立契约与复用组件连接完整。
     private void resolve(JsonNode value, JsonNode root, Path file) throws Exception {
         if (value.isObject() && value.has("$ref")) {
             String reference = value.path("$ref").asText();

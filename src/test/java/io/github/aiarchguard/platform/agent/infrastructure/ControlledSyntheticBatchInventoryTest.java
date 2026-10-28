@@ -29,6 +29,9 @@ import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.env.MockEnvironment;
 
+/**
+ * 验证部署侧合成来源清单的严格读取：精确绑定、字节证明、有效期与文件权限共同决定准入。测试只使用临时文件与固定时钟，不访问外部来源。
+ */
 class ControlledSyntheticBatchInventoryTest {
     private static final Instant NOW = Instant.parse("2026-10-10T08:00:00Z");
     private static final UUID DEPLOYMENT = UUID.fromString("11111111-1111-1111-1111-111111111111");
@@ -64,6 +67,7 @@ class ControlledSyntheticBatchInventoryTest {
         write(document());
     }
 
+    // profile、显式开关和有效配置必须同时成立，调用方不能自行声明可信来源。
     @Test void requiresExplicitProfileEnablementAndValidDeploymentConfiguration() {
         environment.setProperty("archguard.agent.synthetic-inventory.enabled", "false");
         assertThat(resolve()).isEmpty();
@@ -81,6 +85,7 @@ class ControlledSyntheticBatchInventoryTest {
             Clock.fixed(NOW, ZoneOffset.UTC)).resolve(PROJECT, INVENTORY, DIGEST)).isEmpty();
     }
 
+    // 完整绑定命中才返回不可变证明，证明还绑定当前文件字节。
     @Test void matchesOnlyExactBindingsAndReturnsImmutableByteBoundProof() throws Exception {
         var proof = resolve().orElseThrow();
         assertThat(proof.schemaVersion()).isEqualTo("0.1.0");
@@ -99,6 +104,7 @@ class ControlledSyntheticBatchInventoryTest {
         assertThat(provider.resolve(PROJECT, INVENTORY, null)).isEmpty();
     }
 
+    // 撤回或改写必须即时可见，旧成功缓存不能继续授权。
     @Test void withdrawalAndByteChangesAreObservedWithoutAStaleGoodCache() throws Exception {
         var original = resolve().orElseThrow();
         assertThat(new ControlledSyntheticBatchInventory(environment, mapper, Clock.fixed(NOW.plusSeconds(601), ZoneOffset.UTC))
@@ -114,6 +120,7 @@ class ControlledSyntheticBatchInventoryTest {
         assertThat(resolve()).isEmpty();
     }
 
+    // 同级条目的新时间不能续期旧文件；未命中条目过期也使整个清单失效。
     @Test void freshSiblingGenerationCannotRenewTheOldFileAndExpiredOtherEntryPoisonsTheNewFile() throws Exception {
         var time = new java.util.concurrent.atomic.AtomicReference<>(NOW);
         Clock clock = new Clock() {
@@ -167,6 +174,7 @@ class ControlledSyntheticBatchInventoryTest {
         write(document); assertThat(resolve()).isEmpty();
     }
 
+    // 严格解析一份有界对象，拒绝未知字段、重复及尾随内容。
     @Test void parsesOnlyOneStrictBoundedObject() throws Exception {
         String valid = mapper.writeValueAsString(document());
         Files.writeString(file, valid + " ".repeat(32768 - valid.getBytes(StandardCharsets.UTF_8).length));
@@ -226,6 +234,7 @@ class ControlledSyntheticBatchInventoryTest {
         }
     }
 
+    // 区分额外读权限和写权限，阻止其他主体改写已审查证明。
     @Test void rejectsOutsideWriteGrantsButAllowsReadOnlyGrants() throws Exception {
         var posix = Files.getFileAttributeView(file, PosixFileAttributeView.class);
         if (posix != null) {
@@ -265,6 +274,7 @@ class ControlledSyntheticBatchInventoryTest {
     private java.util.Optional<io.github.aiarchguard.platform.agent.internal.SyntheticBatchInventory.Proof> resolve() {
         return provider.resolve(PROJECT, INVENTORY, DIGEST);
     }
+    // 以下辅助方法构造合成清单与临时文件，权限处理按宿主文件系统能力分支。
     private ObjectNode document() {
         var root = mapper.createObjectNode().put("schemaVersion", "0.1.0").put("deploymentId", DEPLOYMENT.toString());
         root.putArray("entries").add(entry(INVENTORY)); return root;

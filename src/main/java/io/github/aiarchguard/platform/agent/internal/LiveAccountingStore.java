@@ -9,6 +9,9 @@ import java.time.LocalDate;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * 真实批次、预留、唯一尝试和不可变结算的存储端口；调用者负责固定锁序与事务，未知费用保留预留，次数不会因结算释放而恢复。
+ */
 public interface LiveAccountingStore {
     record Batch(LiveBatchView view, UUID deploymentId, UUID inventoryId, LiveManifest manifest,
             SyntheticBatchInventory.Proof inventoryProof, String costPolicyVersion) {

@@ -18,7 +18,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
-/** Single-statement historical projection; no admission, credential or model dependency. */
+/**
+ * 以单条 SQL 的同一 MVCC 快照读取批次执行事实，再严格校验槽位、状态与费用总数；
+ * 私有查询客户端限时限行，不授予发送权限或修补历史。
+ */
 @Repository
 class JdbcLiveBatchExecutionStore implements LiveBatchExecutionStore {
     private static final Set<String> FAILURE_CODES = Set.of("MODEL_DISABLED", "MODEL_UNAVAILABLE", "MODEL_TIMEOUT",
@@ -44,6 +47,7 @@ class JdbcLiveBatchExecutionStore implements LiveBatchExecutionStore {
             .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS);
     }
 
+    /** 单语句保证模板、槽位、请求和账本来自同一数据库快照；旧策略显式冲突，损坏或不一致数据返回不可用而非部分成功。 */
     @Override public Optional<LiveBatchExecutionView> load(UUID projectId, UUID batchId) {
         if (projectId == null || batchId == null) throw new AgentUnavailableException();
         try {
@@ -66,6 +70,10 @@ class JdbcLiveBatchExecutionStore implements LiveBatchExecutionStore {
         catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
     }
 
+    /**
+     * 重新核对公开投影的顺序、唯一性、状态关系及费用守恒；
+     * 逐次重算 SETTLED 费用并与批次合计比较，不依赖 SQL 拼装就直接信任。
+     */
     private static void validate(LiveBatchExecutionView value, UUID project, UUID batchId) {
         require(value != null && "0.1.0".equals(value.schemaVersion()) && value.observedAt() != null
             && LiveCostPolicy.CONTEXT_VERSION.equals(value.costPolicyVersion()) && value.batch() != null

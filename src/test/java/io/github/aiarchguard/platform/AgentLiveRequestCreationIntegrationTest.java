@@ -35,7 +35,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
 
-/** Synthetic fixtures and metadata only: creation must never dispatch or consume credentials. */
+/**
+ * 验证独立 live 请求、不可变关联与成功审计原子创建，批准投影和永久模板槽保持一致。这里只处理合成夹具与元数据，不调度、不消费 Key、不预留费用。
+ *
+ * Synthetic fixtures and metadata only: creation must never dispatch or consume credentials.
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -105,6 +109,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         org.slf4j.MDC.remove("traceId");
     }
 
+    // 从批准模板生成新的排队请求，冻结投影不变且没有执行副作用。
     @Test void createsSeparateQueuedExplanationWithFrozenProjectionAndNoBudgetOrModelCall() throws Exception {
         var batch = batch(template);
         var original = requests.find(project, template).orElseThrow();
@@ -143,6 +148,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
             .param("id", fixture.job()).query(String.class).single()).isEqualTo("PASS");
     }
 
+    // 摘要关联保留已验证 PR 修订和显式文档版本，不能自动换成最新内容。
     @Test void summaryPreservesVerifiedPrRevisionAndExplicitDocumentVersion() {
         UUID revision = completedPrRevision();
         UUID document = documents.upload(project, "live-adr", "live-adr-one", "text/markdown", "adr.md",
@@ -164,6 +170,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertNoCallsOrReservations();
     }
 
+    // 精确幂等重放找回原请求，不追加 trace、关联或成功审计。
     @Test void sameKeyReplaysWithoutNewTraceAssociationOrAudit() {
         var batch = batch(template);
         var first = create(batch.id(), template, "same-key");
@@ -173,6 +180,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertNoCallsOrReservations();
     }
 
+    // 当前策略每模板只有永久请求槽，换键不能生成替代请求或孤儿记录。
     @Test void contextTemplateDifferentKeyConflictsWithoutOrphansAndSameKeyReplays() throws Exception {
         var batch = contextBatch();
         var first = create(batch.id(), template, "context-first");
@@ -196,6 +204,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertThat(calls.get()).isZero();
     }
 
+    // 创建前后两次元数据核验共用同一原预算。
     @Test void boundedCreatePropagatesTheSameOriginalBudgetToBothCredentialChecks() {
         var batch = batch(template);
         LongSupplier remaining = () -> java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
@@ -220,6 +229,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertCreationCount(0); assertNoCallsOrReservations();
     }
 
+    // 过程中预算失效时请求、关联与审计全部回滚，不能从下一阶段重新计时。
     @Test void boundedCreateDoesNotRenewAnExpiredOriginalBudgetAndRollsBackAllWrites() {
         var batch = batch(template);
         var nanos = new java.util.concurrent.atomic.AtomicLong(java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
@@ -247,6 +257,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertNoCallsOrReservations();
     }
 
+    // 旧合成幂等记录不能被同键重新解释为真实执行请求。
     @Test void syntheticRequestKeyCannotBeReinterpretedAsLive() {
         var batch = batch(template);
         assertThatThrownBy(() -> create(batch.id(), template, "template")).isInstanceOf(AgentConflictException.class);
@@ -264,6 +275,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertNoCallsOrReservations();
     }
 
+    // 部署 owner、Project 角色及 Origin 均须单独通过。
     @Test void ownerRoleAndOriginAreEachRequired() {
         var batch = batch(template);
         UUID other = UUID.randomUUID();
@@ -294,6 +306,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertNoCallsOrReservations();
     }
 
+    // 关闭后拒绝新创建，精确读取已有幂等结果不算新执行。
     @Test void disabledProjectRejectsNewCreationButAnExactReplayDoesNotCreateWork() {
         var batch = batch(template);
         var first = create(batch.id(), template, "disabled-key");
@@ -352,6 +365,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertNoCallsOrReservations();
     }
 
+    // 创建时重新核对当前领域事实，批准快照不能替代真实证据。
     @Test void currentEvidenceMustStillMatchTheApprovedImmutableProjection() {
         var batch = batch(template);
         jdbc.sql("UPDATE finding.evidences SET start_line=99 WHERE id=:id").param("id", fixture.evidence()).update();
@@ -360,6 +374,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertNoCallsOrReservations();
     }
 
+    // 审计失败不能留下没有成功审计的请求或关联。
     @Test void successAuditFailureRollsBackRequestAndLinkTogether() {
         var batch = batch(template);
         AgentPersonalEnablementIntegrationTest.FAIL_AUDIT_ACTION.set("agent.live.request.created");
@@ -371,6 +386,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
             .param("p", project).query(Integer.class).single()).isOne();
     }
 
+    // 关联写入失败时回滚请求，避免后续路由面对孤立 live 工作。
     @Test void linkInsertionFailureCannotLeaveAnUnassociatedRequestOrSuccessAudit() {
         var batch = batch(template);
         FAIL_LINK.set(true);
@@ -382,6 +398,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
         assertCreationCount(1);
     }
 
+    // 真实并发同键只有一份请求、一份关联和一次成功审计。
     @Test void concurrentSameKeyCreatesExactlyOneRequestLinkAndSuccessAudit() throws Exception {
         var batch = batch(template);
         var barrier = new java.util.concurrent.CyclicBarrier(2);
@@ -471,6 +488,7 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
             .param("p", project).query(Integer.class).single()).isEqualTo(count);
     }
 
+    // 创建场景统一检查模型计数、attempt 和预留，限定本切片仅有元数据副作用。
     private void assertNoCallsOrReservations() {
         assertThat(model.calls.get()).isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p")

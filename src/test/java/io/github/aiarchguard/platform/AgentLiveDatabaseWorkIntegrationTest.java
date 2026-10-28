@@ -26,6 +26,9 @@ import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+/**
+ * 直接以 JDBC 与真实 PostgreSQL 验证有界数据库事务：事务局部超时、只读状态、回滚、长 SQL/行锁取消及连接复用。连接获取可能超出预算，本测试只保证迟到借用后零动作。
+ */
 class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSupport {
     private static final long FIVE_SECONDS = Duration.ofSeconds(5).toNanos();
     private static final String PRIVATE = "private-synthetic-db-error-not-a-secret";
@@ -52,6 +55,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         }
     }
 
+    // 实际事务使用非零 SQL/锁超时，提交后恢复连接原设置。
     @Test void commitsAndUsesNonzeroTransactionLocalTimeoutsWithoutLeakingToThePool() {
         String originalLock = setting("lock_timeout"), originalStatement = setting("statement_timeout");
         int backend = jdbc.sql("SELECT pg_backend_pid()").query(Integer.class).single();
@@ -68,6 +72,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(pool.getConnectionTimeout()).isEqualTo(1_000);
     }
 
+    // 只读必须施加在当前数据库事务，回池后不影响下一次使用。
     @Test void readOnlyIsAppliedToTheActualTransactionAndResetBeforePoolReuse() {
         assertThat(work.transaction(() -> FIVE_SECONDS, true, () -> setting("transaction_read_only"))).isEqualTo("on");
         assertThat(setting("transaction_read_only")).isEqualTo("off");
@@ -84,6 +89,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(count()).isZero(); assertThat(setting("statement_timeout")).isEqualTo("0");
     }
 
+    // 动作执行过后预算失效也须回滚，不能按动作起始时间放行提交。
     @Test void expiryAfterActionRollsBackAndDoesNotReuseAnExpiredBudget() {
         var remaining = new AtomicLong(FIVE_SECONDS);
         assertThatThrownBy(() -> work.transaction(remaining::get, false, () -> {
@@ -92,6 +98,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(count()).isZero();
     }
 
+    // 其他提交前回调耗尽预算时，最后期限检查仍需挡住提交。
     @Test void expiryInAnEarlierBeforeCommitCallbackRollsBackTheTentativeAction() {
         var remaining = new AtomicLong(FIVE_SECONDS);
         assertThatThrownBy(() -> work.transaction(remaining::get, false, () -> {
@@ -104,6 +111,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(count()).isZero();
     }
 
+    // 取消真正阻塞的 SQL，再验证同池连接可继续查询。
     @Test void realLongStatementIsCancelledBeforeItFinishesAndTheConnectionRemainsReusable() {
         long started = System.nanoTime();
         assertThatThrownBy(() -> work.transaction(() -> Duration.ofMillis(400).toNanos(), true,
@@ -114,6 +122,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(setting("statement_timeout")).isEqualTo("0");
     }
 
+    // 锁仍被持有时等待方必须超时，不能先等解锁再声称取消。
     @Test void realRowLockWaitEndsBeforeTheHolderReleasesAndDoesNotApplyTheUpdate() throws Exception {
         jdbc.sql("INSERT INTO " + table + " VALUES (1,10)").update();
         var worker = Executors.newSingleThreadExecutor();
@@ -168,6 +177,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(calls).hasValue(0); assertThat(pool.getConnectionTimeout()).isEqualTo(1_000); assertThat(count()).isZero();
     }
 
+    // 明确连接池获取的限制：取得连接时已过期，就不得执行数据库动作。
     @Test void connectionAcquisitionMayOutlastItsBudgetButAnExpiredBorrowRunsZeroAction() throws Exception {
         var calls = new AtomicInteger(); var worker = Executors.newSingleThreadExecutor();
         try (var held = pool.getConnection()) {
@@ -188,6 +198,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(calls).hasValue(0); assertThat(pool.getConnectionTimeout()).isEqualTo(1_000); assertThat(count()).isZero();
     }
 
+    // 失败清理使用新的有限事务，允许保留原调用方中断状态。
     @Test void cleanupUsesAnIndependentFiniteTransactionAndRestoresAnExistingInterrupt() {
         assertThatThrownBy(() -> work.transaction(() -> 0, false, () -> 0)).hasMessage("MODEL_TIMEOUT");
         Thread.currentThread().interrupt();
@@ -208,6 +219,7 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(count()).isZero();
     }
 
+    // 不可信 JDBC/回调异常只向外保留稳定类别，不带 SQL 细节或私有原因。
     @Test void unknownCallbackAndDatabaseFailuresNeverReturnSqlDetailsMessagesOrCauses() {
         assertThatThrownBy(() -> work.transaction(() -> FIVE_SECONDS, false,
             () -> { throw new IllegalStateException(PRIVATE, new IllegalArgumentException(PRIVATE)); }))

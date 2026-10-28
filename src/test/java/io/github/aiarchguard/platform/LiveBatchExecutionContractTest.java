@@ -20,6 +20,9 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 离线验证批次执行只读视图契约：请求、attempt、结算和可信用量各自可选但须一致。此视图不赋予发送、补发或重试权限。
+ */
 class LiveBatchExecutionContractTest {
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
         .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -27,6 +30,7 @@ class LiveBatchExecutionContractTest {
     private static final UUID ID = UUID.fromString("11111111-1111-4111-8111-111111111111");
     private static final UUID SECOND = UUID.fromString("22222222-2222-4222-8222-222222222222");
 
+    // 新增 GET 只提供持久化观察结果，不能扩展成操作入口。
     @Test void readOnlyPathIsAdditiveAndDoesNotExposeSendingOrRetryPermission() throws Exception {
         var api = mapper.readTree(Path.of("openapi/agent-batches-v1.json").toFile());
         var path = api.path("paths").path("/api/v1/projects/{projectId}/agent/batches/{batchId}/execution");
@@ -42,6 +46,7 @@ class LiveBatchExecutionContractTest {
             .doesNotContain("retryAllowed", "canCall", "sentCount", "remainingCalls", "credentialVersion", "modelInput", "inventoryProof");
     }
 
+    // 各阶段事实独立存在，不能凭一项推造另一项成功。
     @Test void strictResponseIncludesIndependentOptionalRequestAttemptOutcomeAndKnownUsage() throws Exception {
         Schema schema = schema();
         ObjectNode empty = body(null, null, 0, 0, 0);
@@ -65,6 +70,7 @@ class LiveBatchExecutionContractTest {
         invalid(schema, changed);
     }
 
+    // UNKNOWN、非法组合和超范围值应拒绝，不能被解释为零费用。
     @Test void impossibleUnknownOrUnboundedShapesAreRejectedRatherThanDescribedAsZeroCost() throws Exception {
         Schema schema = schema();
         var request = new LiveBatchExecutionView.RequestExecution(ID, "RUNNING", null, "a".repeat(32), NOW, NOW);
@@ -83,6 +89,7 @@ class LiveBatchExecutionContractTest {
         return new LiveBatchExecutionView.AttemptExecution(SECOND, LocalDate.of(2026, 10, 16), LiveCostPolicy.CONTEXT_VERSION,
             316373, NOW, outcome);
     }
+    // 从视图 DTO 构造待校验响应，让 Schema 检查与实际字段形状对齐。
     private ObjectNode body(LiveBatchExecutionView.RequestExecution request, LiveBatchExecutionView.AttemptExecution attempt,
             int count, long reserved, long spent) {
         return mapper.valueToTree(new LiveBatchExecutionView("0.1.0", NOW,

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/** 用假 Key 和真实线程验证存储版本消费、认证、重入及替换/删除的进程内线性顺序。 */
 class EncryptedCredentialConsumptionTest {
     @TempDir Path root;
     Path directory, master;
@@ -35,6 +36,7 @@ class EncryptedCredentialConsumptionTest {
     }
     EncryptedCredentialStore store() { return new EncryptedCredentialStore(directory, master, deployment); }
 
+    /** 重启后当前版本只回调一次，纯消费不改变密文或元数据。 */
     @Test void currentVersionConsumedOnceAfterRestartWithoutCiphertextMutation() throws Exception {
         var saved = store().write(synthetic, now);
         byte[] encrypted = Files.readAllBytes(directory.resolve("deepseek.credential"));
@@ -48,6 +50,7 @@ class EncryptedCredentialConsumptionTest {
         assertThat(Files.readAllBytes(directory.resolve("deepseek.credential"))).isEqualTo(encrypted);
     }
 
+    /** 缺失、空、旧版本及已替换/删除版本均不得调用最终使用函数。 */
     @Test void missingNullStaleRotatedAndDeletedVersionsNeverInvokeCallback() {
         var shared = store();
         var calls = new AtomicInteger();
@@ -64,6 +67,7 @@ class EncryptedCredentialConsumptionTest {
         assertThat(calls.get()).isZero();
     }
 
+    /** 错主密钥、错误部署、篡改和超限封装全部零回调，不重置密文。 */
     @Test void authenticationAndEnvelopeFailuresNeverInvokeCallbackOrResetCiphertext() throws Exception {
         var saved = store().write(synthetic, now);
         byte[] encrypted = Files.readAllBytes(directory.resolve("deepseek.credential"));
@@ -84,6 +88,7 @@ class EncryptedCredentialConsumptionTest {
         assertThat(calls.get()).isZero();
     }
 
+    /** 回调异常必须脱敏并清理重入标志和锁，随后状态、消费及删除仍可用。 */
     @Test void callbackExceptionsAreSanitizedAndReleaseConsumptionGuard() {
         var shared = store(); var saved = shared.write(synthetic, now);
         assertUnavailable(() -> shared.consume(saved.credentialVersion(), key -> {
@@ -94,6 +99,7 @@ class EncryptedCredentialConsumptionTest {
         assertThat(shared.delete().configured()).isFalse();
     }
 
+    /** 放宽秘密文件权限不能让消费继续，POSIX 和 ACL 平台分别验证。 */
     @Test void unsafePermissionsNeverPermitConsumption() throws Exception {
         var saved = store().write(synthetic, now); var calls = new AtomicInteger();
         if (Files.getFileAttributeView(master, java.nio.file.attribute.PosixFileAttributeView.class) != null) {
@@ -110,6 +116,7 @@ class EncryptedCredentialConsumptionTest {
         assertThat(calls.get()).isZero();
     }
 
+    /** Linux 验证链接主密钥/密文均零消费，失败不会删除链接。 */
     @Test
     @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
     void symlinkMasterOrCiphertextNeverPermitsConsumption() throws Exception {
@@ -125,6 +132,7 @@ class EncryptedCredentialConsumptionTest {
         assertThat(calls.get()).isZero();
     }
 
+    /** 持锁回调重入状态、写、删或消费都拒绝，原文件和版本保持不变。 */
     @Test void reentrantStatusReplacementDeletionAndConsumptionAreRejectedWithoutMutation() throws Exception {
         var shared = store(); var saved = shared.write(synthetic, now);
         byte[] encrypted = Files.readAllBytes(directory.resolve("deepseek.credential"));
@@ -140,13 +148,16 @@ class EncryptedCredentialConsumptionTest {
         assertThat(Files.readAllBytes(directory.resolve("deepseek.credential"))).isEqualTo(encrypted);
     }
 
+    /** 已开始消费先完成，替换随后串行生效，旧版本此后不能重新开始。 */
     @Test void replacementWaitsForStartedCallbackAndOldVersionCannotStartAfterward() throws Exception {
         serializesMutation(false);
     }
+    /** 已开始消费先完成，删除随后生效，删除后的版本不能再次消费。 */
     @Test void deletionWaitsForStartedCallbackAndOldVersionCannotStartAfterward() throws Exception {
         serializesMutation(true);
     }
 
+    /** 等待者实际阻塞后中断，应在持有者释放前退出、保留中断且永不迟到回调。 */
     @Test void waitingConsumptionCanBeInterruptedWithoutRunningItsCallbackAfterTheOwnerReleases() throws Exception {
         var shared = store(); var saved = shared.write(synthetic, now);
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var done = new CountDownLatch(1);
@@ -191,6 +202,7 @@ class EncryptedCredentialConsumptionTest {
         shared.consume(saved.credentialVersion(), key -> assertThat(key).isEqualTo(synthetic));
     }
 
+    /** 用 latch 保持一个回调持锁，证明另一线程的管理变更必须等待并使旧版本失效。 */
     private void serializesMutation(boolean delete) throws Exception {
         var shared = store(); var saved = shared.write(synthetic, now);
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1);

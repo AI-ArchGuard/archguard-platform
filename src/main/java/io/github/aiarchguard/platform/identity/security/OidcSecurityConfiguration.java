@@ -19,6 +19,7 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtGra
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.util.StringUtils;
 
+/** 显式 oidc profile 下的 JWT 资源服务装配，组合 issuer、时效、audience 与 UUID subject 校验。 */
 @Configuration(proxyBeanMethods = false)
 @Profile("oidc")
 @EnableConfigurationProperties(OidcProperties.class)
@@ -37,6 +38,7 @@ class OidcSecurityConfiguration {
         return http.build();
     }
 
+    /** 显式 JWKS 或 issuer discovery 二选一；HTTP 仅允许本地 Compose profile。 */
     @Bean
     JwtDecoder oidcJwtDecoder(OidcProperties properties, Environment environment) {
         if (properties.allowHttp() && !environment.acceptsProfiles(Profiles.of("local-compose"))) {
@@ -52,6 +54,7 @@ class OidcSecurityConfiguration {
         return decoder;
     }
 
+    /** scope/scp 转成原样权限名，不加默认 SCOPE_ 前缀；主体使用 sub。 */
     static JwtAuthenticationConverter jwtAuthenticationConverter() {
         JwtGrantedAuthoritiesConverter authorities = new JwtGrantedAuthoritiesConverter();
         authorities.setAuthorityPrefix("");

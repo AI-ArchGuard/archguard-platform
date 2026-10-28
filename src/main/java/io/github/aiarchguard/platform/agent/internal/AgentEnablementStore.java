@@ -5,6 +5,9 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * Agent 设置和不可变个人确认的存储端口；设置行锁为启停、撤销及真实账本提供共同串行边界，历史不以更新确认正文覆盖。
+ */
 public interface AgentEnablementStore {
     Settings settings(UUID projectId);
     Settings lockSettings(UUID projectId);

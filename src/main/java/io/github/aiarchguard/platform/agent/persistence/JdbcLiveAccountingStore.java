@@ -19,6 +19,10 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+/**
+ * 真实批次和费用的 JDBC 适配器。追加批准/撤销/尝试/结算/停批事实，计数在应用事务锁下更新；
+ * UNKNOWN 不释放预留，摘要须等待解释成功且已结算。
+ */
 @Repository
 class JdbcLiveAccountingStore implements LiveAccountingStore {
     private static final String CONTEXT_POLICY = LiveCostPolicy.CONTEXT_VERSION;
@@ -106,6 +110,9 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
             .param("revision", revision).param("day", value.day()).param("price", value.priceVersion()).param("cost", value.reservation())
             .param("at", Timestamp.from(now)).update();
     }
+    /**
+     * 先追加唯一 outcome，UNKNOWN 直接保留原预留；可信费用才同时更新批次和两级日账本，尝试计数始终不减少。
+     */
     @Override public void finish(Attempt value, LiveTokenUsage usage, Long cost, Instant now) {
         jdbc.sql("INSERT INTO agent.live_outcomes(request_id,state,usage,actual_microusd,created_at) VALUES (:id,:state,CAST(:usage AS jsonb),:cost,:at)")
             .param("id", value.requestId()).param("state", cost == null ? "UNKNOWN" : "SETTLED").param("usage", cost == null ? null : json(usage))
@@ -124,6 +131,10 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
             """).param("reserved", value.reservation()).param("cost", cost).param("id", value.batchId()).update());
     }
 
+    /**
+     * 在设置→批次锁序下拒绝已停批次；
+     * 第一步只能解释，第二步必须是不同模板的摘要，且前次解释结果成功与费用 SETTLED 必须同时成立。
+     */
     @Override public void requireSerialProgress(Batch batch, UUID requestId) {
         if (batch == null || requestId == null || !CONTEXT_POLICY.equals(batch.costPolicyVersion())
                 || !TransactionSynchronizationManager.isActualTransactionActive()) throw new AgentUnavailableException();
@@ -161,6 +172,7 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
         }
     }
 
+    /** 在精确项目/批次/请求关联下幂等追加停批事实，不能通过清空状态或释放预留恢复本批发送次数。 */
     @Override public void stop(UUID projectId, UUID batchId, UUID requestId, String code, Instant at) {
         if (projectId == null || batchId == null || requestId == null || at == null || !STOP_CODES.contains(code == null ? "" : code)
                 || !TransactionSynchronizationManager.isActualTransactionActive()) throw new AgentUnavailableException();

@@ -12,6 +12,9 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+/**
+ * 设置、个人确认及撤销事件的 JDBC 映射；缺省设置为关闭，写入先建行再加锁，确认历史追加保存，设置每次更新递增修订号。
+ */
 @Repository
 class JdbcAgentEnablementStore implements AgentEnablementStore {
     private final JdbcClient jdbc;
@@ -20,6 +23,7 @@ class JdbcAgentEnablementStore implements AgentEnablementStore {
     @Override public Settings settings(UUID project) {
         return read(project, "").orElse(new Settings(false, 0, null));
     }
+    /** 先幂等建默认关闭的设置行再 FOR UPDATE，给启停、撤销及真实费用准入提供同一个项目锁。 */
     @Override public Settings lockSettings(UUID project) {
         jdbc.sql("INSERT INTO agent.project_settings(project_id) VALUES (:p) ON CONFLICT DO NOTHING").param("p", project).update();
         return read(project, " FOR UPDATE").orElseThrow(AgentUnavailableException::new);
@@ -59,6 +63,7 @@ class JdbcAgentEnablementStore implements AgentEnablementStore {
                     rs.getTimestamp("revoked_at") == null ? null : rs.getTimestamp("revoked_at").toInstant());
             }).optional();
     }
+    /** 只追加唯一撤销事件；重复返回 false，不删除或改写原确认材料。 */
     @Override public boolean revoke(UUID id, UUID actor, Instant at) {
         return jdbc.sql("INSERT INTO agent.enablement_revocations(enablement_id,revoked_by,revoked_at) VALUES (:id,:actor,:at) ON CONFLICT DO NOTHING")
             .param("id", id).param("actor", actor).param("at", Timestamp.from(at)).update() == 1;

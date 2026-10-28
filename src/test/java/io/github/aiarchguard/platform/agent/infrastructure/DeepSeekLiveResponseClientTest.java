@@ -16,9 +16,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 在假传输上验证生产响应客户端的固定请求、严格解码和凭据回显拒绝。用量与业务输出独立处理，本测试不注册生产模型出口。
+ */
 class DeepSeekLiveResponseClientTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
+    // 策略必须显式匹配版本，不能向旧版本或未知版本回退。
     @Test void explicitContextVersionPreservesOverThresholdAccountingWithoutRelaxingLegacyOrUnknownPolicies() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         var client = new DeepSeekLiveResponseClient(mapper, (request, timeout) -> {
@@ -38,6 +42,7 @@ class DeepSeekLiveResponseClientTest {
         assertThat(calls.get()).isEqualTo(2);
     }
 
+    // 仅发送冻结投影，替身检查一次请求而不访问网络。
     @Test void preparesOnlyFrozenInputAndUsesOneFixedOfficialRequestWithoutModelPortRegistration() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         AtomicReference<java.net.http.HttpRequest> captured = new AtomicReference<>();
@@ -71,6 +76,7 @@ class DeepSeekLiveResponseClientTest {
         assertThat(DeepSeekLiveResponseClient.class.getAnnotations()).isEmpty();
     }
 
+    // 输出不可展示时保留可信用量，拒绝正文不进入业务结果。
     @Test void rejectedOutputKeepsValidatedUsageAndNeverRetainsRejectedText() throws Exception {
         for (String raw : List.of("private-secret not-json", "[1,2]", "null", "{} {}", "{\"x\":1,\"x\":2}")) {
             var root = valid(); ((ObjectNode) root.at("/output/0/content/0")).put("text", raw);
@@ -111,12 +117,14 @@ class DeepSeekLiveResponseClientTest {
         }
     }
 
+    // 当前凭据出现在业务字段中即拒绝展示，已发生费用仍保留。
     @Test void exactCurrentCredentialInBusinessStringFieldsIsRejectedWithoutLosingBillableUsage() throws Exception {
         for (String field : List.of("conclusion", "claims", "ruleBasis", "suggestions", "limitations")) {
             assertRejectedCredentialEcho(businessOutput(field, "prefix synthetic-test-key suffix"));
         }
     }
 
+    // 解码业务 JSON 后检查同值凭据，防止转义绕过。
     @Test void unicodeEscapedCurrentCredentialIsRejectedAfterBusinessJsonDecoding() throws Exception {
         String key = "synthetic-test-key";
         StringBuilder escaped = new StringBuilder();
@@ -165,6 +173,7 @@ class DeepSeekLiveResponseClientTest {
         assertThat(calls.get()).isZero();
     }
 
+    // 异常只映射稳定类别，不携带供应商原因链且不重发。
     @Test void transportFailuresAreStableAndNeverRetryOrRetainProviderCauses() {
         for (String code : List.of("MODEL_TIMEOUT", "MODEL_UNAVAILABLE", "OUTPUT_INVALID")) {
             AtomicInteger calls = new AtomicInteger();
@@ -180,6 +189,7 @@ class DeepSeekLiveResponseClientTest {
             .hasMessage("MODEL_UNAVAILABLE").hasNoCause();
     }
 
+    // 辅助断言区分“外层/用量不可信”与“用量可信但业务输出拒绝”。
     private void assertRejectedOutput(ObjectNode root) throws Exception {
         byte[] bytes = mapper.writeValueAsBytes(root);
         var client = new DeepSeekLiveResponseClient(mapper, (request, timeout) -> new DeepSeekHttpTransport.Response(200, "application/json", bytes));

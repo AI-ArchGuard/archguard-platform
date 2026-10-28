@@ -18,9 +18,8 @@ import java.util.function.LongSupplier;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
- * Internal execution core, not itself a worker/HTTP endpoint.
- * Public construction always denies egress; controlled same-package wiring selects admission.
- * Caller must already own the persisted requester's trusted identity context.
+ * 真实响应执行核心，要求调用者已具有请求者的可信身份作用域。串接资源复核、唯一费用尝试、版本绑定凭据、单次发送与独立结算；
+ * 公开构造器默认拒绝外发，受控装配才选择准入。
  */
 public final class LiveExecutionCoordinator {
     private final AgentStore requests;
@@ -77,6 +76,10 @@ public final class LiveExecutionCoordinator {
         execute(project, batch, template, request, new LiveExecutionBudget(nanos));
     }
 
+    /**
+     * 只在无外层事务且可信身份匹配时处理 RUNNING 请求；
+     * 取得新 attempt 后才拥有失败收尾权，HTTP、用量结算和结果事务彼此分离。
+     */
     private void execute(UUID project, UUID batch, UUID template, UUID request, LiveExecutionBudget budget) {
         requireNoDatabaseTransaction();
         long started = nanos.getAsLong();
@@ -97,6 +100,7 @@ public final class LiveExecutionCoordinator {
             budget.requireRemaining(); requireActive.run();
             var admission = accounting.reserve(project, batch, template, request, remaining);
             // A replay must not send or terminalize the original in-flight executor's request.
+            // 重放者没有尝试所有权：既不发送，也不替原执行者写终态。
             if (!admission.newAttempt()) return;
             ownsAttempt = true;
             budget.requireRemaining(); requireActive.run();
@@ -106,6 +110,7 @@ public final class LiveExecutionCoordinator {
             AtomicBoolean sent = new AtomicBoolean();
             AtomicBoolean preflightStarted = new AtomicBoolean(), preflightCompleted = new AtomicBoolean();
             AtomicBoolean consumerActive = new AtomicBoolean(true), consumerViolated = new AtomicBoolean();
+            // 单独保存真实传输返回值，防止凭据消费回调的错误返回/清理异常覆盖计费用量。
             AtomicReference<LiveResponsePort.Reply> received = new AtomicReference<>();
             Thread caller = Thread.currentThread();
             AtomicLong providerLatency = new AtomicLong();
@@ -159,6 +164,7 @@ public final class LiveExecutionCoordinator {
                 reply = new LiveResponsePort.Reply(null, "OUTPUT_INVALID", reply.usage(), reply.providerResponseId(), reply.actualModelId());
             }
             validateAccounting(reply, approval.allowedResponseModels(), price);
+            // 合法用量先以独立事务结算；后续输出拒绝、撤权或成功结果回滚都不能退回这笔已发生费用。
             var outcome = accounting.settle(project, request, price, reply.usage());
             finalized = true;
             if (!"SETTLED".equals(outcome.state()) || outcome.actualMicrousd() == null) throw new LiveResponsePort.CallFailure("OUTPUT_INVALID");
@@ -166,6 +172,7 @@ public final class LiveExecutionCoordinator {
                 providerLatency.get(), admission.reservedMicrousd(), outcome.actualMicrousd(), reply.providerResponseId(), reply.actualModelId());
             // Late but billable replies are settled, never displayed as successful results.
             budget.requireRemaining(); requireActive.run();
+            // 8,000 是调用后停批阈值，超过也先记合法费用，再拒绝展示成功；不是发送前 Token 证明。
             if (LiveCostPolicy.isContext(price) && reply.usage().inputTokens() > LiveCostPolicy.POSTCALL_INPUT_THRESHOLD) {
                 throw new AgentOutputValidator.InvalidOutput("OUTPUT_INVALID");
             }
@@ -177,11 +184,13 @@ public final class LiveExecutionCoordinator {
         } catch (RuntimeException failure) {
             // Preflight denial (including a concurrent replay) never owns a shared RUNNING row.
             // Only the call awarded newAttempt=true may persist its outcome or terminalize work.
+            // 尚未拥有 newAttempt 的预检失败不能污染共享请求或账本。
             if (!ownsAttempt) throw preflightFailure(failure);
             if (LiveCostPolicy.isContext(snapshot.view().bindings().priceCatalogVersion())) {
                 try { accounting.stopBatch(project, batch, request, failureCode(failure)); }
                 catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
             }
+            // 没有可信结算的失败保守记 UNKNOWN，保留预留且不自动重试。
             if (!finalized) {
                 // Audit/accounting failure must not refund a possibly incurred charge or trigger a retry.
                 try { accounting.unknown(project, request); }
@@ -202,6 +211,9 @@ public final class LiveExecutionCoordinator {
     private void validateResources(AgentSnapshot snapshot, LongSupplier remaining) {
         database.transaction(remaining, true, () -> { resources.accept(snapshot); return null; });
     }
+    /**
+     * REQUIRES_NEW 会恢复调用方外层事务，因此核心和最终发送都拒绝事务/同步作用域，避免数据库事务跨越网络等待。
+     */
     private static void requireNoDatabaseTransaction() {
         // REQUIRES_NEW restores a caller's suspended transaction. Never let that surround HTTP.
         if (TransactionSynchronizationManager.isActualTransactionActive()
@@ -214,6 +226,7 @@ public final class LiveExecutionCoordinator {
             usage.providerLatencyMs(), usage.estimatedCostMicrousd(), usage.actualCostMicrousd(),
             usage.providerResponseId(), usage.actualModelId());
     }
+    /** 响应 ID、模型和用量都是不可信输入；先核对固定模型集合与价格策略，合法用量才可送独立账本结算。 */
     private void validateAccounting(LiveResponsePort.Reply reply, Set<String> models, String price) {
         if (reply == null || reply.providerResponseId() == null || !reply.providerResponseId().matches("[A-Za-z0-9._:-]{1,128}")
                 || reply.actualModelId() == null || !reply.actualModelId().matches("[A-Za-z0-9._:-]{1,128}")
@@ -232,6 +245,9 @@ public final class LiveExecutionCoordinator {
         return "INTERNAL_ERROR";
     }
 
+    /**
+     * 尚未取得 attempt 的预检失败只转换稳定异常；既不回传适配器敏感 cause，也不能终结其他执行者的共享请求。
+     */
     private RuntimeException preflightFailure(RuntimeException failure) {
         // Never propagate an adapter/parser/resource exception or its potentially sensitive cause.
         return switch (failureCode(failure)) {
@@ -245,10 +261,9 @@ public final class LiveExecutionCoordinator {
 
     @FunctionalInterface interface SendPolicy { void require(byte[] encodedRequest); }
     /**
-     * On the calling thread, run preflight once before acquiring a credential slot lock, then
-     * bind the active version atomically while invoking only finalSend once and returning its
-     * exact reply. Both callbacks expire when use returns. Do not return plaintext or enter
-     * database-backed modules from finalSend. The final identity capability check is local only.
+     * 在调用线程上先于凭据槽位锁运行一次 preflight，再原子绑定当前版本并执行一次 finalSend。
+     * 两个回调在 use 返回后失效；finalSend 只做本地身份能力检查和传输，不进入需要数据库的模块。
+     * 明文只能在同步消费作用域内使用，返回值必须保留该次实际响应，不能返回 Key。
      */
     @FunctionalInterface public interface CredentialUse {
         LiveResponsePort.Reply use(UUID expectedVersion, Runnable preflight, Function<String, LiveResponsePort.Reply> finalSend);

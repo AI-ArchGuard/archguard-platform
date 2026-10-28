@@ -18,6 +18,9 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 验证默认配置下 Agent 请求以 MODEL_DISABLED 终态持久化且不预留预算。HTTP 接受请求不代表模型已执行，夹具全部为合成领域数据。
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 class AgentDisabledIntegrationTest extends PostgresIntegrationTestSupport {
@@ -25,6 +28,7 @@ class AgentDisabledIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
 
+    // 区分 202 的请求受理与 FAILED 业务状态，并直接核对数据库没有预算副作用。
     @Test void defaultConfigurationFailsClosedWithoutBudgetReservation() throws Exception {
         var fixture = AgentExplanationIntegrationTest.fixture(jdbc);
         Map<String, Object> body = new HashMap<>();

@@ -1,6 +1,6 @@
 package io.github.aiarchguard.platform.agent.infrastructure;
 
-/** Fixed internal classification only; never retain provider values, parser messages or causes. */
+/** 内部固定拒绝分类，只保留原因及未知根字段的饱和数量；不保存字段名、值、解析器消息或 cause，便于脱敏诊断。 */
 final class DeepSeekResponseRejection extends IllegalArgumentException {
     static final int UNKNOWN_FIELD_COUNT_LIMIT = 32;
     private final Reason reason;

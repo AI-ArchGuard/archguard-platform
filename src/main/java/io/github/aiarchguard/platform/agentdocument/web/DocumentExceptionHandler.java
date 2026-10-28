@@ -15,6 +15,7 @@ import org.springframework.web.multipart.support.MissingServletRequestPartExcept
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+/** 文档入口的固定错误映射；不把上传正文、文件名或解析异常暴露给客户端。 */
 @RestControllerAdvice(assignableTypes = DocumentController.class)
 @Order(Ordered.HIGHEST_PRECEDENCE)
 final class DocumentExceptionHandler {
@@ -45,6 +46,7 @@ final class DocumentExceptionHandler {
         return error(HttpStatus.BAD_REQUEST, "document.invalid", "Document input is invalid.");
     }
 
+    /** 附带当前 traceId 便于关联排查，错误详情保持空集合。 */
     private ResponseEntity<ApiError> error(HttpStatus status, String code, String message) {
         return ResponseEntity.status(status).body(new ApiError(code, message, traceIds.currentTraceId(), Map.of()));
     }

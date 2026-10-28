@@ -51,7 +51,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Only persisted facts are observable: a GET must not obtain credentials or repair history. */
+/**
+ * 通过只读 HTTP 与真实数据库验证执行快照只呈现持久化事实。请求分配、attempt、结算和业务结果分别建模；GET 不读 Key、不修复历史、不产生发送许可。
+ *
+ * Only persisted facts are observable: a GET must not obtain credentials or repair history.
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -97,6 +101,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         AgentPersonalEnablementIntegrationTest.REQUIRE_BOUNDED_METADATA.set(false);
     }
 
+    // 无执行事实时仍呈现固定模板，不虚构请求、attempt 或可发送状态。
     @Test void emptySnapshotHasExactlyTwoOrderedTemplatesNoInventedRequestsOrSendingPermission() throws Exception {
         var batch = batch(); var before = databaseSnapshot(batch.id());
         JsonNode view = view(batch.id());
@@ -124,6 +129,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(databaseSnapshot(batch.id())).isEqualTo(before);
     }
 
+    // 刷新可找回同一个永久请求 ID，领取不代表已经调用模型。
     @Test void allocatedQueuedAndClaimedWithoutAttemptRecoverTheSamePermanentRequestId() throws Exception {
         var batch = batch(); UUID id = insertLive(batch.id(), explanation, "FINDING_EXPLANATION", "QUEUED");
         var before = databaseSnapshot(batch.id()); JsonNode queued = view(batch.id());
@@ -136,6 +142,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(view(batch.id()).path("templates").get(0).path("request").path("id").asText()).isEqualTo(id.toString());
     }
 
+    // 预留或结算存在不能被展示成业务成功。
     @Test void pendingReservationAndSettledChargeAreNotInventedAsSuccessfulResult() throws Exception {
         var batch = batch(); UUID id = insertLive(batch.id(), explanation, "FINDING_EXPLANATION", "RUNNING");
         var admission = accounting.reserve(project, batch.id(), explanation, id);
@@ -176,6 +183,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(databaseSnapshot(batch.id())).isEqualTo(before);
     }
 
+    // UNKNOWN 保留全额预留与停批，不猜测 token 或退款。
     @Test void unknownOutcomeRetainsFullReservationAndStopWithoutInventingTokensOrRefund() throws Exception {
         var batch = batch(); UUID id = insertLive(batch.id(), explanation, "FINDING_EXPLANATION", "RUNNING");
         accounting.reserve(project, batch.id(), explanation, id); accounting.unknown(project, id);
@@ -186,6 +194,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(view.path("stop").path("code").asText()).isEqualTo("OUTPUT_INVALID");
     }
 
+    // 可信零费用和未知费用必须在视图中保持区别。
     @Test void validSettledZeroChargeIsNotTheSameAsUnknown() throws Exception {
         var batch = batch(); UUID id = insertLive(batch.id(), explanation, "FINDING_EXPLANATION", "RUNNING");
         accounting.reserve(project, batch.id(), explanation, id);
@@ -242,6 +251,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(databaseSnapshot(batch.id())).isEqualTo(before);
     }
 
+    // 历史事实在关闭、撤销和删 Key 后仍按当前 Project 读取权限可见，无需消费凭据。
     @Test void historyRemainsReadableAfterCloseExpiryRevocationAndKeyRemovalWithoutMetadataRead() throws Exception {
         var batch = batch(); UUID id = insertLive(batch.id(), explanation, "FINDING_EXPLANATION", "RUNNING");
         accounting.reserve(project, batch.id(), explanation, id);
@@ -287,6 +297,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
             .andExpect(jsonPath("$.code").value("agent.not_found")).andExpect(header().string("Cache-Control", "no-store"));
     }
 
+    // 新投影明确拒绝不支持的旧策略，旧元数据接口继续兼容。
     @Test void legacyPolicyIs409OnlyForNewProjectionWhileOriginalMetadataGetStaysUnchanged() throws Exception {
         AgentLiveAccountingIntegrationTest.identity(AgentLiveAccountingIntegrationTest.OWNER);
         var batch = legacy.batch(2, 8400); var before = databaseSnapshot(batch.id());
@@ -300,6 +311,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         assertThat(databaseSnapshot(batch.id())).isEqualTo(before);
     }
 
+    // 缺少可信用量或总数不一致时不可用，不能补成零值。
     @Test void missingUsageOrInconsistentTotalsFailClosedInsteadOfInventingZero() throws Exception {
         var missing = batch();
         jdbc.sql("DELETE FROM agent.live_batch_usage WHERE batch_id=:b").param("b", missing.id()).update();
@@ -320,6 +332,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         assertUnavailableUnchanged(corruptId);
     }
 
+    // 数据库中的任意文本不能被当成受信公开错误类别。
     @Test void arbitraryPersistedFailureCodeIsUnavailableAndNeverEchoedAsTrustedCategory() throws Exception {
         var batch = batch(); UUID id = insertLive(batch.id(), explanation, "FINDING_EXPLANATION", "RUNNING");
         assertThat(requests.failRunning(id, new AgentRequestView.AgentFailure("private-synthetic-failure-code", "private-synthetic-failure-detail"), now)).isTrue();
@@ -354,6 +367,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         }
     }
 
+    // 并发未提交结算不能形成混合快照，读取也不应等其写锁。
     @Test void concurrentUncommittedSettlementDoesNotBlockOrExposeMixedLedgerAndOutcome() throws Exception {
         var batch = batch(); UUID id = insertLive(batch.id(), explanation, "FINDING_EXPLANATION", "RUNNING");
         accounting.reserve(project, batch.id(), explanation, id);
@@ -436,6 +450,7 @@ class AgentBatchExecutionApiIntegrationTest extends AgentLiveDatabaseIntegration
         List<String> actual = new ArrayList<>(); node.fieldNames().forEachRemaining(actual::add);
         assertThat(actual).containsExactlyInAnyOrder(expected);
     }
+    // 不可用场景还核对数据库快照，确保读取没有顺带修复或改写历史。
     private void assertUnavailableUnchanged(UUID batch) throws Exception {
         var before = databaseSnapshot(batch);
         String error = mvc.perform(get(path(batch)).with(user(OWNER))).andExpect(status().isServiceUnavailable())

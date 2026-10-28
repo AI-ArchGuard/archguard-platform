@@ -33,6 +33,9 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+/**
+ * 以可控端口、内存账本和事务替身验证执行核心的顺序及失败隔离：唯一发送、原始预算、独立结算、输出校验和结果事务。此处不证明真实 JDBC 取消或供应商访问。
+ */
 class LiveExecutionCoordinatorTest {
     static final Instant NOW = Instant.parse("2026-10-10T00:00:00Z");
     static final String INSUFFICIENT = """
@@ -75,6 +78,7 @@ class LiveExecutionCoordinatorTest {
     void execute(LiveExecutionCoordinator core) { core.execute(project, batch, template, request); }
     Consumer<AgentSnapshot> validResources() { return snapshot -> resourceChecks.incrementAndGet(); }
 
+    // 领取已耗用的时间必须计入同一次原始预算，进入核心不能重新计时。
     @Test void productionCoreCannotRenewTheBudgetConsumedByClaim() {
         var remaining = new AtomicLong(Duration.ofSeconds(3).toNanos());
         var execution = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
@@ -106,6 +110,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().failure().code()).isEqualTo("AUTHORIZATION_REVOKED");
     }
 
+    // 身份过期禁止展示新结果，但已经发生的可信费用仍需结算。
     @Test void identityExpiryAfterResponseStillSettlesKnownUsageWithoutDisplayingResult() {
         var active = new AtomicBoolean(true);
         provider.onSend = () -> active.set(false);
@@ -123,6 +128,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().usage().actualCostMicrousd()).isEqualTo(273);
     }
 
+    // 超观察阈值保留已知费用，并停批拒绝输出及替代发送。
     @Test void contextOverThresholdSettlesKnownUsageButFailsAndStopsWithoutAnotherSend() {
         contextPolicy();
         provider.reply = new LiveResponsePort.Reply(INSUFFICIENT, null,
@@ -172,6 +178,7 @@ class LiveExecutionCoordinatorTest {
         requests.value = original; accounting.price = LiveCostPolicy.CONTEXT_VERSION;
     }
 
+    // 公开构造器始终拒绝准入，不能仅靠实例化打开真实出口。
     @Test void publicConstructionAlwaysDeniesBeforeReservationSecretAndHttp() {
         var resources = new LiveResourceAuthorizer(unusedPort(ProjectAuthorization.class),
             unusedPort(ScanJobOperations.class), unusedPort(FindingOperations.class),
@@ -208,6 +215,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(audit).isEmpty();
     }
 
+    // 执行核心拒绝环境事务，避免让模型等待被包在业务数据库事务中。
     @Test void ambientTransactionCannotReachAnyDatabaseReadReservationCredentialOrHttp() {
         var reads = new AtomicInteger(); requests.onFind = reads::incrementAndGet;
         var outer = new TransactionTemplate(new MemoryTransactions());
@@ -259,6 +267,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().state()).isEqualTo("RUNNING"); assertThat(audit).isEmpty();
     }
 
+    // 各阶段共用预算，发送回调不能处于横跨 HTTP 的事务内。
     @Test void databaseReadsLedgerCredentialsAndResultShareOneBudgetWithoutATransactionAcrossHttp() {
         var originalDatabase = database;
         var observedBudget = new AtomicReference<LongSupplier>();
@@ -296,6 +305,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(accounting.settled.get()).isOne(); assertThat(requests.value.view().state()).isEqualTo("SUCCEEDED");
     }
 
+    // 先独立结算可信用量，再校验和保存业务结果；结果失败不能回滚费用。
     @Test void validUsageIsSettledBeforeValidatedResultAndOnlyRealResultAuditIsWritten() {
         execute(core(validResources()));
         assertThat(requests.value.view().state()).isEqualTo("SUCCEEDED");
@@ -307,6 +317,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(audit.toString()).doesNotContain("Synthetic evidence", "synthetic-placeholder", INSUFFICIENT);
     }
 
+    // 缺少有界接口的旧凭据消费者不能靠兼容方法进入发送。
     @Test void legacyCredentialConsumerWithoutBoundedSupportCannotReadKeyOrSend() {
         var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
             (version, preflight, operation) -> {
@@ -440,6 +451,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().state()).isEqualTo("RUNNING"); assertThat(audit).isEmpty();
     }
 
+    // 重复执行者在预检失败时没有原执行权，不能终结正在执行的请求。
     @Test void concurrentReplayPrepareFailureCannotTerminalizeOwningExecutor() throws Exception {
         LiveResponsePort rejectedPrepare = new LiveResponsePort() {
             public byte[] prepare(AgentModelPort.ModelInput input) {
@@ -521,6 +533,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(accounting.unknown.get()).isOne(); assertThat(accounting.settled.get()).isZero(); assertThat(provider.sends.get()).isZero();
     }
 
+    // 跨模块资源复核应在凭据锁外，防止持锁调用扩大锁与死锁边界。
     @Test void freshPreflightNeverEntersAnotherModuleWhileCredentialCallbackHoldsStoreLock() {
         var credentialLockHeld = new AtomicBoolean();
         accounting.onCheck = () -> assertThat(credentialLockHeld.get())
@@ -552,6 +565,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(provider.sends.get()).isOne();
     }
 
+    // 未知费用保留原预留，供应商失败不能触发自动重试。
     @Test void invalidUsageAndProviderFailureKeepReservationAndNeverRetry() {
         provider.reply = new LiveResponsePort.Reply(null, null, new LiveTokenUsage(8001, 0, 0, 8001, 0), "resp-synthetic", "deepseek-flash");
         execute(core(validResources())); execute(core(validResources()));
@@ -572,6 +586,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_TIMEOUT");
     }
 
+    // 传输只得到剩余时间，迟到但可信的回复仍保留费用事实。
     @Test void transportGetsRemainingDeadlineAndLateKnownReplyIsCharged() {
         accounting.onReserve = () -> nanos.set(Duration.ofSeconds(8).toNanos());
         provider.onSend = () -> nanos.set(Duration.ofSeconds(31).toNanos());
@@ -600,6 +615,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().usage().latencyMs()).isEqualTo(5_000);
     }
 
+    // 并发重放最多一次发送，失败副本不能改写原执行者。
     @Test void concurrentReplaySendsExactlyOnceAndCannotTerminalizeOriginal() throws Exception {
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         provider.onSend = () -> {
@@ -679,6 +695,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(requests.value.view().failure().code()).isEqualTo("MODEL_UNAVAILABLE");
     }
 
+    // 最终发送之后消费者异常仅拒绝业务输出，不覆盖真实回复用量。
     @Test void consumerFailureAfterFinalSendPreservesKnownUsageAndFailsOutput() {
         execute(coreWithCredentials((version, preflight, operation) -> {
             preflight.run(); operation.apply("synthetic-placeholder-not-a-key");
@@ -696,6 +713,7 @@ class LiveExecutionCoordinatorTest {
         assertKnownReplyPreservedWithoutOutput();
     }
 
+    // 只信任最终发送实际返回的回复，消费者不能替换费用或追溯字段。
     @Test void alteredConsumerReturnCannotReplaceActualSentReplyUsageOrMetadata() {
         execute(coreWithCredentials((version, preflight, operation) -> {
             preflight.run(); operation.apply("synthetic-placeholder-not-a-key");
@@ -717,6 +735,7 @@ class LiveExecutionCoordinatorTest {
         assertThat(accounting.settled.get()).isZero();
     }
 
+    // 发送回调绑定当前同步线程，异线程调用也不能获得一次发送机会。
     @Test void anotherThreadCannotRunFinalCallbackEvenWhileConsumerIsActive() {
         execute(coreWithCredentials((version, preflight, operation) -> {
             preflight.run();
@@ -923,6 +942,7 @@ class LiveExecutionCoordinatorTest {
     }
 
     /** Explicit fake persistence: models transaction/commit boundaries, not a production unbounded fallback. */
+    // 内存事务替身检查回调与提交时序，不替代真实数据库等待和取消的集成测试。
     static LiveDatabaseWork memoryDatabaseWork(PlatformTransactionManager manager) {
         return new LiveDatabaseWork() {
             @Override public <T> T transaction(LongSupplier remaining, boolean readOnly, Supplier<T> action) {

@@ -31,6 +31,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
+/**
+ * 验证 V14 live 请求关联迁移与精确领取：关联同 Project 且不可变，旧历史不凭空补关联。使用真实 PostgreSQL 竞争领取，但不预留费用或执行模型。
+ */
 @SpringBootTest
 class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSupport {
     // Each test gets a fixed, current microsecond snapshot. Historical QUEUED timestamps
@@ -41,6 +44,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
     @Autowired AgentTransitions transitions;
     @Autowired JdbcClient jdbc;
 
+    // 同时覆盖空库建表和重复迁移零动作。
     @Test void emptyDatabaseMigratesThroughV14AndSecondMigrationDoesNothing() throws Exception {
         String url = newDatabase();
         assertThat(Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
@@ -57,6 +61,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
         }
     }
 
+    // 升级保留已有历史，未证明的关联不能从旧 attempt 猜测生成。
     @Test void v13UpgradePreservesEveryHistoryAndDoesNotInventLinksForExistingAttempts() throws Exception {
         String url = newDatabase();
         Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load().migrate();
@@ -89,6 +94,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
         }
     }
 
+    // 存储读写受 Project 限制，数据库也禁止改写和删除关联。
     @Test void currentStoreRoundTripsOnlyWithinProjectAndDatabaseKeepsLinksImmutable() throws Exception {
         Fixture fixture;
         try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
@@ -144,6 +150,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
             .isEqualTo("QUEUED");
     }
 
+    // 旧领取路径必须拒绝 live/已关联请求，同时保留正常合成工作。
     @Test void syntheticClaimCannotTakeLiveOrAssociatedWorkButStillClaimsNormalSyntheticWork() throws Exception {
         Fixture fixture;
         try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
@@ -159,6 +166,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
         assertThat(requests.claim(synthetic, NOW)).isFalse();
     }
 
+    // 精确领取只转移执行权，不等同于费用预留或模型尝试。
     @Test void liveClaimTakesEachSupportedPurposeOnceWithoutCreatingAttemptOrChangingAnyBudget() throws Exception {
         Fixture fixture;
         try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
@@ -182,6 +190,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
         assertThat(claimAccountingHistory(fixture)).isEqualTo(before);
     }
 
+    // 并发 CAS 只允许一个胜者，失败者不能重写原关联。
     @Test void concurrentLiveClaimsHaveExactlyOneWinnerAndPreserveAssociation() throws Exception {
         Fixture fixture;
         try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }
@@ -222,6 +231,7 @@ class LiveRequestLinkMigrationIntegrationTest extends PostgresIntegrationTestSup
         assertThat(requests.find(fixture.project(), synthetic).orElseThrow().view().state()).isEqualTo("QUEUED");
     }
 
+    // 逐项变异关联或 requester，确保只接受完整一致的冻结关系。
     @Test void liveClaimRejectsEveryAlteredLinkFieldAndWrongRequesterWithoutChangingTheQueuedRequest() throws Exception {
         Fixture fixture;
         try (var connection = connect(POSTGRES.getJdbcUrl())) { fixture = seedHistory(connection); }

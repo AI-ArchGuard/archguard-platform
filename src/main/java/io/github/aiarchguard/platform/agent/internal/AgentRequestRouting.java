@@ -2,13 +2,17 @@ package io.github.aiarchguard.platform.agent.internal;
 
 import org.springframework.stereotype.Component;
 
-/** Keep the legacy synthetic worker and ledger away from separately approved live requests. */
+/**
+ * 保护原合成 worker 和预算的路由判定；
+ * 同时核对完整模型/价格/Prompt 绑定与 live 关联，不能仅凭某个看似合成的字段选路。
+ */
 @Component
 public final class AgentRequestRouting {
     private final LiveRequestStore links;
 
     public AgentRequestRouting(LiveRequestStore links) { this.links = links; }
 
+    /** 同时核对用途与完整模型绑定，最后排除持久化 live 关联；失败返回 false，不能猜测采用旧预算。 */
     public boolean synthetic(AgentSnapshot snapshot) {
         if (snapshot == null || snapshot.view() == null || snapshot.view().bindings() == null || snapshot.input() == null) return false;
         var view = snapshot.view();

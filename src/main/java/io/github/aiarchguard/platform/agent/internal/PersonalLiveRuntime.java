@@ -3,7 +3,7 @@ package io.github.aiarchguard.platform.agent.internal;
 import java.util.UUID;
 import java.util.Objects;
 
-/** Controlled assembly facade; construction alone does not enable a provider. */
+/** 受控真实运行装配的门面；每次使用复核策略与执行器开放状态，构造本身不启用提供方，关闭委托统一资源回收。 */
 final class PersonalLiveRuntime implements AutoCloseable {
     private final PersonalLiveExecutor executor;
     private final LiveRequestDispatcher dispatcher;

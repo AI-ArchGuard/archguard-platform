@@ -10,8 +10,12 @@ import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
+/**
+ * 在隔离 PostgreSQL 数据库验证 V12 到 V13 的来源证明增量迁移：保留历史批次字节含义，不为旧记录虚构证明。迁移资源本身保持不变。
+ */
 @SpringBootTest
 class SyntheticProvenanceMigrationIntegrationTest extends PostgresIntegrationTestSupport {
+    // 先种入旧版本批次再升级，检查仅新增可空证明、重复迁移零动作，以及历史不可改写。
     @Test void v12HistorySurvivesV13AndOldBatchesHaveNoInventedProof() throws Exception {
         String database = "archguard_provenance_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try (var connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());

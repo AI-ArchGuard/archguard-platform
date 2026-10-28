@@ -15,6 +15,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+/**
+ * 使用 DNS/发送替身验证官方固定目标、公网地址、解析期限与关闭行为。不探测真实 DNS 或官方服务。
+ */
 class PublicDeepSeekExchangeTest {
     private static HttpRequest request(String url) {
         return HttpRequest.newBuilder(URI.create(url)).POST(HttpRequest.BodyPublishers.ofString("{}")).build();
@@ -27,6 +30,7 @@ class PublicDeepSeekExchangeTest {
         "169.254.169.254", "172.16.1.1", "192.0.0.9", "192.0.2.1", "192.88.99.1", "192.168.1.1",
         "198.18.1.1", "198.51.100.1", "203.0.113.1", "224.0.0.1", "240.0.0.1", "255.255.255.255",
         "::", "::1", "::ffff:127.0.0.1", "fc00::1", "fe80::1", "ff02::1", "2001:db8::1", "2002:a00:1::", "3fff::1"})
+    // 任一解析答案不是允许的公网地址，就必须在 HTTP 前整体拒绝。
     void anyNonPublicDnsAnswerPreventsHttp(String address) throws Exception {
         var calls = new AtomicInteger();
         try (var exchange = new PublicDeepSeekExchange((r, d) -> { calls.incrementAndGet(); return reply(); },
@@ -40,6 +44,7 @@ class PublicDeepSeekExchangeTest {
     @ParameterizedTest @ValueSource(strings = {"http://api.deepseek.com/responses", "https://other.invalid/responses",
         "https://api.deepseek.com:444/responses", "https://api.deepseek.com/responses?key=x",
         "https://user@api.deepseek.com/responses", "https://api.deepseek.com/other"})
+    // 非固定目标在 DNS 前拒绝，不能借解析检查授权任意地址。
     void destinationCannotBeOverriddenEvenBeforeDns(String url) {
         var dns = new AtomicInteger(); var calls = new AtomicInteger();
         try (var exchange = new PublicDeepSeekExchange((r, d) -> { calls.incrementAndGet(); return reply(); },
@@ -49,6 +54,7 @@ class PublicDeepSeekExchangeTest {
         }
     }
 
+    // 本地检查替身地址，并只向发送传递剩余预算。
     @Test void fixedPublicAnswersAreCheckedWithoutNetworkProbeAndOnlyRemainingBudgetIsPassed() {
         var calls = new AtomicInteger(); var budget = new AtomicReference<Duration>();
         try (var exchange = new PublicDeepSeekExchange((r, d) -> { calls.incrementAndGet(); budget.set(d); return reply(); },
@@ -59,6 +65,7 @@ class PublicDeepSeekExchangeTest {
         }
     }
 
+    // 解析超时后迟到结果不能补发，解析任务不能无界积累。
     @Test void dnsTimeoutCannotSendLaterOrAccumulateResolverTasks() throws Exception {
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var calls = new AtomicInteger();
         try (var exchange = new PublicDeepSeekExchange((r, d) -> { calls.incrementAndGet(); return reply(); }, host -> {

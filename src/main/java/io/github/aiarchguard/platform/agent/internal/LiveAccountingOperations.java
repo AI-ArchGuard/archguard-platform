@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.function.LongSupplier;
 
-/** Internal orchestration contract; deliberately has no HTTP or model-port binding. */
+/** 真实批次与费用的内部编排端口。HTTP 仅公开其中批次元数据操作；预留、发送前复核、结算和停批由受控执行链使用。 */
 public interface LiveAccountingOperations {
     String MODEL_PROFILE = "deepseek-personal-0.1.0";
     String EXPLANATION_PROMPT = "finding-explanation-deepseek-0.1.0";

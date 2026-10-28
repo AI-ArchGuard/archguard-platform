@@ -4,6 +4,9 @@ import io.github.aiarchguard.platform.project.ProjectDeletionGuard;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 
+/**
+ * 项目删除前检查 Agent 请求和个人确认历史；Agent Schema 不可用时保守阻止删除，避免不可检查的关联数据被绕过。
+ */
 @Component
 class AgentProjectDeletionGuard implements ProjectDeletionGuard {
     private final AgentStore store;

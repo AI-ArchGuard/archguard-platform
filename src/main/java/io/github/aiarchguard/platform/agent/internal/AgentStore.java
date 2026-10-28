@@ -6,6 +6,9 @@ import java.util.Optional;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * 请求快照及状态 CAS 的持久化端口；应用层组合事务与审计，claim/finish 的布尔结果区分当前执行者是否真正改变状态。
+ */
 public interface AgentStore {
     boolean insert(AgentSnapshot snapshot, String idempotencyKey);
     Optional<AgentSnapshot> findByKey(UUID projectId, UUID requesterId, String idempotencyKey);

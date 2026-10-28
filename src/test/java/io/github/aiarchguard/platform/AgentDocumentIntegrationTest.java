@@ -28,6 +28,9 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+/**
+ * 通过 HTTP 与容器数据库验证文档不可变版本、输入幂等、Project 权限和有界检索。文档来自测试构造，不执行模型调用或外部抓取。
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 class AgentDocumentIntegrationTest extends PostgresIntegrationTestSupport {
@@ -39,6 +42,7 @@ class AgentDocumentIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired JdbcClient jdbc;
 
     @Test
+    // 同一幂等键仅允许完全相同输入重放，新版本不修改旧内容。
     void uploadsImmutableVersionsAndReplaysOnlyIdenticalInputs() throws Exception {
         UUID project = createProject();
         JsonNode first = upload(project, OWNER, "architecture", "first", "Architecture one.\n\nRule A.")
@@ -76,6 +80,7 @@ class AgentDocumentIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    // 按版本 ID 读取仍必须重新检查当前 Project 权限。
     void resolvesExactVersionByIdAndRechecksProjectAccess() throws Exception {
         UUID project = createProject(), other = createProject();
         JsonNode version = upload(project, OWNER, "cited-adr", "original", "Original architecture.")
@@ -99,6 +104,7 @@ class AgentDocumentIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    // 相同键并发只产生一个版本，不同键的版本号也须串行分配。
     void concurrentReplayReturnsOneVersionAndDifferentKeysSerializeVersionNumbers() throws Exception {
         UUID project = createProject();
         CyclicBarrier barrier = new CyclicBarrier(2);
@@ -140,6 +146,7 @@ class AgentDocumentIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    // 上传权限与跨 Project 隐藏一起验证，不能借版本 ID 探测其他项目内容。
     void enforcesProjectAndMaintainerAccessWithoutLeakingCrossProjectVersions() throws Exception {
         UUID firstProject = createProject();
         UUID secondProject = createProject();
@@ -166,6 +173,7 @@ class AgentDocumentIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    // 不可信文件和超范围查询均被拒绝，检索只返回有界片段。
     void rejectsUntrustedFilesAndBoundsKeywordRetrieval() throws Exception {
         UUID project = createProject();
         upload(project, OWNER, "bad-binary", "binary", "\u0000bad")
@@ -216,6 +224,7 @@ class AgentDocumentIntegrationTest extends PostgresIntegrationTestSupport {
         return UUID.fromString(parse(result.getResponse().getContentAsString()).get("id").asText());
     }
 
+    // 为权限场景显式添加 Viewer，避免用上传者的 Maintainer 权限替代读取验证。
     private void addViewer(UUID project) throws Exception {
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(
                 "/api/v1/projects/{project}/members/{actor}", project, VIEWER).with(user(OWNER))

@@ -20,12 +20,16 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 用可控凭据来源验证预检、版本绑定回调和最终发送的单次同步边界。覆盖超时、中断、重入及迟到回复，凭据均为固定合成值。
+ */
 class VersionBoundCredentialUseTest {
     private static final String SYNTHETIC_KEY = "synthetic-use-credential-only";
     private final UUID version = UUID.randomUUID();
     private final LiveResponsePort.Reply validReply = new LiveResponsePort.Reply("{}", null,
         new LiveTokenUsage(100, 20, 0, 120, 0), "synthetic-response", "DeepSeek-V4.1-Flash");
 
+    // 先做锁外预检再消费指定版本；发送只使用当前同步回调给出的 Key。
     @Test void preflightRunsBeforeTheVersionBoundSourceAndFinalSendGetsOnlyItsCallbackKey() {
         var order = new ArrayList<String>();
         var use = new VersionBoundCredentialUse((expected, callback) -> {
@@ -100,6 +104,7 @@ class VersionBoundCredentialUseTest {
         assertThat(sends).hasValue(0);
     }
 
+    // 已收到回复后的来源清理失败可拒绝输出，不能删除可信费用与追溯事实。
     @Test void sourceFailureAfterAReplyRejectsBusinessOutputButRetainsBillableUsageAndTraceIds() {
         for (RuntimeException failure : List.of(new CredentialFailure(CredentialFailure.Kind.INVALID),
                 new CredentialFailure(CredentialFailure.Kind.UNAVAILABLE), new CredentialFailure(CredentialFailure.Kind.DENIED),
@@ -118,6 +123,7 @@ class VersionBoundCredentialUseTest {
         }
     }
 
+    // 重复回调属于协议违规，不能发送第二次。
     @Test void repeatedSourceCallbackRejectsBusinessOutputRetainsUsageAndCanNeverSendTwice() {
         var sends = new AtomicInteger();
         var use = new VersionBoundCredentialUse((expected, callback) -> {
@@ -146,6 +152,7 @@ class VersionBoundCredentialUseTest {
             .isInstanceOf(LiveResponsePort.CallFailure.class).hasMessage("MODEL_UNAVAILABLE").hasNoCause();
     }
 
+    // 回调只在当前同步调用中有效，保存后不能重放发送。
     @Test void aRetainedCallbackCannotSendAfterTheSynchronousCredentialUseHasEnded() {
         var sends = new AtomicInteger();
         var retained = new AtomicReference<Consumer<String>>();
@@ -161,6 +168,7 @@ class VersionBoundCredentialUseTest {
         assertThat(sends).as("The closed credential callback cannot send later").hasValue(0);
     }
 
+    // 回调还绑定执行线程，不能转移到另一线程消费。
     @Test void aDifferentThreadCannotSendEvenWhileTheSynchronousCredentialUseIsActive() {
         var sends = new AtomicInteger();
         var use = new VersionBoundCredentialUse((expected, callback) -> {
@@ -214,6 +222,7 @@ class VersionBoundCredentialUseTest {
         assertThat(consumes).hasValue(0);
     }
 
+    // 原始预算贯穿预检与等待，不因进入凭据阶段续期。
     @Test void boundedUseForwardsTheIdenticalOriginalBudgetAfterPreflightWithoutReset() {
         var order = new ArrayList<String>();
         var budget = new AtomicLong(Duration.ofSeconds(30).toNanos());
@@ -235,6 +244,7 @@ class VersionBoundCredentialUseTest {
         assertThat(order).containsExactly("preflight", "consume", "send");
     }
 
+    // 有界消费要求明确实现，不得回退到无界接口。
     @Test void boundedUseCannotFallbackToALegacySourceEvenWithAConstantPositiveBudget() {
         var legacy = new AtomicInteger(); var sends = new AtomicInteger();
         var use = new VersionBoundCredentialUse((expected, callback) -> {
@@ -328,6 +338,7 @@ class VersionBoundCredentialUseTest {
         assertThat(sends).hasValue(0);
     }
 
+    // 迟到清理错误不能覆盖合法用量，也不能泄漏私有异常。
     @Test void replySurvivesLaterSourceTimeoutAndPrivateCleanupFailure() {
         var budget = new AtomicLong(10_000); var sends = new AtomicInteger();
         var use = new VersionBoundCredentialUse(boundedSource((remaining, callback) -> {

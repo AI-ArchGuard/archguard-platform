@@ -12,6 +12,7 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 
+/** 所有 profile 共享的无状态安全基线；未启用 oidc 时没有临时用户兜底，业务入口默认拒绝。 */
 @Configuration(proxyBeanMethods = false)
 class PlatformSecurityConfiguration {
 
@@ -22,6 +23,7 @@ class PlatformSecurityConfiguration {
         return http.build();
     }
 
+    /** 健康检查公开；Webhook 交给签名验证入口，其他请求必须认证，Project 权限由应用层继续检查。 */
     static void configureDefaults(HttpSecurity http, ApiErrorWriter errorWriter) throws Exception {
         http
             .formLogin(AbstractHttpConfigurer::disable)
@@ -49,6 +51,7 @@ class PlatformSecurityConfiguration {
                 .anyRequest().authenticated());
     }
 
+    /** 空用户源阻止 Spring Boot 自动创建带随机密码的默认用户。 */
     @Bean
     UserDetailsService emptyUserDetailsService() {
         return new InMemoryUserDetailsManager();

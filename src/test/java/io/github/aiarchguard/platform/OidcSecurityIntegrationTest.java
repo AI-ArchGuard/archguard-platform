@@ -21,6 +21,9 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 验证 OIDC profile 下的 HTTP 认证错误和 scope 权限映射。JWT decoder 由测试配置替换，因此不验证真实签发者、签名或 JWKS 网络访问。
+ */
 @SpringBootTest(properties = {
     "archguard.identity.oidc.issuer-uri=https://identity.example.test",
     "archguard.identity.oidc.audience=archguard-platform",
@@ -40,6 +43,7 @@ class OidcSecurityIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    // 模拟 decoder 已验证 token 后，检查权限进入应用身份并允许对应操作。
     void acceptsAValidatedBearerTokenAndMapsItsScopes() throws Exception {
         mockMvc.perform(get("/api/v1/projects")
                 .header("Authorization", "Bearer valid-token"))
@@ -48,6 +52,7 @@ class OidcSecurityIntegrationTest extends PostgresIntegrationTestSupport {
     }
 
     @Test
+    // decoder 拒绝 token 时返回统一认证错误，不暴露验证细节。
     void returnsTheUniformAuthenticationErrorForInvalidBearerTokens() throws Exception {
         mockMvc.perform(get("/api/v1/projects")
                 .header("Authorization", "Bearer invalid-token"))

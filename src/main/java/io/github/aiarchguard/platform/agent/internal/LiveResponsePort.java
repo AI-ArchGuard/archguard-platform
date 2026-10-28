@@ -5,7 +5,7 @@ import io.github.aiarchguard.platform.agent.LiveTokenUsage;
 import java.time.Duration;
 import java.util.Set;
 
-/** Separate real-response boundary; never eligible for the synthetic AgentModelPort worker. */
+/** 独立真实响应端口，不能交给原合成 worker。准备完整请求与发送分开，业务输出拒绝仍可保留已独立校验的计费用量。 */
 public interface LiveResponsePort {
     byte[] prepare(AgentModelPort.ModelInput input);
     Reply send(byte[] body, String apiKey, Duration remaining, Set<String> approvedModelIds);

@@ -25,6 +25,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 
+/**
+ * 以真实 JDBC 事务和表锁验证独立有界审计：提交与调用方事务隔离，超时/中断回滚，连接复用不泄漏超时设置。连接获取仍可能超过预算，迟到后必须零插入。
+ */
 class BoundedAuditRecorderIntegrationTest extends PostgresIntegrationTestSupport {
     private static final long BUDGET = Duration.ofSeconds(5).toNanos();
     private static final String DATABASE_URL = createDatabase();
@@ -42,6 +45,7 @@ class BoundedAuditRecorderIntegrationTest extends PostgresIntegrationTestSupport
     }
     @AfterEach void close() { Thread.interrupted(); if (pool != null) pool.close(); }
 
+    // 事务级超时只作用于当前审计，回池后不能污染后续调用。
     @Test void boundedRecorderCommitsInItsOwnTransactionAndDoesNotLeakLocalTimeouts() {
         recorder.record(event(), () -> BUDGET);
         assertThat(count()).isOne();
@@ -49,6 +53,7 @@ class BoundedAuditRecorderIntegrationTest extends PostgresIntegrationTestSupport
         assertThat(pool.getConnectionTimeout()).isEqualTo(1000);
     }
 
+    // 意图审计独立提交，调用方随后回滚不能抹掉已发生意图。
     @Test void intentCommitSurvivesTheCallersSeparateRollback() {
         pool.setMaximumPoolSize(2);
         var caller = new org.springframework.transaction.support.TransactionTemplate(new JdbcTransactionManager(pool));
@@ -56,6 +61,7 @@ class BoundedAuditRecorderIntegrationTest extends PostgresIntegrationTestSupport
         assertThat(count()).isOne(); assertThat(setting("statement_timeout")).isEqualTo("0");
     }
 
+    // 序列化也消耗预算，期限失效必须回滚且不泄漏私有异常。
     @Test void deadlineExpiryDuringSerializationRollsBackTheTentativeAuditWithoutReturningPrivateErrors() {
         var remaining = new AtomicLong(BUDGET);
         var mapper = new ObjectMapper() {
@@ -68,6 +74,7 @@ class BoundedAuditRecorderIntegrationTest extends PostgresIntegrationTestSupport
         assertThat(count()).isZero(); recorder.record(event(), () -> BUDGET); assertThat(count()).isOne();
     }
 
+    // 锁持有者未释放时审计应先取消，并验证连接池仍能继续工作。
     @Test void blockedIntentAuditReallyCancelsWhileItsTableLockIsStillHeldAndPoolRemainsUsable() throws Exception {
         int backend = jdbc.sql("SELECT pg_backend_pid()").query(Integer.class).single();
         var worker = Executors.newSingleThreadExecutor();
@@ -106,6 +113,7 @@ class BoundedAuditRecorderIntegrationTest extends PostgresIntegrationTestSupport
         assertThat(count()).isZero();
     }
 
+    // 连接可能迟到，但借到后预算已过期时不得插入，也不改共享池配置。
     @Test void lateConnectionAcquisitionRunsZeroInsertAndDoesNotMutateSharedPoolConfiguration() throws Exception {
         var worker = Executors.newSingleThreadExecutor(); var end = new AtomicLong();
         try (var held = pool.getConnection()) {
@@ -120,6 +128,7 @@ class BoundedAuditRecorderIntegrationTest extends PostgresIntegrationTestSupport
         assertThat(count()).isZero(); assertThat(pool.getConnectionTimeout()).isEqualTo(1000);
     }
 
+    // 旧构造仍可支持原接口，但不能被新有界调用当作兼容回退。
     @Test void legacyConstructorKeepsLegacyRecordingButCannotFallBackForBoundedRecording() {
         var legacy = new JdbcAuditRecorder(jdbc, new ObjectMapper(), Clock.systemUTC());
         legacy.record(event()); assertThat(count()).isOne();

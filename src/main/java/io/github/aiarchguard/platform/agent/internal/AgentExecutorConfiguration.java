@@ -7,6 +7,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.boot.task.ThreadPoolTaskSchedulerBuilder;
 
+/** 隔离合成请求的有界线程池与遗留恢复调度器；队列满时明确拒绝，恢复任务使用独立调度线程以免挤占确定性任务。 */
 @Configuration
 class AgentExecutorConfiguration {
     @Bean("taskScheduler")

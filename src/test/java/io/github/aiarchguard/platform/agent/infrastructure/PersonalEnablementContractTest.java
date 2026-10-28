@@ -12,9 +12,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证个人启用提案的严格 Schema 与运行时输入一致，只接受明确批准的数据范围。提案元数据不携带凭据，也不直接产生发送许可。
+ */
 class PersonalEnablementContractTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
+    // 逐项变异合法提案，验证未知字段、敏感字段与越界声明均拒绝。
     @Test void proposalIsStrictAndCannotCarrySecretsOrBroaderDataScope() throws Exception {
         try (var input = Files.newInputStream(Path.of("contracts/agent-personal-enablement-0.1.0.schema.json"))) {
             Schema schema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12).getSchema(input);
@@ -36,6 +40,7 @@ class PersonalEnablementContractTest {
         }
     }
 
+    // 构造仅供本地校验的合成提案，后续在副本上改变单一约束。
     private ObjectNode proposal() throws Exception {
         return (ObjectNode) mapper.readTree("""
             {"schemaVersion":"0.1.0","scope":"PERSONAL","accountRef":"synthetic-account",

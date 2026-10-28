@@ -18,6 +18,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+/** 仅为原 Agent 控制器映射稳定错误及 traceId；关联资源不存在采用共同的不可见响应，不回传底层异常详情。 */
 @RestControllerAdvice(assignableTypes = AgentController.class)
 @Order(Ordered.HIGHEST_PRECEDENCE)
 final class AgentExceptionHandler {

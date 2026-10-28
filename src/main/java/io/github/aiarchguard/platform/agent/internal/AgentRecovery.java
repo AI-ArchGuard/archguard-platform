@@ -11,7 +11,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-/** Expire orphaned work; never retry a provider attempt or release unknown charges. */
+/** 启动后及定时终结过期遗留请求；只改变尚未终结的状态，不重试模型或释放未知费用，单轮最多处理有限数量。 */
 @Component
 public class AgentRecovery {
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentRecovery.class);
@@ -24,6 +24,7 @@ public class AgentRecovery {
         this.store = store; this.transitions = transitions; this.schema = schema; this.clock = clock;
     }
 
+    /** Schema 就绪后每轮最多处理 100 个过期请求；60 秒窗口包含结算宽限，但不会启动新模型尝试。 */
     @EventListener(ApplicationReadyEvent.class)
     @Order(Ordered.LOWEST_PRECEDENCE)
     @Scheduled(scheduler = "agentRecoveryScheduler", fixedDelayString = "${archguard.agent.recovery-delay:15000}", initialDelay = 15000)

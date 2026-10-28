@@ -11,13 +11,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-/** Scope to the explicit live route; no exception, SQL, input or credential text is returned. */
+/** 仅处理显式真实入口的错误：限额不足返回 429，其他错误复用稳定分类；响应不含输入、SQL、异常原文或凭据。 */
 @RestControllerAdvice(assignableTypes = AgentLiveController.class)
 @Order(Ordered.HIGHEST_PRECEDENCE)
 final class LiveRunExceptionHandler {
     private final TraceIdProvider traces;
     LiveRunExceptionHandler(TraceIdProvider traces) { this.traces = traces; }
 
+    /** 只在显式 live 路由公开固定错误码及 trace，限额映射 429，统一禁止缓存响应。 */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiError> failure(Exception failure) {
         var error = failure instanceof AgentQuotaExceededException

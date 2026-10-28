@@ -7,6 +7,9 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
+/**
+ * 验证部署配置准入只匹配指定 Project/批次及有限数据库参数。使用未启动连接池与模拟环境，不探测账户、Key 或数据库连通性。
+ */
 class PersonalLivePolicyTest {
     private final UUID project = UUID.randomUUID();
     private MockEnvironment environment() {
@@ -27,6 +30,7 @@ class PersonalLivePolicyTest {
         pool.addDataSourceProperty("cancelSignalTimeout", "1");
         return pool;
     }
+    // 本地可用性是配置匹配判断，不启动连接池或查询供应商账户。
     @Test void configurationIsAnExactProjectAndBatchGateNotAnAccountProbe() {
         try (var pool = pool()) {
             var policy = new PersonalLivePolicy(environment(), pool, null, null);
@@ -36,12 +40,14 @@ class PersonalLivePolicyTest {
             assertThat(pool.isRunning()).isFalse();
         }
     }
+    // 合成适配器与 live 运行时不能同时启用。
     @Test void syntheticAdapterCannotBeCombinedWithTheLiveRuntime() {
         try (var pool = pool()) {
             var env = environment().withProperty("archguard.agent.synthetic-enabled", "true");
             assertThat(new PersonalLivePolicy(env, pool, null, null).available(project)).isFalse();
         }
     }
+    // 缺失开关或有限数据库参数时返回不可用，不能借检查触发连接。
     @Test void defaultClosedAndMissingFiniteDatabaseConfigurationDoNotThrowOrStartAPool() {
         try (var pool = pool()) {
             assertThat(new PersonalLivePolicy(new MockEnvironment(), pool, null, null).available(project)).isFalse();

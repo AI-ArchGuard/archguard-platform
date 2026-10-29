@@ -14,12 +14,16 @@ import java.util.List;
 import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 离线验证 Agent API 与模型输出 Schema 的固定用途、状态和严格对象结构。Schema 合法仅是第一层，运行时仍需验证权限、引用和业务事实。
+ */
 class AgentContractTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final Schema outputSchema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
         .getSchema(getClass().getResourceAsStream("/contracts/agent-model-output-0.1.0.schema.json"));
 
     @Test
+    // 解释和 PR 摘要共用请求生命周期，但契约不引入门禁或基线写能力。
     void openApiDescribesFindingExplanationAndPrSummaryRuntimeAndAllReferencesResolve() throws Exception {
         JsonNode root = mapper.readTree(Path.of("openapi", "agent-v1.json").toFile());
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
@@ -42,6 +46,7 @@ class AgentContractTest {
     }
 
     @Test
+    // 有支持与证据不足两类结论都应有明确合法形状。
     void strictModelSchemaAcceptsSupportedAndInsufficientOutputs() throws Exception {
         assertThat(errors(supported())).isEmpty();
         var insufficient = mapper.readTree(supported());
@@ -57,6 +62,7 @@ class AgentContractTest {
     }
 
     @Test
+    // 拒绝未知字段、版本漂移和越权建议，不能仅验证正向样本。
     void strictModelSchemaRejectsUnknownFieldsWrongVersionAndMissingFields() throws Exception {
         var extra = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(supported());
         extra.put("gateOutcome", "PASS");
@@ -74,12 +80,14 @@ class AgentContractTest {
     }
 
     @Test
+    // 递归检查每个模型对象都拒绝额外属性并显式声明所有必需字段。
     void everyModelObjectIsStrictAndAllFieldsRequired() throws Exception {
         JsonNode schema = mapper.readTree(getClass().getResourceAsStream(
             "/contracts/agent-model-output-0.1.0.schema.json"));
         assertStrict(schema);
     }
 
+    // 检查整个 Schema 树，避免只收紧根对象而放过嵌套业务项。
     private void assertStrict(JsonNode node) {
         if (node.isObject()) {
             if ("object".equals(node.path("type").asText())) {

@@ -8,7 +8,11 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证默认关闭的个人运行时在调度、排队和适配器初始化前拒绝请求。此单元测试只检查拒绝顺序与零副作用。
+ */
 class PersonalLiveRuntimeTest {
+    // 默认关闭必须覆盖执行链最前端，不能先产生工作再返回不可用。
     @Test void defaultClosedRuntimeRejectsBeforeDispatchQueueOrAdapterInitialization() {
         var bundle = new PersonalLiveExecutorTest.FakeBundle(); var executor = new PersonalLiveExecutor(bundle);
         var dispatcherEntries = new AtomicInteger();

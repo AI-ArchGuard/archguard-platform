@@ -24,10 +24,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.env.MockEnvironment;
 
+/** 验证公开内部消费委托复用管理槽位，锁外意图审计、owner 授权和重入防护保持一致。 */
 class StoredCredentialUseSourceTest {
     private static final String SYNTHETIC_KEY = "synthetic-use-credential-only";
     @TempDir Path root;
 
+    /** 当前版本同步消费前只写版本意图；持锁回调中不补完成审计，避免跨模块锁与回复丢失。 */
     @Test void consumesCurrentVersionAfterVersionOnlyIntentAuditWithoutCompletionAudit() throws Exception {
         var fixture = fixture();
         var received = new AtomicReference<String>();
@@ -47,6 +49,7 @@ class StoredCredentialUseSourceTest {
         assertThat(fixture.audits.toString()).doesNotContain(SYNTHETIC_KEY, root.toString());
     }
 
+    /** 管理入口替换/删除立即影响同一消费来源，旧版本不能启动新回调。 */
     @Test void replacingOrDeletingTheSharedSlotInvalidatesTheOldVersion() throws Exception {
         var fixture = fixture();
         var calls = new AtomicInteger();
@@ -64,6 +67,7 @@ class StoredCredentialUseSourceTest {
         assertThat(new StoredCredentialVersionSource(fixture.service).current().configured()).isFalse();
     }
 
+    /** 维护者不是配置 owner 时消费拒绝，只记录不含秘密的授权拒绝审计。 */
     @Test void projectMaintainerCannotConsumeTheConfiguredOwnersKey() throws Exception {
         var fixture = fixture();
         fixture.actor.set(UUID.randomUUID());
@@ -78,6 +82,7 @@ class StoredCredentialUseSourceTest {
         });
     }
 
+    /** 管理关闭或离开本地 profile 后，内部消费也不可绕过配置边界。 */
     @Test void disabledManagementAndNonLocalProfileCannotConsume() throws Exception {
         var fixture = fixture();
         var calls = new AtomicInteger();
@@ -92,6 +97,7 @@ class StoredCredentialUseSourceTest {
         assertThat(fixture.audits).isEmpty();
     }
 
+    /** 意图审计失败零消费，存储版本不变且不添加成功事件。 */
     @Test void failedIntentAuditPreventsCallbackAndLeavesTheStoredVersionUnchanged() throws Exception {
         var fixture = fixture();
         var calls = new AtomicInteger();
@@ -104,6 +110,7 @@ class StoredCredentialUseSourceTest {
         assertThat(fixture.audits).isEmpty();
     }
 
+    /** 回调内重入各服务入口须在查询身份或审计前拒绝，之后正常消费仍可用。 */
     @Test void reentrantServiceAndMetadataCallsAreRejectedBeforeIdentityOrAuditAccess() throws Exception {
         var fixture = fixture();
         var metadata = new StoredCredentialVersionSource(fixture.service);
@@ -134,6 +141,7 @@ class StoredCredentialUseSourceTest {
         assertThat(fixture.audits).hasSize(2);
     }
 
+    /** 回调异常中的 Key/路径/cause 不得泄露，作用域清理后可再次使用。 */
     @Test void callbackErrorDoesNotLeakItsMessageOrCauseAndDoesNotPoisonTheConsumer() throws Exception {
         var fixture = fixture();
         assertThatThrownBy(() -> fixture.source.consume(fixture.version, key -> {

@@ -22,7 +22,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 
-/** Bounded HTTP mechanics. Only DeepSeekHttpTransport supplies a production destination. */
+/**
+ * JDK HTTP 的有界传输机制：固定 TLS 主机校验、直连、禁重定向及安全 JVM 条件，异步接收限制 64 KiB 并在超时或中断时取消。
+ * 实际生产目标由上层固定。
+ */
 final class BoundedJdkHttpExchange implements DeepSeekHttpTransport.Exchange, AutoCloseable {
     private final HttpClient client;
 
@@ -41,6 +44,7 @@ final class BoundedJdkHttpExchange implements DeepSeekHttpTransport.Exchange, Au
         }
     }
 
+    /** 异步读取响应并按调用方剩余期限等待；超时/中断立即请求取消 Future 和正文订阅，保留线程中断状态。 */
     @Override public DeepSeekHttpTransport.Response exchange(HttpRequest request, Duration timeout) {
         if (timeout == null || timeout.isZero() || timeout.isNegative() || timeout.compareTo(Duration.ofSeconds(30)) > 0) {
             throw new DeepSeekTransportFailure("MODEL_UNAVAILABLE");
@@ -72,6 +76,7 @@ final class BoundedJdkHttpExchange implements DeepSeekHttpTransport.Exchange, Au
         }
     }
 
+    /** 这些属性可能在 JDK 初始化时读取，只检查启动前已设置的安全条件，不能在创建客户端时悄悄补设并假定已生效。 */
     static void requireSafeJvm() {
         // These JDK properties are read at JVM/client initialization: never silently set them late.
         if (!"true".equals(System.getProperty("jdk.httpclient.disableRetryConnect"))
@@ -115,6 +120,7 @@ final class BoundedJdkHttpExchange implements DeepSeekHttpTransport.Exchange, Au
             subscription = incoming;
             incoming.request(1);
         }
+        /** 逐块累计前先核对 64 KiB 上限，越界即终止订阅，避免完整缓冲任意大小响应后才检查。 */
         @Override public synchronized void onNext(List<ByteBuffer> buffers) {
             if (cancelled) return;
             for (ByteBuffer buffer : buffers) {

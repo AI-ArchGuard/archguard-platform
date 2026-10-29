@@ -19,6 +19,7 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+/** 文档 Schema 的 JDBC 适配器；复用应用事务，保留版本和片段的追加语义。 */
 @Repository
 public class JdbcDocumentStore implements DocumentStore {
     private final JdbcClient jdbc;
@@ -27,6 +28,7 @@ public class JdbcDocumentStore implements DocumentStore {
 
     @Override
     public boolean claimUpload(UUID projectId, String key, String requestSha256) {
+        // 数据库唯一约束决定幂等槽胜者，冲突不覆盖既有摘要或版本。
         return jdbc.sql("""
             INSERT INTO agent_document.upload_requests (project_id, idempotency_key, request_sha256)
             VALUES (:project, :key, :sha)
@@ -55,6 +57,7 @@ public class JdbcDocumentStore implements DocumentStore {
 
     @Override
     public UUID lockOrCreateDocument(UUID projectId, String documentKey, UUID actorId, Instant now) {
+        // 先确保稳定身份存在，再锁同行；下一版本号的读取与写入须在锁释放前完成。
         jdbc.sql("""
             INSERT INTO agent_document.documents (id, project_id, document_key, created_by, created_at)
             VALUES (:id, :project, :key, :actor, :created)
@@ -68,11 +71,13 @@ public class JdbcDocumentStore implements DocumentStore {
 
     @Override
     public int nextVersionNumber(UUID documentId) {
+        // MAX+1 依赖调用方已持有文档行锁，不能独立用作无锁序列。
         return jdbc.sql("""
             SELECT COALESCE(MAX(version_number), 0) + 1 FROM agent_document.document_versions WHERE document_id=:id
             """).param("id", documentId).query(Integer.class).single();
     }
 
+    /** 追加正文、原始内容摘要和计数；不更新旧版本，数据库另有不可变约束。 */
     @Override
     public void insertVersion(UUID versionId, UUID documentId, UUID projectId, int number, String mediaType,
             DocumentContent content, UUID actorId, Instant now) {
@@ -90,6 +95,7 @@ public class JdbcDocumentStore implements DocumentStore {
 
     @Override
     public void insertFragments(UUID versionId, List<DocumentContent.Fragment> fragments) {
+        // 保存解析时产生的原始顺序、偏移及片段摘要，检索不重新切片。
         for (DocumentContent.Fragment fragment : fragments) {
             jdbc.sql("""
                 INSERT INTO agent_document.document_fragments
@@ -140,6 +146,7 @@ public class JdbcDocumentStore implements DocumentStore {
 
     @Override
     public DocumentVersionPage listVersions(UUID projectId, UUID documentId, int page, int size) {
+        // 空版本页不能掩盖文档不存在或归属其他项目，两者均按缺失处理。
         boolean exists = jdbc.sql("""
             SELECT EXISTS (SELECT 1 FROM agent_document.documents WHERE project_id=:project AND id=:document)
             """).param("project", projectId).param("document", documentId).query(Boolean.class).single();
@@ -171,6 +178,7 @@ public class JdbcDocumentStore implements DocumentStore {
 
     @Override
     public List<DocumentFragmentView> search(UUID projectId, List<UUID> versionIds, String query, int limit) {
+        // 参数绑定的子串匹配不把查询当作 SQL 或正则；排序固定后再截取有界结果。
         return jdbc.sql("""
             SELECT v.project_id, v.id AS document_version_id, v.content_sha256, f.fragment_index,
                    f.start_offset, f.fragment_sha256, f.content_text

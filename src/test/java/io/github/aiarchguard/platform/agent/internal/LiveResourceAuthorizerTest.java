@@ -37,6 +37,9 @@ import java.util.UUID;
 import java.util.function.BiFunction;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 通过公开领域端口复核模型输入引用的当前业务事实：Project、扫描、Finding、证据、文档和 PR head 都须与冻结投影一致。使用本地端口替身，不访问其他模块的表。
+ */
 class LiveResourceAuthorizerTest {
     private static final UUID ACTOR = UUID.fromString("11111111-1111-4111-8111-111111111111");
     private static final UUID PROJECT = UUID.fromString("22222222-2222-4222-8222-222222222222");
@@ -54,6 +57,7 @@ class LiveResourceAuthorizerTest {
     private static final Instant TIME = Instant.parse("2026-10-10T00:00:00Z");
 
     @Test
+    // 正向场景分别覆盖解释与摘要，仅用公开接口获取事实。
     void validatesCurrentSyntheticExplanationAndSummaryThroughPublicPortsOnly() {
         Fixture fixture = new Fixture();
         assertDoesNotThrow(() -> fixture.authorizer.validate(fixture.snapshot(false)));
@@ -64,6 +68,7 @@ class LiveResourceAuthorizerTest {
     }
 
     @Test
+    // 每次复核都重新检查授权，先前成功不能成为后续缓存许可。
     void authorizationIsRecheckedWithoutCaching() {
         Fixture fixture = new Fixture();
         AgentSnapshot snapshot = fixture.snapshot(false);
@@ -116,6 +121,7 @@ class LiveResourceAuthorizerTest {
     }
 
     @Test
+    // 存储候选本身不是证据来源，伪造 ID 不能靠自洽快照通过。
     void forgedEvidenceIdCannotBeMadeTrueByStoredCandidate() {
         Fixture fixture = new Fixture();
         AgentSnapshot snapshot = fixture.snapshot(false);
@@ -125,6 +131,7 @@ class LiveResourceAuthorizerTest {
     }
 
     @Test
+    // 同属已选集合也不能把一个 Finding 的证据改挂到另一个 Finding。
     void selectedFindingUnionDoesNotPermitCrossFindingEvidenceRemapping() {
         Fixture fixture = new Fixture();
         AgentSnapshot snapshot = fixture.snapshot(true);
@@ -154,6 +161,7 @@ class LiveResourceAuthorizerTest {
     }
 
     @Test
+    // 原始摘要和伪造行号不能扩大允许发送的最小证据投影。
     void rawEvidenceSummaryAndForgedLineNumbersCannotExpandMinimalProjection() {
         Fixture fixture = new Fixture();
         AgentSnapshot snapshot = fixture.snapshot(false);
@@ -174,6 +182,7 @@ class LiveResourceAuthorizerTest {
     }
 
     @Test
+    // 元数据哈希不能代替对不可变文档实际内容的核验。
     void versionMetadataHashDoesNotProveAlteredActualContent() {
         Fixture fixture = new Fixture();
         AgentSnapshot snapshot = fixture.snapshot(false);
@@ -209,6 +218,7 @@ class LiveResourceAuthorizerTest {
     }
 
     @Test
+    // 文档摘录必须能按原有界检索准确重放，不能相信旧候选正文。
     void excerptMustEqualTheExactReplayedBoundedFragment() {
         Fixture fixture = new Fixture();
         AgentSnapshot snapshot = fixture.snapshot(false);
@@ -251,6 +261,7 @@ class LiveResourceAuthorizerTest {
     }
 
     @Test
+    // PR 当前可信 head 每次复核，旧修订不能继续作为已批准摘要来源。
     void staleAppliedPrHeadIsRejectedOnEveryValidation() {
         Fixture fixture = new Fixture();
         AgentSnapshot snapshot = fixture.snapshot(true);
@@ -261,6 +272,7 @@ class LiveResourceAuthorizerTest {
     }
 
     @Test
+    // 候选集合也必须精确，隐藏、未用或重复项不得夹带。
     void hiddenUnusedOrDuplicateCandidatesCannotSurviveValidation() {
         Fixture fixture = new Fixture();
         AgentSnapshot snapshot = fixture.snapshot(false);

@@ -31,7 +31,10 @@ import java.util.UUID;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
-/** Operator-managed provenance only; never loads network sources or performs model calls. */
+/**
+ * 从操作员受控本地文件解析合成来源证明；
+ * 核验 profile、路径/权限、读取前后文件属性、严格字段及精确摘要，异常只关闭 Agent 准入，不联网获取来源。
+ */
 @Component
 final class ControlledSyntheticBatchInventory implements SyntheticBatchInventory {
     private static final int MAX_BYTES = 32768;
@@ -53,6 +56,9 @@ final class ControlledSyntheticBatchInventory implements SyntheticBatchInventory
             .maxNestingDepth(8).maxStringLength(256).maxNumberLength(32).build());
     }
 
+    /**
+     * 每次读取受控清单并核对项目/清单 ID/精确摘要、部署和期限；任何解析/文件异常都返回无证明，原字节缓冲在 finally 清理。
+     */
     @Override public Optional<Proof> resolve(UUID project, UUID inventory, String digest) {
         byte[] bytes = null;
         try {
@@ -70,6 +76,7 @@ final class ControlledSyntheticBatchInventory implements SyntheticBatchInventory
             }
             if (bytes.length == 0 || bytes.length > MAX_BYTES) return Optional.empty();
             check(file, false); check(file.getParent(), true);
+            // 读取后再核对身份/大小/修改时间，拒绝本次读取期间被替换的清单；不缓存早先的许可。
             BasicFileAttributes after = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
             if (!java.util.Objects.equals(before.fileKey(), after.fileKey()) || before.size() != after.size()
                     || !before.lastModifiedTime().equals(after.lastModifiedTime())) return Optional.empty();
@@ -121,6 +128,7 @@ final class ControlledSyntheticBatchInventory implements SyntheticBatchInventory
     private static boolean ref(String value) {
         return value != null && value.matches("(?!(?i:sk-|ghp_|github_pat_))[A-Za-z0-9][A-Za-z0-9._:-]{0,127}");
     }
+    /** 要求规范绝对且无符号链接的实际路径，拒绝文件及父目录被非受信主体写入；无法读取 POSIX/ACL 权限也拒绝。 */
     private static void check(Path path, boolean directory) throws IOException {
         if (path == null || !path.isAbsolute() || !path.normalize().equals(path) || !path.toRealPath().equals(path)
                 || (directory ? !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)

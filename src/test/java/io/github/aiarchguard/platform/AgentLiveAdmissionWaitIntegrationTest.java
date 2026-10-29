@@ -39,6 +39,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 通过实际 PostgreSQL 预算行锁验证“等待后再复核”准入：等待期间来源、期限、凭据、请求终态或 UTC 日期变化均拒绝。这里只预留检查，不执行模型或读取 Key。
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -69,16 +72,20 @@ class AgentLiveAdmissionWaitIntegrationTest extends AgentLiveDatabaseIntegration
         REVIEW.set(null); SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId");
     }
 
+    // 来源证明在等待期间改变，解锁后不得继续创建 attempt。
     @Test void changedInventoryWhileWaitingCannotWriteAnAttemptOrCharge() throws Exception {
         deniedAfterBudgetWait(() -> AgentLiveAccountingIntegrationTest.INVENTORY_SHA.set("9".repeat(64)));
     }
+    // 准入不是锁前一次检查，批次到期要在实际写入前再次观察。
     @Test void expiredBatchWhileWaitingCannotWriteAnAttemptOrCharge() throws Exception {
         deniedAfterBudgetWait(() -> AgentPersonalEnablementIntegrationTest.TIME.set(fixture.now.plusSeconds(3600)));
     }
+    // 凭据版本等待期间轮换，旧快照不能授权预留。
     @Test void changedCredentialWhileWaitingCannotWriteAnAttemptOrCharge() throws Exception {
         deniedAfterBudgetWait(() -> AgentPersonalEnablementIntegrationTest.CREDENTIAL_STATE
             .set(new CredentialStatus(true, UUID.randomUUID(), fixture.now)));
     }
+    // 恢复已将请求终结时，迟到预留不能复活请求。
     @Test void terminalizedRequestWhileWaitingCannotWriteAnAttemptOrCharge() throws Exception {
         deniedAfterBudgetWait(id -> {
             Instant expired = fixture.now.plusSeconds(61);
@@ -88,6 +95,7 @@ class AgentLiveAdmissionWaitIntegrationTest extends AgentLiveDatabaseIntegration
             assertThat(requests.find(fixture.project, id).orElseThrow().view().state()).isEqualTo("FAILED");
         });
     }
+    // 即使批准仍有效，跨 UTC 日也不能沿用锁前日额度判断。
     @Test void utcRolloverWhileWaitingFailsEvenWhenAllApprovalsRemainValid() throws Exception {
         fixture.now = fixture.now.atZone(ZoneOffset.UTC).toLocalDate().atTime(LocalTime.of(23, 59, 59)).toInstant(ZoneOffset.UTC);
         AgentPersonalEnablementIntegrationTest.TIME.set(fixture.now); reviewAt(fixture.now);
@@ -99,6 +107,7 @@ class AgentLiveAdmissionWaitIntegrationTest extends AgentLiveDatabaseIntegration
         });
     }
 
+    // 公共夹具先确认数据库确实被阻塞，再改变一个条件并解锁，最后检查零 attempt 和零费用。
     private void deniedAfterBudgetWait(Runnable invalidate) throws Exception {
         deniedAfterBudgetWait(id -> invalidate.run());
     }
@@ -157,6 +166,7 @@ class AgentLiveAdmissionWaitIntegrationTest extends AgentLiveDatabaseIntegration
             .param("p", fixture.project).query(Integer.class).single()).isZero();
     }
 
+    // 通过 PostgreSQL 阻塞 PID 确认锁等待已经发生，避免仅凭调度时间猜测。
     private void awaitActualBlock(int blockerPid, Future<?> attempt) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (System.nanoTime() < deadline) {

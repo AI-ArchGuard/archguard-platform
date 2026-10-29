@@ -3,7 +3,7 @@ package io.github.aiarchguard.platform.agentcredential.internal;
 import java.time.Duration;
 import java.util.function.LongSupplier;
 
-/** Local elapsed time can only shorten the caller's original remaining budget, never restart it. */
+/** 本地实际耗时只能缩短调用方原预算；即使供应器返回常量，也不能重启或延长执行期限。 */
 final class CredentialDeadline {
     private static final long MAX_NANOS = Duration.ofSeconds(30).toNanos();
     private final LongSupplier remaining;
@@ -17,6 +17,7 @@ final class CredentialDeadline {
         remainingNanos();
     }
 
+    /** 取供应器预算与本地剩余值的较小者，过期、中断或非法供应器均安全失败。 */
     long remainingNanos() {
         long supplied = supplied();
         long elapsed = System.nanoTime() - started;

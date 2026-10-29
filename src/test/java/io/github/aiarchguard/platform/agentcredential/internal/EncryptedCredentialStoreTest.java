@@ -13,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/** 合成文件验证加密存储的重启、认证、权限与串行写入边界，不接触运行时秘密。 */
 class EncryptedCredentialStoreTest {
     @TempDir Path root;
     Path directory;
@@ -30,6 +31,7 @@ class EncryptedCredentialStoreTest {
 
     EncryptedCredentialStore store() { return new EncryptedCredentialStore(directory, master, deployment); }
 
+    /** 重建存储实例仍可认证元数据，密文及状态字符串不包含合成 Key。 */
     @Test void survivesRestartWithoutPlaintextOrReadback() throws Exception {
         assertThat(store().status().configured()).isFalse();
         var saved = store().write(synthetic, now);
@@ -41,6 +43,7 @@ class EncryptedCredentialStoreTest {
         assertThat(saved.toString()).doesNotContain(synthetic);
     }
 
+    /** 替换必须改变版本；重复删除保持未配置状态，不恢复旧 Key。 */
     @Test void replacesVersionAndDeletesIdempotently() {
         var first = store().write(synthetic, now);
         var replacement = store().write(synthetic + "-replacement", now.plusSeconds(1));
@@ -50,6 +53,7 @@ class EncryptedCredentialStoreTest {
         assertThat(store().status().configured()).isFalse();
     }
 
+    /** 错主密钥、部署 AAD 不符和篡改均拒绝，既有密文不被写入或删除重置。 */
     @Test void wrongMasterTamperingAndDeploymentFailClosedWithoutReset() throws Exception {
         store().write(synthetic, now);
         byte[] encrypted = Files.readAllBytes(directory.resolve("deepseek.credential"));
@@ -66,6 +70,7 @@ class EncryptedCredentialStoreTest {
         assertThatThrownBy(() -> store().status()).isInstanceOf(CredentialFailure.class);
     }
 
+    /** 主密钥须存在、恰好 32 字节且位于密文目录外。 */
     @Test void rejectsMissingWrongSizeAndCoLocatedMaster() throws Exception {
         Files.delete(master);
         assertThatThrownBy(() -> store().status()).isInstanceOf(CredentialFailure.class);
@@ -77,6 +82,7 @@ class EncryptedCredentialStoreTest {
             .isInstanceOf(CredentialFailure.class);
     }
 
+    /** 非法 Key 在落盘前拒绝，异常不携带原文或 cause。 */
     @Test void invalidCredentialsNeverCreateCiphertextAndErrorsAreSanitized() {
         for (String bad : new String[]{"", synthetic + "\r\nInjected: yes", "a".repeat(257)}) {
             assertThatThrownBy(() -> store().write(bad, now)).isInstanceOf(CredentialFailure.class)
@@ -85,6 +91,7 @@ class EncryptedCredentialStoreTest {
         assertThat(Files.exists(directory.resolve("deepseek.credential"))).isFalse();
     }
 
+    /** 超限损坏封装不可被状态查询或删除隐式重置。 */
     @Test void boundedCorruptFileIsNotOverwrittenOrDeleted() throws Exception {
         Path file = Files.write(directory.resolve("deepseek.credential"), new byte[513]);
         PrivateCredentialFiles.restrict(file, false);
@@ -93,6 +100,7 @@ class EncryptedCredentialStoreTest {
         assertThat(Files.size(file)).isEqualTo(513);
     }
 
+    /** 多线程共享一个存储实例时写入串行完成，最终文件仍可在重启后认证。 */
     @Test void concurrentOperationsOnSingleProcessStoreRemainAuthenticated() throws Exception {
         var shared = store();
         try (var executor = Executors.newFixedThreadPool(4)) {
@@ -105,6 +113,7 @@ class EncryptedCredentialStoreTest {
         assertThat(store().status()).isEqualTo(shared.status());
     }
 
+    /** 相同 Key 重复保存仍产生不同 nonce 和密文，避免复用固定加密封装。 */
     @Test void repeatedWritesUseDistinctAuthenticatedCiphertexts() throws Exception {
         store().write(synthetic, now);
         byte[] first = Files.readAllBytes(directory.resolve("deepseek.credential"));
@@ -114,6 +123,7 @@ class EncryptedCredentialStoreTest {
         assertThat(java.util.Arrays.copyOfRange(second, 4, 16)).isNotEqualTo(java.util.Arrays.copyOfRange(first, 4, 16));
     }
 
+    /** POSIX 或 Windows ACL 对其他主体开放读取时，状态读取必须安全失败。 */
     @Test void permissiveSecretPermissionsFailClosed() throws Exception {
         if (Files.getFileAttributeView(master, java.nio.file.attribute.PosixFileAttributeView.class) != null) {
             Files.setPosixFilePermissions(master, java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"));
@@ -128,6 +138,7 @@ class EncryptedCredentialStoreTest {
         assertThatThrownBy(() -> store().status()).isInstanceOf(CredentialFailure.class).hasNoCause();
     }
 
+    /** 含路径回退的非规范化目录或主密钥路径不能选中文件。 */
     @Test void nonNormalizedPathsCannotSelectCredentialFiles() {
         assertThatThrownBy(() -> new EncryptedCredentialStore(directory.resolve(".."), master, deployment).status())
             .isInstanceOf(CredentialFailure.class);
@@ -135,6 +146,7 @@ class EncryptedCredentialStoreTest {
             .isInstanceOf(CredentialFailure.class);
     }
 
+    /** Linux 场景验证符号链接主密钥和密文均拒绝，且不会删除链接。 */
     @Test
     @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
     void symlinksCannotSelectMasterOrCiphertext() throws Exception {

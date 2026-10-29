@@ -12,9 +12,11 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
+/** 固定求值时间，独立验证默认门禁策略与例外匹配；不启动 HTTP、持久化或定时器。 */
 class GatePolicyTest {
     private static final Instant NOW = Instant.parse("2026-09-25T00:00:00Z");
 
+    /** 只有新增且为 high／critical 的未豁免问题阻断，存量、已解决和低风险项不阻断。 */
     @Test void onlyUnexceptedNewHighAndCriticalBlockRegardlessOfOrder() {
         var newHigh = finding(Classification.NEW, "high", "a", "rule.a");
         var newCritical = finding(Classification.NEW, "critical", "b", "rule.b");
@@ -31,6 +33,7 @@ class GatePolicyTest {
         assertThat(one.blockedCount()).isEqualTo(2);
     }
 
+    /** 例外可使新求值通过；到期边界或撤销后重新求值应恢复阻断，并记录命中版本。 */
     @Test void effectiveExceptionPassesThenExpiryOrRevocationReblocks() {
         var finding = finding(Classification.NEW, "high", "a", "rule.a");
         var exception = exception(PolicyExceptionScopeType.FINGERPRINT, "a", NOW.minusSeconds(1),
@@ -47,6 +50,7 @@ class GatePolicyTest {
         assertThat(GatePolicy.evaluate(comparison, List.of(revoked), NOW).outcome()).isEqualTo(GateOutcome.FAIL);
     }
 
+    /** 规则范围只覆盖匹配的规则，尚未到生效时间的指纹例外不能提前放行。 */
     @Test void ruleScopedExceptionMatchesOnlyItsRuleAndPendingExceptionDoesNotMatch() {
         var matching = exception(PolicyExceptionScopeType.RULE, "rule.a", NOW.minusSeconds(1),
             NOW.plusSeconds(60), null);

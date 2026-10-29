@@ -26,6 +26,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
+/**
+ * 验证异步任务的一次性已验证身份：去掉浏览器 token、冻结权限，并恢复线程上下文。使用本地认证对象，不执行外部 OIDC 验签。
+ */
 class OidcTaskScopeTest {
     private static final UUID OWNER = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final Instant NOW = Instant.parse("2026-10-15T00:00:00Z");
@@ -37,6 +40,7 @@ class OidcTaskScopeTest {
     void clearContext() { SecurityContextHolder.clearContext(); }
 
     @Test
+    // 仅允许捕获已认证 OIDC 身份，缺失或其他类型不能进入任务。
     void rejectsMissingAnonymousAndNonOidcAuthentication() {
         assertThatThrownBy(() -> scope.capture(OWNER, () -> {})).isInstanceOf(IllegalStateException.class);
         authenticate(new AnonymousAuthenticationToken("test", "anonymous",
@@ -57,6 +61,7 @@ class OidcTaskScopeTest {
     }
 
     @Test
+    // 认证名称必须与已验证 subject 一致，不能采用另一个自报身份。
     void rejectsAuthenticationNameThatDoesNotMatchTheVerifiedSubject() {
         var original = jwt(UUID.randomUUID().toString(), NOW.plusSeconds(60));
         authenticate(new JwtAuthenticationToken(original.getToken(), original.getAuthorities(), OWNER.toString()));
@@ -74,6 +79,7 @@ class OidcTaskScopeTest {
     }
 
     @Test
+    // worker 获得全新无 token 上下文，完成后恢复原线程身份。
     void runsWithFreshTokenlessContextAndImmutableAuthoritiesThenRestoresPreviousContext() {
         var oidc = jwt(OWNER.toString(), NOW.plusSeconds(60));
         authenticate(oidc);
@@ -112,6 +118,7 @@ class OidcTaskScopeTest {
     }
 
     @Test
+    // 排队期间过期的作用域不能进入，也不能稍后重放。
     void expiredQueuedTaskNeverEntersAndCannotBeReplayed() {
         authenticate(jwt(OWNER.toString(), NOW.plusSeconds(1)));
         AtomicInteger calls = new AtomicInteger();
@@ -138,6 +145,7 @@ class OidcTaskScopeTest {
     }
 
     @Test
+    // 并发复制仍只有首个执行者可以进入一次性作用域。
     void concurrentReplayCannotEnterTheAlreadyRunningScope() throws Exception {
         authenticate(jwt(OWNER.toString(), NOW.plusSeconds(60)));
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
@@ -164,6 +172,7 @@ class OidcTaskScopeTest {
     }
 
     @Test
+    // 执行中过期后身份可用于历史结算，不能再授权新动作。
     void expiredInFlightIdentityRemainsReadableForSettlementButCannotAuthorizeNewActions() {
         authenticate(jwt(OWNER.toString(), NOW.plusSeconds(1)));
         scope.capture(OWNER, () -> {
@@ -184,6 +193,7 @@ class OidcTaskScopeTest {
     }
 
     @Test
+    // 线程复用时下一任务不能继承前次权限。
     void workerDoesNotLeakAuthorityToTheNextTask() throws Exception {
         authenticate(jwt(OWNER.toString(), NOW.plusSeconds(60)));
         AtomicReference<Throwable> failure = new AtomicReference<>();

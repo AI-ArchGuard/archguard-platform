@@ -32,6 +32,10 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
+/**
+ * 用本地合成签名、MockMvc 和测试 PostgreSQL 验证 Webhook／报告提交／门禁读取闭环。
+ * 断言覆盖验签、重放、可信 head、PR 差异及持久化恢复；不连接真实 GitHub 或运行真实 CI。
+ */
 @SpringBootTest(properties = "archguard.github.webhook-secret=test-webhook-secret")
 @AutoConfigureMockMvc
 class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
@@ -44,6 +48,10 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
         this.mvc = mvc; this.jdbc = jdbc; this.mapper = mapper;
     }
 
+    /**
+     * 从干净基线到新增违规再修复：门禁按基线求值，PR 已解决数按前一可信修订计算。
+     * 同时验证当前 head 切换、迟到事件拒绝、重复报告复用和历史分页，两个参考点不可混用。
+     */
     @Test void signedWebhookAndCiSubmissionCloseNewViolationThenRepairGate() throws Exception {
         Fixture fixture = fixture(true);
         String base = path(fixture);
@@ -150,6 +158,7 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .param("project", fixture.project()).query(Long.class).single()).isEqualTo(3);
     }
 
+    /** 错误签名、同 delivery 不同正文、非法报告和跨项目读写拒绝，并核对有限的失败审计内容。 */
     @Test void badSignatureDeliveryCollisionAndCrossProjectWriteFailClosed() throws Exception {
         Fixture own = fixture(true), other = fixture(false);
         byte[] payload = webhook("a".repeat(40), Instant.now(), 999999);
@@ -208,6 +217,7 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             """).query(Long.class).single()).isZero();
     }
 
+    /** 单有 delivery 关联不足以推断可信修订，必须存在与该 PR 匹配的已应用 head 历史。 */
     @Test void doesNotInferRevisionFromDeliveryWithoutMatchingAppliedHistory() throws Exception {
         Fixture fixture = fixture(true);
         mvc.perform(put(path(fixture) + "/github/link").with(user(ACTOR)).with(csrf())
@@ -226,6 +236,10 @@ class GovernanceCiApiIntegrationTest extends PostgresIntegrationTestSupport {
             .andExpect(status().isOk()).andExpect(jsonPath("$.currentHeadRevisionId").doesNotExist());
     }
 
+    /**
+     * 直接构造已接收但未完成的数据库状态，再以同键重放补完原提交并检查不重复写入。
+     * 这是持久化断点模拟，不是真实杀死或重启 JVM 的实验。
+     */
     @Test void persistedReceivedSubmissionResumesAfterInterruptedEvaluationWithoutNewFacts() throws Exception {
         Fixture fixture = fixture(true);
         String providerId = "9876543210987654321";

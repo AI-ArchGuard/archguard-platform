@@ -26,6 +26,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 
+/** 用测试数据库与临时合成文件验证完整凭据 HTTP 边界，管理操作不得创建 Agent 请求。 */
 @SpringBootTest(classes = ArchGuardPlatformApplication.class)
 @AutoConfigureMockMvc
 @ActiveProfiles("local-compose")
@@ -65,6 +66,7 @@ class CredentialApiIntegrationTest {
     }
     @BeforeEach void reset() throws Exception { Files.deleteIfExists(DIRECTORY.resolve("deepseek.credential")); }
 
+    /** 保存、读取和重复删除只返回元数据及 no-store，审计不包含 Key 或文件路径。 */
     @Test void onlyMetadataReturnedAndAuditContainsNoCredentials() throws Exception {
         String response = mvc.perform(put(ROUTE).with(user(OWNER.toString())).header("Origin", "http://localhost:8082")
             .contentType(MediaType.APPLICATION_JSON).content("{\"apiKey\":\"" + SYNTHETIC + "\"}"))
@@ -86,6 +88,7 @@ class CredentialApiIntegrationTest {
         assertThat(Files.exists(DIRECTORY.resolve("deepseek.credential"))).isFalse();
     }
 
+    /** 未登录、非 owner、恶意/缺失 Origin 均不能修改文件；401 也必须禁止缓存。 */
     @Test void unauthenticatedWrongOwnerAndHostileOriginCannotWrite() throws Exception {
         mvc.perform(get(ROUTE)).andExpect(status().isUnauthorized()).andExpect(header().string("Cache-Control", "no-store"));
         mvc.perform(put(ROUTE).with(user(UUID.randomUUID().toString())).header("Origin", "http://localhost:8082")
@@ -98,6 +101,7 @@ class CredentialApiIntegrationTest {
         assertThat(Files.exists(DIRECTORY.resolve("deepseek.credential"))).isFalse();
     }
 
+    /** 畸形、null、未知/重复字段、尾随对象和超限 JSON 全部拒绝且错误不回显输入。 */
     @Test void malformedDuplicateUnknownFieldsAndOversizeAreSanitized() throws Exception {
         for (String json : new String[]{"{", "null", "{\"apiKey\":\"" + SYNTHETIC + "\",\"url\":\"bad\"}",
                 "{\"apiKey\":\"" + SYNTHETIC + "\",\"apiKey\":\"another\"}",

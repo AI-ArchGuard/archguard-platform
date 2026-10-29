@@ -31,6 +31,9 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+/**
+ * 使用独立 MockMvc 与应用端口替身验证 live HTTP 输入边界：先授权、严格有界解析、幂等键、脱敏审计与 no-store。未启动完整安全链或真实执行器。
+ */
 class AgentLiveControllerTest {
     private static final UUID PROJECT = UUID.randomUUID(), BATCH = UUID.randomUUID(), TEMPLATE = UUID.randomUUID(), OWNER = UUID.randomUUID();
     private static final String ORIGIN = "http://localhost:8081", TRACE = "c".repeat(32);
@@ -48,6 +51,7 @@ class AgentLiveControllerTest {
             .addFilters(new EnablementNoStoreFilter()).build();
     }
 
+    // HTTP 只接收批次和模板 ID，结果复用已有请求读取地址。
     @Test void acceptsOnlyTheTwoSelectionIdentifiersAndReturnsTheExistingReadLocation() throws Exception {
         mvc.perform(post(route()).header("Origin", ORIGIN).header("Idempotency-Key", "synthetic-live-key")
             .contentType(MediaType.APPLICATION_JSON).content(valid()))
@@ -66,6 +70,7 @@ class AgentLiveControllerTest {
         assertThat(operations.runCalls).hasValue(1);
     }
 
+    // 无权调用在读取请求体前结束，防止先解析不可信数据或泄漏状态。
     @Test void authorizationPrecedesReadingAnyBodyBytesAndInvalidKeyValidation() throws Exception {
         var reads = new AtomicInteger();
         var request = new MockHttpServletRequest() {
@@ -78,6 +83,7 @@ class AgentLiveControllerTest {
         assertThat(audits).hasSize(1); assertThat(audits.getFirst().action()).isEqualTo("agent.live.http_rejected");
     }
 
+    // 畸形 JSON、重复键、未知项和错类型均不能进入应用执行。
     @Test void rejectsMalformedDuplicateUnknownMissingNullAndWrongTypeFieldsWithoutRunning() throws Exception {
         for (String body : List.of("", "{", "null", "{}", "[]", valid() + " {}", valid().replace("\"batchId\"", "\"unknown\""),
                 "{\"batchId\":\"" + BATCH + "\"}",
@@ -94,6 +100,7 @@ class AgentLiveControllerTest {
         assertThat(operations.runCalls).hasValue(0); assertSafeAudit();
     }
 
+    // 仅多读一个探测字节即可判定超限，不能先无界读完整正文。
     @Test void readsNoMoreThan8193BytesAndRejectsTheOversizedBody() throws Exception {
         var reads = new AtomicInteger(); byte[] body = " ".repeat(20_000).getBytes(java.nio.charset.StandardCharsets.UTF_8);
         var request = new MockHttpServletRequest() {
@@ -143,6 +150,7 @@ class AgentLiveControllerTest {
         assertThat(response).doesNotContain("synthetic-sensitive-input", "private path", "IllegalStateException"); assertSafeAudit();
     }
 
+    // 拒绝边界审计失败时明确不可用，不能继续产生未经审计执行。
     @Test void failedBoundaryAuditIsAnExplicitUnavailableResponseNeverAnUnauditedRun() throws Exception {
         operations.authorizationFailure = new ProjectPermissionDeniedException(); failAudit.set(true);
         mvc.perform(post(route()).header("Origin", ORIGIN).header("Idempotency-Key", "synthetic-live-key")
@@ -164,6 +172,7 @@ class AgentLiveControllerTest {
         assertThat(audits).as("the application, not this boundary, owns and audits run failures").isEmpty();
     }
 
+    // 即使未授权或带 context path，缓存禁止头也应先写入响应。
     @Test void noStoreFilterRunsBeforeAnUnauthorizedResponseIncludingContextPath() throws Exception {
         var request = new MockHttpServletRequest("POST", "/local" + route()); request.setContextPath("/local");
         var response = new MockHttpServletResponse();
@@ -172,6 +181,7 @@ class AgentLiveControllerTest {
         assertThat(response.getHeader("Pragma")).isEqualTo("no-cache");
     }
 
+    // 辅助断言限制审计字段，避免将输入正文或私有异常当作可公开诊断。
     private void assertSafeAudit() {
         assertThat(audits).allSatisfy(event -> {
             assertThat(event.actorId()).isEqualTo(OWNER); assertThat(event.projectId()).isEqualTo(PROJECT);

@@ -7,7 +7,11 @@ import java.time.Instant;
 import io.github.aiarchguard.platform.agent.LiveCostPolicy;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证冻结价格快照的保守预留与整数费用，区分旧策略和上下文策略。金额源于固定规则与合成用量，并非真实供应商账单。
+ */
 class DeepSeekPriceSnapshotTest {
+    // 预留按高峰未命中上限，实际费用汇总后仅做一次向上取整。
     @Test void reservesPeakCacheMissCapsAndRoundsSettlementOnce() {
         assertThat(DeepSeekPriceSnapshot.maxReservationMicrousd()).isEqualTo(4200);
         assertThat(DeepSeekPriceSnapshot.peakCostMicrousd(100, 20, 40)).isEqualTo(43);
@@ -28,6 +32,7 @@ class DeepSeekPriceSnapshotTest {
         assertThat(DeepSeekPriceSnapshot.valid(DeepSeekPriceSnapshot.VERSION, now, now)).isFalse();
     }
 
+    // 上下文版本使用独立预留，超观察阈值的可信用量仍须计费。
     @Test void contextSnapshotUsesItsOwnReservationAndDoesNotDiscardOverThresholdUsage() {
         assertThat(DeepSeekPriceSnapshot.maxReservationMicrousd(LiveCostPolicy.VERSION)).isEqualTo(4200);
         assertThat(DeepSeekPriceSnapshot.maxReservationMicrousd(LiveCostPolicy.CONTEXT_VERSION)).isEqualTo(316373);
@@ -39,6 +44,7 @@ class DeepSeekPriceSnapshotTest {
         assertThat(DeepSeekPriceSnapshot.valid(LiveCostPolicy.CONTEXT_VERSION, now, now)).isFalse();
     }
 
+    // 未知目录与溢出不得回退至其他已知策略。
     @Test void versionedSnapshotRejectsUnknownCatalogsAndOverflowWithoutFallback() {
         for (String unknown : new String[] {null, "", "unknown"}) {
             assertThatThrownBy(() -> DeepSeekPriceSnapshot.maxReservationMicrousd(unknown)).isInstanceOf(IllegalArgumentException.class).hasNoCause();

@@ -16,6 +16,10 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
+/**
+ * 把不可信模型 JSON 转为可展示结果：先验 Schema，再验用途、Finding 范围、引用及建议边界。
+ * VerifiedCitation 只从服务端候选重建，文本匹配规则并非完整语义证明。
+ */
 @Component
 public class AgentOutputValidator {
     private static final Pattern EXECUTED_ACTION = Pattern.compile(
@@ -30,6 +34,9 @@ public class AgentOutputValidator {
 
     public AgentOutputValidator(ObjectMapper mapper) { this.mapper = mapper; }
 
+    /**
+     * 先用冻结 Schema 拒绝非法形状，再核对请求用途、结论、每条主张及建议引用；INSUFFICIENT 不得夹带无依据自由文本。
+     */
     public AgentRequestView.AgentResult validate(String raw, AgentSnapshot snapshot) {
         if (raw == null || raw.length() > 32768) {
             throw new InvalidOutput("OUTPUT_INVALID");
@@ -130,6 +137,10 @@ public class AgentOutputValidator {
             verified, coverage);
     }
 
+    /**
+     * 把每条主张约束到已选 Finding；
+     * 摘要还要求引用来自对应 Finding 的 Evidence，不能借另一个 Finding 的证据支撑。
+     */
     private List<String> claims(JsonNode items, AgentSnapshot snapshot, Map<String, AgentSnapshot.Candidate> allowed,
             Set<String> cited, boolean supported, boolean summary,
             Map<String, Set<String>> evidenceByFinding, Set<String> refsSeen) {
@@ -182,6 +193,9 @@ public class AgentOutputValidator {
         return ids;
     }
 
+    /**
+     * 检查引用没有跨 Finding 借用 Evidence，并要求每个声称覆盖的 Finding 至少有一条自己的 Evidence。
+     */
     private void checkScopedCitations(JsonNode ids, Set<String> refs,
             Map<String, Set<String>> evidenceByFinding, Map<String, AgentSnapshot.Candidate> allowed) {
         for (JsonNode id : ids) {
@@ -214,6 +228,7 @@ public class AgentOutputValidator {
         }
     }
 
+    /** 限制展示文本并拒绝固定模式的已执行动作声称；这是确定性防线，不保证识别所有同义表达。 */
     private void checkText(String value) {
         if (value == null || value.isBlank() || value.length() > 2000 || EXECUTED_ACTION.matcher(value).find()) {
             throw new InvalidOutput("OUTPUT_INVALID");

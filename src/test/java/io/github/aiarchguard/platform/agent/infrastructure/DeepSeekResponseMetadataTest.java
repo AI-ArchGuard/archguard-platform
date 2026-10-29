@@ -17,6 +17,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+/**
+ * 验证四个获批根元数据字段仅接受惰性形式，不扩大嵌套或业务白名单。参数化输入检查结果、用量与固定拒绝原因。
+ */
 class DeepSeekResponseMetadataTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Set<String> MODELS = Set.of("deepseek-flash");
@@ -34,6 +37,7 @@ class DeepSeekResponseMetadataTest {
 
     @ParameterizedTest(name = "accepted metadata: {0}")
     @MethodSource("permittedMetadata")
+    // 获批元数据不能改变业务文本或可信用量。
     void acceptsOnlyApprovedInertFormsWithoutChangingUsageOrBusinessText(String metadata) {
         for (String policy : POLICIES) {
             var decoded = assertDoesNotThrow(() -> codec.decode(wire(metadata), MODELS, policy));
@@ -49,6 +53,7 @@ class DeepSeekResponseMetadataTest {
 
     @ParameterizedTest(name = "rejected metadata: {0}")
     @MethodSource("forbiddenMetadata")
+    // 错类型或有行为含义的值先使外层失效，不能先接受用量。
     void rejectsForbiddenMetadataBeforeAcceptingUsage(String name, String metadata) {
         for (String policy : POLICIES) assertRejected(wire(metadata), policy, "ENVELOPE_METADATA");
     }
@@ -62,6 +67,7 @@ class DeepSeekResponseMetadataTest {
 
     @ParameterizedTest(name = "unapproved root name: {0}")
     @MethodSource("unknownFieldNames")
+    // 出现获批元数据不意味着其他根字段可以被接受。
     void approvedMetadataCannotHideAnyUnknownRootField(String field) {
         byte[] bytes = wire("\"user\":null,\"max_tool_calls\":null,\"top_logprobs\":0,"
             + "\"created_at\":1,\"completed_at\":2,\"" + field + "\":null");
@@ -70,6 +76,7 @@ class DeepSeekResponseMetadataTest {
 
     @ParameterizedTest(name = "root-only field {0} in {1}")
     @MethodSource("nestedMetadata")
+    // 根字段兼容仅限根层，嵌套对象继续按原白名单校验。
     void rootCompatibilityDoesNotBroadenAnyNestedAllowlist(String field, String pointer, String reason) throws Exception {
         ObjectNode root = (ObjectNode) MAPPER.readTree(wire("\"user\":null,\"max_tool_calls\":null,"
             + "\"top_logprobs\":0,\"created_at\":1,\"completed_at\":2"));
@@ -90,6 +97,7 @@ class DeepSeekResponseMetadataTest {
             "\"created_at\":-1,\"completed_at\":null");
     }
 
+    // 参数集覆盖非惰性值、错误类型与时间边界。
     private static Stream<Arguments> forbiddenMetadata() {
         List<Arguments> cases = new ArrayList<>();
         for (String field : List.of("user", "max_tool_calls")) {

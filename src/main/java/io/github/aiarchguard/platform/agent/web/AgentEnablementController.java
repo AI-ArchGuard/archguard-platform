@@ -13,6 +13,10 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * 个人确认和项目设置的 HTTP 边界。写操作先授权再读取最多 8 KiB 严格 JSON；
+ * If-Match 与 ETag 保护设置并发更新。
+ */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/agent")
 final class AgentEnablementController {
@@ -27,6 +31,7 @@ final class AgentEnablementController {
     @GetMapping("/settings") ResponseEntity<AgentSettingsView> settings(@PathVariable UUID projectId) {
         return response(operations.settings(projectId));
     }
+    /** 先核验写权限，再解析带引号的非负修订号 If-Match；服务层锁后比较该版本以防止覆盖其他会话更新。 */
     @PutMapping(value = "/settings", consumes = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<AgentSettingsView> update(@PathVariable UUID projectId,
             @RequestHeader(value = "If-Match", required = false) String condition, HttpServletRequest request) {
@@ -62,6 +67,7 @@ final class AgentEnablementController {
     private void authorize(UUID projectId, HttpServletRequest request) {
         operations.authorizeWrite(projectId, request.getHeader("Origin"), request.isSecure());
     }
+    /** 限制原始正文到 8 KiB，拒绝歧义 JSON 和强制转换；清理读取字节缓冲，错误只保留固定输入无效异常。 */
     private <T> T read(HttpServletRequest request, Class<T> type) {
         byte[] bytes = null;
         try {

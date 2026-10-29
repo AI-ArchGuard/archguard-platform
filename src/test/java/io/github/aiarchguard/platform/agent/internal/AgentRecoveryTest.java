@@ -12,6 +12,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.lang.reflect.Proxy;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证恢复调度的最小控制流：Schema 不可用时跳过，数据库失败不逃出调度，过期候选查询有数量和时间边界。存储替身返回空集合，不证明真实恢复写入。
+ */
 class AgentRecoveryTest {
     private final AtomicInteger calls = new AtomicInteger();
     private final AtomicReference<Instant> selectedCutoff = new AtomicReference<>();
@@ -36,6 +39,7 @@ class AgentRecoveryTest {
                 }
             })), schema, clock);
 
+    // 恢复依赖独立 Agent Schema 就绪；不可用时不查询，查询故障不破坏调度线程。
     @Test void schemaFailureSkipsRecoveryAndDatabaseFailureDoesNotEscape() {
         recovery.recoverExpired();
         assertThat(calls.get()).isZero();
@@ -45,6 +49,7 @@ class AgentRecoveryTest {
         assertThat(calls.get()).isOne();
     }
 
+    // 固定时钟明确选择截止点，同时断言查询上限，避免无界扫描。
     @Test void selectionIsBoundedAndUsesHardTimeoutWithGrace() {
         schema.migrateOnReady();
         Instant cutoff = Instant.parse("2026-09-30T23:59:00Z");

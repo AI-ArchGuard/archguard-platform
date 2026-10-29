@@ -21,6 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/** 真实锁竞争的有界消费回归：原期限、中断、版本匹配、异常清理及零迟到回调。 */
 class BoundedCredentialConsumptionTest {
     private static final long FIVE_SECONDS = Duration.ofSeconds(5).toNanos();
     private static final String SYNTHETIC = "synthetic-bounded-consumption-only";
@@ -36,6 +37,7 @@ class BoundedCredentialConsumptionTest {
         version = store.write(SYNTHETIC, Instant.parse("2026-10-15T00:00:00Z")).credentialVersion();
     }
 
+    /** 当前版本只回调一次；所有同槽位重入须在读取嵌套期限前拒绝。 */
     @Test void currentVersionIsConsumedOnceAndCannotReenterAnySharedStoreOperation() {
         var calls = new AtomicInteger(); var nestedSupplierReads = new AtomicInteger();
         store.consume(version, () -> FIVE_SECONDS, key -> {
@@ -51,6 +53,7 @@ class BoundedCredentialConsumptionTest {
         store.consume(version, () -> FIVE_SECONDS, key -> assertThat(key).isEqualTo(SYNTHETIC));
     }
 
+    /** 实际争锁后超时须在原持有者释放前退出，释放后也不能迟到执行。 */
     @Test void realLockWaitTimesOutWhileTheOwnerStillHoldsTheSlotAndCannotRunLate() throws Exception {
         var calls = new AtomicInteger(); var failure = new AtomicReference<Throwable>(); var done = new CountDownLatch(1);
         Thread waiter = new Thread(() -> {
@@ -70,6 +73,7 @@ class BoundedCredentialConsumptionTest {
         store.consume(version, () -> FIVE_SECONDS, key -> assertThat(key).isEqualTo(SYNTHETIC));
     }
 
+    /** 中断真实等待者须提前退出、保留中断标志且始终零回调。 */
     @Test void interruptingABoundedLockWaitActuallyExitsAndPreservesTheFlagWithoutALateCallback() throws Exception {
         var calls = new AtomicInteger(); var failure = new AtomicReference<Throwable>();
         var interrupted = new AtomicBoolean(); var done = new CountDownLatch(1);
@@ -89,6 +93,7 @@ class BoundedCredentialConsumptionTest {
         assertThat(store.status().credentialVersion()).isEqualTo(version);
     }
 
+    /** 进入前已中断立即拒绝；清理测试线程标志后槽位仍可用。 */
     @Test void preInterruptedBoundedConsumptionNeverInvokesCallbackAndLeavesTheSlotUsable() {
         var calls = new AtomicInteger();
         Thread.currentThread().interrupt();
@@ -99,6 +104,7 @@ class BoundedCredentialConsumptionTest {
         assertThat(store.status().credentialVersion()).isEqualTo(version);
     }
 
+    /** 只有当前新版本能消费一次，未知、旧和删除版本均不得回调。 */
     @Test void boundedConsumptionCannotUseMissingStaleReplacedOrDeletedVersions() {
         var calls = new AtomicInteger();
         assertUnavailable(() -> store.consume(UUID.randomUUID(), () -> FIVE_SECONDS, key -> calls.incrementAndGet()));
@@ -112,6 +118,7 @@ class BoundedCredentialConsumptionTest {
         assertThat(calls).hasValue(1); assertThat(store.status().configured()).isFalse();
     }
 
+    /** 空、非正、超过 30 秒或抛错的预算，以及空版本/回调都必须零消费。 */
     @Test void nullZeroNegativeExcessiveAndThrowingBudgetsNeverInvokeCallbacks() {
         var calls = new AtomicInteger();
         assertUnavailable(() -> store.consume(version, (LongSupplier) null, key -> calls.incrementAndGet()));
@@ -124,6 +131,7 @@ class BoundedCredentialConsumptionTest {
         assertThat(calls).hasValue(0); assertThat(store.status().credentialVersion()).isEqualTo(version);
     }
 
+    /** 解密流程内期限到期不能进入回调，失败后锁仍能再次获取。 */
     @Test void expiringTheBudgetBeforeTheCallbackPreventsConsumptionAndReleasesTheLock() {
         var reads = new AtomicInteger(); var calls = new AtomicInteger();
         LongSupplier expires = () -> reads.incrementAndGet() >= 5 ? 0 : FIVE_SECONDS;
@@ -132,6 +140,7 @@ class BoundedCredentialConsumptionTest {
         store.consume(version, () -> FIVE_SECONDS, key -> assertThat(key).isEqualTo(SYNTHETIC));
     }
 
+    /** 回调已执行后到期/中断会安全失败，但必须清理重入标志，不撤回既有副作用。 */
     @Test void expiryOrInterruptionDuringCallbackIsSanitizedAndAlwaysClearsTheReentryGuard() {
         var remaining = new AtomicLong(FIVE_SECONDS); var calls = new AtomicInteger();
         assertUnavailable(() -> store.consume(version, remaining::get, key -> {
@@ -145,6 +154,7 @@ class BoundedCredentialConsumptionTest {
         store.consume(version, () -> FIVE_SECONDS, key -> assertThat(key).isEqualTo(SYNTHETIC));
     }
 
+    /** 回调异常不传播私有消息或 cause，后续消费及删除仍正常。 */
     @Test void callbackExceptionHasNoPrivateMessageOrCauseAndDoesNotPoisonTheSlot() {
         assertUnavailable(() -> store.consume(version, () -> FIVE_SECONDS, key -> {
             throw new IllegalStateException(key + root, new IllegalArgumentException(key));
@@ -153,6 +163,7 @@ class BoundedCredentialConsumptionTest {
         assertThat(store.delete().configured()).isFalse();
     }
 
+    /** 即使供应器增大剩余值，本地实际耗时仍强制原始预算到期。 */
     @Test void deadlineCannotBeExtendedByAConstantOrIncreasingSupplier() {
         var supplied = new AtomicLong(Duration.ofMillis(80).toNanos());
         var deadline = new CredentialDeadline(supplied::get);
@@ -163,6 +174,7 @@ class BoundedCredentialConsumptionTest {
         assertUnavailable(deadline::remainingNanos);
     }
 
+    /** 首次供应器读取本身也计时；后续非法值或异常不能绕过期限。 */
     @Test void firstSupplierReadTimeIsChargedAndSubsequentInvalidOrThrowingReadsFailClosed() {
         long initial = Duration.ofMillis(30).toNanos();
         var reads = new AtomicInteger();
@@ -183,6 +195,7 @@ class BoundedCredentialConsumptionTest {
 
     private HeldSlot holdSlot() throws Exception { return new HeldSlot(); }
 
+    /** 用兼容消费持住共享槽位，关闭时释放并回收线程，供有界等待者竞争。 */
     private final class HeldSlot implements AutoCloseable {
         final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         final AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -208,6 +221,7 @@ class BoundedCredentialConsumptionTest {
         }
     }
 
+    /** 观察到真实等待状态后才继续断言，避免把尚未调度误判为锁等待。 */
     private static void awaitBlocked(Thread thread) {
         long until = System.nanoTime() + Duration.ofSeconds(2).toNanos();
         while (System.nanoTime() < until && thread.getState() != Thread.State.WAITING && thread.getState() != Thread.State.TIMED_WAITING) {

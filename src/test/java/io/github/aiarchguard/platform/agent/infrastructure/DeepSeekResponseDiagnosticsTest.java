@@ -37,6 +37,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
+/**
+ * 验证拒绝诊断仅输出固定阶段、原因与有界数量，并关联隔离 trace。覆盖内存响应和环回 HTTP 异步失败，不记录不可信正文、字段名或凭据。
+ */
 class DeepSeekResponseDiagnosticsTest {
     private static final String TRACE = "0123456789abcdef0123456789abcdef";
     private static final String KEY = "synthetic-diagnostics-key";
@@ -93,6 +96,7 @@ class DeepSeekResponseDiagnosticsTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("rejectedResponses")
+    // 每个畸形响应只产生一次脱敏诊断，回复与日志均不带原始值。
     void classifiesRejectionsOnceWithoutExposingUntrustedResponseValues(RejectedResponse scenario) {
         AtomicInteger calls = new AtomicInteger();
         var client = new DeepSeekLiveResponseClient(MAPPER, (request, timeout) -> {
@@ -120,6 +124,7 @@ class DeepSeekResponseDiagnosticsTest {
         assertDiagnostic(scenario.stage(), scenario.reason(), scenario.unknownFieldCount());
     }
 
+    // 未分类异常只用固定后备原因，不读取私有异常消息。
     @Test void unclassifiedOutputInvalidFailureUsesFixedFallbackWithoutReadingExceptionDetails() {
         AtomicInteger calls = new AtomicInteger();
         var client = new DeepSeekLiveResponseClient(MAPPER, (request, timeout) -> {
@@ -150,6 +155,7 @@ class DeepSeekResponseDiagnosticsTest {
             .isInstanceOf(IllegalArgumentException.class).hasMessage("Invalid DeepSeek diagnostic classification").hasNoCause();
     }
 
+    // 未知字段数量只属于当前调用，不能污染下一次诊断。
     @Test void consecutiveCallsDoNotCarryUnknownCountsIntoOtherFailuresOrSuccess() throws Exception {
         ObjectNode root = (ObjectNode) MAPPER.readTree(VALID_ENVELOPE);
         root.put(PRIVATE_FIELD + KEY, PRIVATE_BODY);
@@ -192,6 +198,7 @@ class DeepSeekResponseDiagnosticsTest {
         assertThat(logs.list).isEmpty();
     }
 
+    // 获批惰性字段可解析，但不进入业务回复与诊断。
     @Test void acceptedInertMetadataIsNotExposedInBusinessReplyOrDiagnostics() throws Exception {
         ObjectNode root = (ObjectNode) MAPPER.readTree(VALID_ENVELOPE);
         approvedMetadata(root);
@@ -214,6 +221,7 @@ class DeepSeekResponseDiagnosticsTest {
         assertThat(logs.list).isEmpty();
     }
 
+    // 异步超限保留分类，并在调用方 trace 下记录。
     @Test void chunkedBodyLimitRetainsClassificationAcrossAsyncCompletionAndLogsOnCallerTrace() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger httpRequests = new AtomicInteger();
@@ -256,6 +264,7 @@ class DeepSeekResponseDiagnosticsTest {
 
     @ParameterizedTest(name = "loopback HTTP: {0}")
     @MethodSource("envelopeShapeResponses")
+    // 环回 HTTP 区分响应根形状，同时验证不重试与不泄漏正文。
     void distinguishesEnvelopeShapesAcrossLoopbackHttpWithoutRetryOrResponseDisclosure(RejectedResponse scenario) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger httpRequests = new AtomicInteger();
@@ -301,6 +310,7 @@ class DeepSeekResponseDiagnosticsTest {
             unknownRootCase("unknown envelope field", root, 1));
     }
 
+    // 以下工厂逐项变异合成合法响应，区分外层、记账与业务拒绝阶段。
     private static Stream<RejectedResponse> rejectedResponses() throws Exception {
         List<RejectedResponse> cases = new ArrayList<>();
         cases.add(new RejectedResponse("wrong MIME", "HTTP_RESPONSE", "HTTP_CONTENT_TYPE",
@@ -486,6 +496,7 @@ class DeepSeekResponseDiagnosticsTest {
         assertThat(reply.actualModelId()).isEqualTo("deepseek-flash");
     }
 
+    // 为当前调用建立隔离 trace，避免继承无关日志上下文。
     private void withIsolatedTrace(Runnable operation) {
         Map<String, String> workerContext = Map.of("traceId", "previous-worker-trace", "worker", PRIVATE_WORKER);
         MDC.setContextMap(workerContext);

@@ -23,6 +23,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+/**
+ * 验证真实存储上的遗留请求恢复：过期请求失败、不重试模型、不释放未知费用，并使用独立调度器。通过重建恢复对象模拟重启，不启动新的生产进程。
+ */
 @SpringBootTest(properties = {"archguard.agent.recovery-delay=3600000"})
 class AgentRecoveryIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired AgentStore store;
@@ -32,6 +35,7 @@ class AgentRecoveryIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired PlatformTransactionManager transactions;
     @Autowired io.github.aiarchguard.platform.agent.internal.AgentTransitions transitions;
 
+    // 重建恢复组件后处理过期 QUEUED/RUNNING，原预留及尝试事实不能被退款或补发。
     @Test void restartFailsExpiredRequestsWithoutRetryOrReleasingUnknownCost() {
         var fixture = AgentExplanationIntegrationTest.fixture(jdbc);
         Instant now = Instant.now();
@@ -65,17 +69,20 @@ class AgentRecoveryIntegrationTest extends PostgresIntegrationTestSupport {
             .param("id", fixture.finding()).query(Long.class).single()).isZero();
     }
 
+    // 这里只重建恢复相关对象并运行恢复动作，模拟持久化状态跨组件重启保留。
     private void restart() {
         context.publishEvent(new ApplicationReadyEvent(new SpringApplication(ArchGuardPlatformApplication.class),
             new String[0], context, Duration.ZERO));
     }
 
+    // 恢复使用独立调度资源，避免阻塞 Scanner 调度。
     @Test void recoveryHasItsOwnSchedulerInsteadOfUsingScannerSchedulingThreads() {
         var deterministic = context.getBean("taskScheduler", org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class);
         var recovery = context.getBean("agentRecoveryScheduler", org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class);
         assertThat(recovery.getScheduledThreadPoolExecutor()).isNotSameAs(deterministic.getScheduledThreadPoolExecutor());
     }
 
+    // 选择候选后若刚被领取，更新时仍复核当前期限，不能终结新鲜执行者。
     @Test void recoveryRechecksExpiryWhenASelectedQueueRowWasJustClaimed() {
         var fixture = AgentExplanationIntegrationTest.fixture(jdbc);
         Instant now = Instant.now();

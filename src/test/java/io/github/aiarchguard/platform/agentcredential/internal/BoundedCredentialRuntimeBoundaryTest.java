@@ -24,11 +24,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.env.MockEnvironment;
 
+/** 验证有界元数据和审计跨模块调用保留原预算，并与最终消费共享同一槽位。 */
 class BoundedCredentialRuntimeBoundaryTest {
     private static final long BUDGET = Duration.ofSeconds(5).toNanos();
     private static final String KEY = "synthetic-runtime-boundary-key-only";
     @TempDir Path root;
 
+    /** 旧元数据/审计实现不支持有界重载时直接失败，禁止调用无界旧方法。 */
     @Test void unsupportedMetadataAndAuditDoNotCallTheirLegacyMethods() {
         var calls = new AtomicInteger();
         CredentialVersionSource source = () -> { calls.incrementAndGet(); return null; };
@@ -38,6 +40,7 @@ class BoundedCredentialRuntimeBoundaryTest {
         assertThat(calls).hasValue(0);
     }
 
+    /** 有界元数据读取观察同一管理存储的当前、替换及删除状态。 */
     @Test void boundedMetadataReadsCurrentVersionAndObservesReplacementAndDeletion() throws Exception {
         var fixture = fixture();
         assertThat(fixture.versions.current(() -> BUDGET).credentialVersion()).isEqualTo(fixture.version);
@@ -47,6 +50,7 @@ class BoundedCredentialRuntimeBoundaryTest {
         assertThat(fixture.versions.current(() -> BUDGET).configured()).isFalse();
     }
 
+    /** 有界消费只使用有界审计入口，传入不大于原预算的正剩余时间。 */
     @Test void consumptionUsesOnlyTheExplicitBoundedAuditAndPassesItsOriginalRemainingBudget() throws Exception {
         var fixture = fixture(); var calls = new AtomicInteger();
         fixture.source.consume(fixture.version, () -> BUDGET, key -> {
@@ -57,6 +61,7 @@ class BoundedCredentialRuntimeBoundaryTest {
         assertThat(fixture.observedBudget.get()).isBetween(1L, BUDGET);
     }
 
+    /** 有界意图审计失败必须零消费，不能改走旧审计挽救请求。 */
     @Test void failedBoundedAuditPreventsConsumptionWithoutFallingBackToLegacy() throws Exception {
         var fixture = fixture(); fixture.failBounded.set(true); var calls = new AtomicInteger();
         assertThatThrownBy(() -> fixture.source.consume(fixture.version, () -> BUDGET, key -> calls.incrementAndGet()))
@@ -65,6 +70,7 @@ class BoundedCredentialRuntimeBoundaryTest {
         assertThat(fixture.legacyAudits).hasValue(0);
     }
 
+    /** 元数据读取也拒绝非法预算并保留已有中断，清理后仍可读取当前版本。 */
     @Test void metadataRejectsInvalidBudgetAndKeepsAnExistingInterrupt() throws Exception {
         var fixture = fixture();
         for (long value : new long[]{0, -1, Duration.ofSeconds(30).toNanos() + 1}) {
@@ -78,10 +84,13 @@ class BoundedCredentialRuntimeBoundaryTest {
         assertThat(fixture.versions.current(() -> BUDGET).credentialVersion()).isEqualTo(fixture.version);
     }
 
+    /** 消费占槽时，元数据等待必须在持有者释放前按原期限退出。 */
     @Test void metadataUsesTheSameSlotAndTimesOutBeforeItsHolderReleases() throws Exception { blockedMetadata(false); }
 
+    /** 读取元数据争用同一槽位，新增中断也能提前退出并保留标志。 */
     @Test void metadataUsesTheSameSlotAndPreservesNewCancellationBeforeItsHolderReleases() throws Exception { blockedMetadata(true); }
 
+    /** 持锁消费中重入元数据必须在期限供应器和审计访问前拒绝。 */
     @Test void metadataReentryIsRejectedBeforeReadingTheDeadlineOrAccessingAudit() throws Exception {
         var fixture = fixture(); var budgetReads = new AtomicInteger();
         fixture.source.consume(fixture.version, key -> {
@@ -94,6 +103,7 @@ class BoundedCredentialRuntimeBoundaryTest {
         });
     }
 
+    /** 用持锁消费和独立读取线程验证真实等待，finally 必须释放并回收两个线程。 */
     private void blockedMetadata(boolean interrupt) throws Exception {
         var fixture = fixture(); var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
         var done = new CountDownLatch(1); var budgetRead = new CountDownLatch(1);

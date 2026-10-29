@@ -26,7 +26,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.HandlerMapping;
 
-/** Runs after the application transaction rolls back; never retains submitted input or exceptions. */
+/** 在设置或确认操作失败后生成脱敏错误；非 GET 拒绝另记审计，审计不可用时显式返回 503，避免呈现无审计成功。 */
 @RestControllerAdvice(assignableTypes = AgentEnablementController.class)
 @Order(Ordered.HIGHEST_PRECEDENCE)
 final class EnablementExceptionHandler {
@@ -41,6 +41,9 @@ final class EnablementExceptionHandler {
         AgentSettingsPreconditionException.class, AgentUnavailableException.class, CredentialFailure.class,
         ProjectPermissionDeniedException.class, ProjectNotFoundException.class, AgentNotFoundException.class,
         DataAccessException.class})
+    /**
+     * 应用写入失败已回滚后独立记录拒绝审计，区分 If-Match 缺失/过期与权限/状态失败；审计不可用则返回稳定 503。
+     */
     ResponseEntity<ApiError> failure(Exception failure, HttpServletRequest request) {
         HttpStatus status = HttpStatus.SERVICE_UNAVAILABLE;
         String code = "agent.unavailable";

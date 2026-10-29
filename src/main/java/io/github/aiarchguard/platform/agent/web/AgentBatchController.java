@@ -34,7 +34,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Batch management is not a model request or an egress admission. */
+/** 批次元数据的 HTTP 边界，负责先授权再有界解析、预览、批准、读取及撤销。费用预留和模型发送不通过本控制器开放。 */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/agent/batches")
 final class AgentBatchController {
@@ -56,6 +56,7 @@ final class AgentBatchController {
             .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS);
     }
 
+    /** 写入式预览入口先复用个人控制授权，再有界解析模板选择；返回的摘要只供后续精确批准比较。 */
     @PostMapping(value = "/preview", consumes = MediaType.APPLICATION_JSON_VALUE)
     LiveBatchPreviewView preview(@PathVariable UUID projectId, HttpServletRequest request) {
         return boundary(projectId, () -> {
@@ -66,6 +67,7 @@ final class AgentBatchController {
         });
     }
 
+    /** 控制器仅审计授权/解析拒绝；应用服务拥有批准事务及其失败审计，避免同一次失败重复计数。 */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<LiveBatchView> approve(@PathVariable UUID projectId, HttpServletRequest request) {
         var input = boundary(projectId, () -> {
@@ -101,6 +103,7 @@ final class AgentBatchController {
         controls.authorizeWrite(project, request.getHeader("Origin"), request.isSecure());
     }
 
+    /** 记录 HTTP 边界拒绝的固定原因和状态；审计失败显式转不可用，不记录请求体或异常原文。 */
     private <T> T boundary(UUID project, Supplier<T> operation) {
         try { return operation.get(); }
         catch (RuntimeException failure) {
@@ -115,6 +118,9 @@ final class AgentBatchController {
         }
     }
 
+    /**
+     * 读取 8 KiB 加一个探测字节以识别越界；严格 mapper 拒绝未知/重复字段、尾随 JSON 和标量强制转换。
+     */
     private <T> T read(HttpServletRequest request, Class<T> type) {
         byte[] bytes = null;
         try {

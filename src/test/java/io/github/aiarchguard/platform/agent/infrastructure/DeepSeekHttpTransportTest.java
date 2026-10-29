@@ -16,7 +16,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 用临时环回 HTTP 服务验证固定目标、响应限制、超时、中断和资源释放。这里的 HTTP 是本地测试服务，不连接官方服务。
+ */
 class DeepSeekHttpTransportTest {
+    // 生产目标和请求头固定，配置不能提供任意出口。
     @Test void fixesOfficialTargetAndHeadersWithoutProvidingAnEndpointSetting() throws Exception {
         AtomicReference<HttpRequest> captured = new AtomicReference<>();
         var transport = new DeepSeekHttpTransport((request, timeout) -> {
@@ -47,6 +51,7 @@ class DeepSeekHttpTransportTest {
         assertThat(calls.get()).isZero();
     }
 
+    // 重定向和错误响应都不能触发第二次请求。
     @Test void localFakeHttpDoesNotFollowRedirectOrRetryErrors() throws Exception {
         for (int status : new int[] {302, 401, 429, 500, 503}) {
             AtomicInteger calls = new AtomicInteger(), redirected = new AtomicInteger();
@@ -70,6 +75,7 @@ class DeepSeekHttpTransportTest {
         }
     }
 
+    // 分块响应同样受累计大小限制，拒绝后资源须能结束。
     @Test void limitsChunkedBodiesAndTerminatesClientResources() throws Exception {
         HttpServer server = server();
         AtomicInteger calls = new AtomicInteger();
@@ -90,6 +96,7 @@ class DeepSeekHttpTransportTest {
         assertThat(http.awaitTermination(Duration.ofSeconds(3))).isTrue();
     }
 
+    // 期限覆盖响应体停滞，而不只覆盖建立连接。
     @Test void deadlineCoversStalledBodyAndReleasesClientResources() throws Exception {
         HttpServer server = server();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -147,6 +154,7 @@ class DeepSeekHttpTransportTest {
         } finally { server.stop(0); }
     }
 
+    // 取消需传递到 I/O，并保留中断标记。
     @Test void callerInterruptionCancelsIoAndPreservesInterruptStatus() throws Exception {
         HttpServer server = server();
         var handlers = Executors.newVirtualThreadPerTaskExecutor();
@@ -184,6 +192,7 @@ class DeepSeekHttpTransportTest {
         assertThat(http.awaitTermination(Duration.ofSeconds(3))).isTrue();
     }
 
+    // 拒绝通过进程代理或 JVM 设置改变固定网络边界。
     @Test void ignoresInheritedProxyAndRefusesUnsafeJvmSettings() throws Exception {
         var original = java.net.ProxySelector.getDefault();
         try {
@@ -212,6 +221,7 @@ class DeepSeekHttpTransportTest {
     private HttpServer server() throws Exception { return HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0); }
 
     // Test-only target rewrite: production DeepSeekHttpTransport has no target override.
+    // 环回端点只经测试构造缝隙注入，不是生产可配置地址。
     private DeepSeekHttpTransport localTransport(HttpServer server, BoundedJdkHttpExchange http) {
         return new DeepSeekHttpTransport((request, timeout) -> {
             var builder = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/responses"))

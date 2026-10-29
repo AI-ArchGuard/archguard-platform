@@ -19,6 +19,7 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
+/** MVC 最后兜底的错误映射；模块专属处理器先处理业务错误，未知异常只返回固定消息。 */
 @RestControllerAdvice
 @Order(Ordered.LOWEST_PRECEDENCE)
 final class GlobalExceptionHandler {
@@ -31,6 +32,7 @@ final class GlobalExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     ResponseEntity<ApiError> validation(MethodArgumentNotValidException exception) {
+        // 按字段名稳定输出校验消息，不把用户提交的原始字段值回显到错误详情。
         Map<String, Object> fields = exception.getBindingResult().getFieldErrors().stream()
             .sorted((left, right) -> left.getField().compareTo(right.getField()))
             .collect(Collectors.toMap(
@@ -48,6 +50,7 @@ final class GlobalExceptionHandler {
         return error(HttpStatus.BAD_REQUEST, "request.malformed", "The request is malformed.", Map.of());
     }
 
+    /** 数据库错误统一为依赖不可用；日志仅写异常类名，不写 SQL 参数或异常消息。 */
     @ExceptionHandler(DataAccessException.class)
     ResponseEntity<ApiError> databaseUnavailable(DataAccessException exception) {
         LOGGER.error("event=request_failed reason=database exception={}", exception.getClass().getName());

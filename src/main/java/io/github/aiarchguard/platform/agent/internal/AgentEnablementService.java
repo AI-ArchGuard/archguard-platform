@@ -19,6 +19,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * 个人确认与项目开关的事务服务。写入受 Maintainer 和 owner 约束，修订号防覆盖，撤销与准入共用设置锁；
+ * 可用状态只做本地判断。
+ */
 @Service
 class AgentEnablementService implements AgentEnablementOperations {
     private final ProjectAuthorization projects;
@@ -50,6 +54,7 @@ class AgentEnablementService implements AgentEnablementOperations {
     @Override @Transactional(readOnly = true) public AgentSettingsView settings(UUID project) {
         projects.requireViewer(project); schema.requireReady(); return view(project, store.settings(project));
     }
+    /** 锁住项目设置再比较修订号，拒绝覆盖并发更新；启用只选仍有效确认，成功审计与设置更新一起提交。 */
     @Override @Transactional public AgentSettingsView update(UUID project, long expected, AgentSettingsUpdate request) {
         projects.requireMaintainer(project); owner(); schema.requireReady();
         if (request == null || request.enabled() == null || expected < 0
@@ -61,6 +66,7 @@ class AgentEnablementService implements AgentEnablementOperations {
         record(project, "agent.settings.updated", Map.of("enabled", request.enabled(), "revision", current.revision() + 1));
         return view(project, store.settings(project));
     }
+    /** 校验显式风险确认并绑定当前凭据版本；仅追加确认，不启用项目开关或发送模型。 */
     @Override @Transactional public PersonalEnablementView approve(UUID project, PersonalEnablementInput input) {
         projects.requireMaintainer(project); owner(); schema.requireReady();
         Instant now = Instant.now(clock);
@@ -75,9 +81,10 @@ class AgentEnablementService implements AgentEnablementOperations {
     @Override @Transactional(readOnly = true) public PersonalEnablementView get(UUID project, UUID id) {
         projects.requireViewer(project); schema.requireReady(); return publicView(approval(project, id));
     }
+    /** 与启停及真实准入共用设置行锁，追加撤销；若撤销当前选中确认，同时关闭项目开关。 */
     @Override @Transactional public PersonalEnablementView revoke(UUID project, UUID id) {
         projects.requireMaintainer(project); owner(); schema.requireReady();
-        // Same project-settings lock order as enable/disable and, later, live-call admission.
+        // 与启停及真实调用准入共用项目设置锁，撤销后不能让并发准入沿用旧确认。
         var settings = store.lockSettings(project);
         approval(project, id);
         if (store.revoke(id, actors.currentActor().id(), Instant.now(clock))) {
@@ -86,6 +93,7 @@ class AgentEnablementService implements AgentEnablementOperations {
         }
         return publicView(approval(project, id));
     }
+    /** 逐层计算本地不可用原因；即便展示可用，创建与发送仍需重新检查批次、版本和资源。 */
     private AgentSettingsView view(UUID project, AgentEnablementStore.Settings value) {
         String reason = !value.enabled() ? "PROJECT_DISABLED" : invalidity(approval(project, value.enablementId()));
         if (reason == null && !deploymentEnabled) reason = "DEPLOYMENT_DISABLED";

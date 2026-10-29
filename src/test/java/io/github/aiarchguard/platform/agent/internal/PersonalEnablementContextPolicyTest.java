@@ -27,6 +27,9 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证启用确认、费用策略和模型映射的不可变版本配对，特别是获批 1017 映射。只验证本地提案、Schema 与 API 描述，不启用出口或产生费用。
+ */
 class PersonalEnablementContextPolicyTest {
     private static final Instant NOW = Instant.parse("2026-10-16T00:00:00Z");
     private static final String ID = "11111111-1111-4111-8111-111111111111";
@@ -38,6 +41,7 @@ class PersonalEnablementContextPolicyTest {
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
         .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
+    // 新确认必须显式提交，旧确认不能被原地升级。
     @Test void acceptsExplicitContextAcknowledgementWithoutMutatingOrUpgradingLegacy() throws Exception {
         PersonalEnablementInput legacy = input(legacy());
         PersonalEnablementInput context = input(context());
@@ -51,6 +55,7 @@ class PersonalEnablementContextPolicyTest {
         assertThat(context.mappingSnapshot()).isEqualTo(CONTEXT_MAPPING);
     }
 
+    // 1017 绑定保持获批请求别名和上下文价格不变。
     @Test void acceptsExplicitApproved1017AcknowledgementWithUnchangedAliasAndContextPrice() throws Exception {
         PersonalEnablementInput approved = input(approved1017());
         assertThatCode(() -> PersonalEnablementPolicy.validate(approved, NOW)).doesNotThrowAnyException();
@@ -61,6 +66,7 @@ class PersonalEnablementContextPolicyTest {
         assertThat(approved.priceCatalogVersion()).isEqualTo("deepseek-flash-context-peak-usd-2026-10-15");
     }
 
+    // Schema、映射、价格与允许响应模型必须成套匹配，拒绝混搭。
     @Test void approved1017CannotBeMixedWithOlderSchemasMappingsPricesOrResponseModelNames() throws Exception {
         for (String schema : List.of("0.2.0", "0.3.0")) rejected(approved1017().put("schemaVersion", schema));
         for (String mapping : List.of(LEGACY_MAPPING, CONTEXT_MAPPING, "deepseek-v4.1-flash-1017", "deepseek-flash")) {
@@ -77,6 +83,7 @@ class PersonalEnablementContextPolicyTest {
         }
     }
 
+    // 新映射不能放宽原风险确认、来源新鲜度、期限和凭据要求。
     @Test void approved1017KeepsOriginalRiskDataSourceExpiryAndCredentialGates() throws Exception {
         rejected(approved1017().put("riskAccepted", false));
         rejected(approved1017().put("scope", "ENTERPRISE"));
@@ -175,6 +182,7 @@ class PersonalEnablementContextPolicyTest {
         }
     }
 
+    // 版本变更通过显式值区分，不扩大 DTO 字段或混淆历史策略。
     @Test void acknowledgementSchemasKeepUnchangedDtoShapeAndIsolatePolicyVersions() throws Exception {
         Schema previous = fileSchema("contracts/agent-personal-enablement-0.2.0.schema.json");
         Schema current = fileSchema("contracts/agent-personal-enablement-0.3.0.schema.json");
@@ -194,6 +202,7 @@ class PersonalEnablementContextPolicyTest {
         }
     }
 
+    // 批次保持既有字段形状，仅允许获批数量和费用内的唯一模板。
     @Test void batchSchemaHasEightFieldsAndOnlyTwoUniqueTemplatesWithinAuthorizedCost() throws Exception {
         Schema previous = fileSchema("contracts/agent-live-batch-0.1.0.schema.json");
         Schema current = fileSchema("contracts/agent-live-batch-0.2.0.schema.json");
@@ -215,6 +224,7 @@ class PersonalEnablementContextPolicyTest {
         valid(previous, old); invalid(current, old);
     }
 
+    // 历史可读与当前可用分开，契约接受历史版本不等于获得发送许可。
     @Test void apiAcceptsExplicitOldAndNewContractsWithDefaultClosedRuntimeAvailability() throws Exception {
         JsonNode enablement = json("openapi/agent-enablement-v1.json");
         JsonNode batches = json("openapi/agent-batches-v1.json");
@@ -250,6 +260,7 @@ class PersonalEnablementContextPolicyTest {
         invalid(schema, body.deepCopy().put("costPolicyVersion", CONTEXT_PRICE));
     }
 
+    // 以下工厂只构造合成确认，按版本替换获批配对，其他风险声明仍显式存在。
     private ObjectNode legacy() { return acknowledgement("0.2.0", LEGACY_PRICE, LEGACY_MAPPING); }
     private ObjectNode context() { return acknowledgement("0.3.0", CONTEXT_PRICE, CONTEXT_MAPPING); }
     private ObjectNode approved1017() { return acknowledgement("0.4.0", CONTEXT_PRICE, "DeepSeek-V4.1-Flash-1017"); }

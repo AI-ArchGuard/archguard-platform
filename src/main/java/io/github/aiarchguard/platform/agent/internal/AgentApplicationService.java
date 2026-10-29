@@ -45,6 +45,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+/**
+ * 原合成解释/摘要的应用编排：通过公开领域接口取获授权事实，生成随机引用别名和最小输入，在事务中保存幂等请求及审计，提交成功后才交给 worker。
+ */
 @Service
 class AgentApplicationService implements AgentOperations {
     private static final String PROMPT_VERSION = "finding-explanation-0.1.0";
@@ -86,6 +89,10 @@ class AgentApplicationService implements AgentOperations {
         this.clock = clock; this.enabled = enabled;
     }
 
+    /**
+     * 在同一事务中授权资源、构建快照、按输入摘要处理幂等并写审计；
+     * 仅 afterCommit 排队，避免 worker 看不到尚未提交的请求。
+     */
     @Override
     @Transactional
     public AgentRequestView create(UUID projectId, String key, CreateAgentRequest request) {
@@ -199,6 +206,7 @@ class AgentApplicationService implements AgentOperations {
         return view;
     }
 
+    /** 读取重新校验当前 Viewer；历史请求存在也不能绕过已经撤销的项目权限。 */
     @Override
     @Transactional(readOnly = true)
     public AgentRequestView get(UUID projectId, UUID requestId) {
@@ -207,6 +215,7 @@ class AgentApplicationService implements AgentOperations {
         return store.find(projectId, requestId).map(AgentSnapshot::view).orElseThrow(AgentNotFoundException::new);
     }
 
+    /** 区分单 Finding 解释和多 Finding PR 摘要的选择约束，同时限制幂等键、数量与重复 ID。 */
     private static void validate(String key, CreateAgentRequest request) {
         boolean explanation = request != null && "FINDING_EXPLANATION".equals(request.purpose());
         boolean summary = request != null && "PR_SUMMARY".equals(request.purpose());
@@ -228,6 +237,7 @@ class AgentApplicationService implements AgentOperations {
         }
     }
 
+    /** 排序资源选择并绑定内容版本，避免同一集合的顺序差异制造幂等冲突；请求随机引用别名不参与该摘要。 */
     private static String canonicalDigestInput(CreateAgentRequest request,
             List<AgentRequestView.DocumentVersionBinding> versions) {
         if ("PR_SUMMARY".equals(request.purpose())) {

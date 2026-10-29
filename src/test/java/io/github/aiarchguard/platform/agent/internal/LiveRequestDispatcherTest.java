@@ -58,6 +58,9 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+/**
+ * 验证独立调度器只执行已提交的 live 领取胜者：捕获一次性身份与 trace、提交后排队，并以有界失败清理保护共享请求。事务和队列由内存替身控制。
+ */
 class LiveRequestDispatcherTest {
     private static final Instant NOW = Instant.parse("2026-10-15T12:00:00Z");
     private static final String TRACE = "0123456789abcdef0123456789abcdef";
@@ -76,6 +79,7 @@ class LiveRequestDispatcherTest {
         logger.detachAppender(logs); logs.stop(); MDC.clear(); TransactionSynchronizationManager.clear();
     }
 
+    // 公开构造默认关闭，在查找、身份捕获或排队前拒绝。
     @Test void publicConstructionDeniesBeforeLookupCaptureQueueOrCore() {
         var unusedCore = new LiveExecutionCoordinator(fixture.requests, null,
             snapshot -> { throw new AssertionError("Default dispatch must not execute resources"); }, null,
@@ -89,6 +93,7 @@ class LiveRequestDispatcherTest {
         assertThat(fixture.scope.captures).isZero(); assertNoWork();
     }
 
+    // 领取消耗的预算继续约束 worker，不能在核心入口刷新。
     @Test void boundedWorkerDoesNotRenewTheOriginalBudgetAfterClaim() {
         var nanos = new AtomicLong();
         var stop = new StopOnlyAccounting(fixture);
@@ -115,6 +120,7 @@ class LiveRequestDispatcherTest {
         assertThat(fixture.requests.value.view().state()).isEqualTo("QUEUED");
     }
 
+    // 领取与审计同事务，审计后过期也要整体回滚。
     @Test void boundedClaimExpiryAfterAuditRollsBackTentativeClaimAndAudit() {
         var nanos = new AtomicLong();
         var stop = new StopOnlyAccounting(fixture);
@@ -151,6 +157,7 @@ class LiveRequestDispatcherTest {
         assertThat(stop.stops).isEmpty(); assertThat(fixture.requests.finishes).isZero();
     }
 
+    // 异步队列使用持久化身份和 trace，不借用浏览器 token 或自报参数。
     @Test void independentQueueUsesPersistedIdentityTraceAndCanonicalClaimArguments() throws Exception {
         fixture.dispatcher().dispatch(fixture.project, fixture.request);
         assertThat(fixture.scope.capturedRequester).isEqualTo(fixture.owner);
@@ -182,6 +189,7 @@ class LiveRequestDispatcherTest {
         assertThat(fixture.audit.getFirst().actorId()).isEqualTo(fixture.owner);
     }
 
+    // 重复排队副本只能让已提交的领取胜者进入核心。
     @Test void duplicateQueuedCopiesOnlyExecuteTheCommittedClaimWinner() {
         var dispatcher = fixture.dispatcher();
         dispatcher.dispatch(fixture.project, fixture.request); dispatcher.dispatch(fixture.project, fixture.request);
@@ -225,6 +233,7 @@ class LiveRequestDispatcherTest {
         assertThat(fixture.links.lookups).isZero(); assertThat(fixture.scope.captures).isZero(); assertNoWork();
     }
 
+    // 存在外层事务时必须等提交完成才把工作放入队列。
     @Test void actualTransactionQueuesOnlyAfterCommitNotDuringPreparation() {
         var outer = new MemoryTransactions(fixture.requests, fixture.audit);
         new TransactionTemplate(outer).executeWithoutResult(status -> {
@@ -238,6 +247,7 @@ class LiveRequestDispatcherTest {
         fixture.queue.runNext(); assertThat(fixture.executions).hasSize(1);
     }
 
+    // 外层回滚不能留下排队、执行或错误终结副作用。
     @Test void rollbackNeverQueuesClaimsExecutesOrFailsTheRequest() {
         var outer = new MemoryTransactions(fixture.requests, fixture.audit);
         new TransactionTemplate(outer).executeWithoutResult(status -> {
@@ -266,6 +276,7 @@ class LiveRequestDispatcherTest {
         assertNoWork();
     }
 
+    // 队列拒绝使用稳定错误，不失败共享请求，也不补排重试。
     @Test void executorRejectionIsSanitizedWithoutFailingOrRetryingSharedWork() {
         fixture.queue.failure = new RejectedExecutionException(PRIVATE_DETAIL, privateFailure());
         assertUnavailable(() -> fixture.dispatcher().dispatch(fixture.project, fixture.request));
@@ -324,6 +335,7 @@ class LiveRequestDispatcherTest {
         assertSafeLogCode("MODEL_UNAVAILABLE");
     }
 
+    // 已获执行权后的上下文失败先停批，再有限清理结果，不创建或退还 attempt。
     @Test void contextPreflightFailureStopsBatchBeforeBoundedResultWithoutCreatingOrRefundingAnAttempt() {
         fixture.useContextPolicy(); fixture.executionFailure = privateFailure();
         var accounting = new StopOnlyAccounting(fixture); var database = new CleanupDatabase(fixture, accounting.events);
@@ -386,6 +398,7 @@ class LiveRequestDispatcherTest {
         assertSafeLogCode("MODEL_UNAVAILABLE");
     }
 
+    // 落败领取者没有停批或终结胜者的权限。
     @Test void contextLosingClaimCannotStopOrFinalizeTheWinningExecutor() {
         fixture.useContextPolicy(); fixture.links.wins = false;
         var accounting = new StopOnlyAccounting(fixture); var database = new CleanupDatabase(fixture, accounting.events);
@@ -442,6 +455,7 @@ class LiveRequestDispatcherTest {
         assertThat(fixture.audit).isEmpty(); assertSafeLogCode("AUTHORIZATION_REVOKED");
     }
 
+    // 领取提交后身份过期阻止进入核心，仅该胜者可以写自己的失败。
     @Test void scopeExpiryAfterClaimCommitPreventsCoreAndFailsOnlyThatWinner() {
         fixture.transactions.afterCommit = () -> fixture.scope.rejectChecks = true;
         fixture.dispatcher().dispatch(fixture.project, fixture.request); fixture.queue.runNext();
@@ -464,6 +478,7 @@ class LiveRequestDispatcherTest {
         assertSafeLogCode("MODEL_UNAVAILABLE");
     }
 
+    // 捕获任务是一次性的，不能保存后重放变成重试。
     @Test void capturedRunnableCannotBeReusedToRetryExecution() {
         fixture.dispatcher().dispatch(fixture.project, fixture.request); var task = fixture.queue.take();
         task.run(); assertThatCode(task::run).doesNotThrowAnyException();
@@ -503,6 +518,7 @@ class LiveRequestDispatcherTest {
         assertThat(fixture.requests.lookups).isZero(); assertNoWork();
     }
 
+    // 以下辅助断言同时检查查找、队列和执行计数，确保拒绝路径没有隐式工作。
     private void assertNoWork() {
         assertThat(fixture.queue.submissions).isZero(); assertThat(fixture.queue.tasks).isEmpty();
         assertThat(fixture.links.claims).isZero(); assertThat(fixture.executions).isEmpty();

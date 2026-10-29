@@ -10,7 +10,10 @@ import java.time.Duration;
 import java.util.Set;
 import org.springframework.stereotype.Component;
 
-/** Construction does not read a Key, create an HTTP client, resolve DNS, or probe the provider. */
+/**
+ * Spring 中注册的惰性生产适配器集合；
+ * 构造不读取 Key、不创建 HTTP 或探测网络，实际使用时才初始化固定协议资源，关闭后不能重建。
+ */
 @Component
 final class DeepSeekProductionAdapters implements LiveAdapterBundle {
     private final ObjectMapper mapper;
@@ -33,6 +36,7 @@ final class DeepSeekProductionAdapters implements LiveAdapterBundle {
     @Override public LiveResponsePort responses() { return lazyResponses; }
     @Override public LiveExecutionCoordinator.CredentialUse credentials() { return credentials; }
 
+    /** 首次实际使用才创建固定 HTTP/DNS 资源；同步保护关闭与初始化竞争，初始化失败先关闭局部资源。 */
     private synchronized DeepSeekLiveResponseClient client() {
         if (closed) throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
         if (state == null) {

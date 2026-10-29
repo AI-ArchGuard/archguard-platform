@@ -13,6 +13,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
+/** 在安全链和 MVC 前建立请求 traceId，写回响应并在请求结束后恢复线程 MDC。 */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public final class TraceIdFilter extends OncePerRequestFilter {
@@ -37,6 +38,7 @@ public final class TraceIdFilter extends OncePerRequestFilter {
         }
     }
 
+    /** 仅复用 32 位小写十六进制请求标识；其他输入生成新值，避免任意请求头进入日志。 */
     private String resolveTraceId(String candidate) {
         if (candidate != null && VALID_TRACE_ID.matcher(candidate).matches()) {
             return candidate;

@@ -1,6 +1,6 @@
 package io.github.aiarchguard.platform.agent.infrastructure;
 
-/** Stable, body-free error. Provider/JDK exceptions must never be retained as its cause. */
+/** 传输层内部的无正文错误载体，以稳定错误码及固定原因分类传递失败，不保留供应商或 JDK 异常 cause。 */
 final class DeepSeekTransportFailure extends RuntimeException {
     private final DeepSeekResponseRejection.Reason reason;
 

@@ -2,6 +2,10 @@
 
 ArchGuard 的核心业务平台，初期采用 Java/Spring Boot 模块化单体。
 
+## 中文代码阅读
+
+从 [Project 模块中文阅读指南](docs/code-reading/project-module.zh-CN.md)开始，再读 [Repository 与 RuleSet](docs/code-reading/repository-ruleset.zh-CN.md)、[ScanJob 与 Finding](docs/code-reading/scanjob-finding.zh-CN.md)、[Governance](docs/code-reading/governance.zh-CN.md)、[Agent、文档与凭据](docs/code-reading/agent-documents-credentials.zh-CN.md)和[身份、追踪与审计](docs/code-reading/platform-foundation.zh-CN.md)，可按 HTTP 入口、应用接口、权限与事务、领域对象、数据库适配器和测试的顺序理解代码。注释补齐范围包括全部手写生产与测试 Java；迁移、生成内容、契约和固定数据通过阅读说明解释并保持原字节。验证证据按批次记录在注释计划中，不代表真实模型验收或部署状态改变。
+
 ## 当前状态
 
 Platform `v0.4.0` 在 `v0.3.0` MVP 控制面之上交付持续治理闭环。当前实现提供 Java 21/Spring Boot 模块化单体、Flyway/PostgreSQL、OIDC JWT、Project/Repository/RuleSet/ScanJob/Finding 生命周期、统一错误、traceId、审计、文件邮箱 Runner 编排、不可变基线、门禁、CI 报告提交和健康探针。MVP 设计见 [Platform MVP Technical Design](docs/technical-design/v0.3-platform-mvp.md)。

@@ -4,13 +4,19 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 
-/** Unregistered infrastructure building block, not a model port or an authorization policy. */
+/**
+ * 固定官方 HTTPS Responses 地址的 HTTP 构造与响应边界；
+ * 限制完整请求、Key 形状、剩余期限及 JSON 响应，外部异常转固定错误，不承担业务授权。
+ */
 final class DeepSeekHttpTransport {
     private static final URI ENDPOINT = URI.create("https://api.deepseek.com/responses");
     private final Exchange exchange;
 
     DeepSeekHttpTransport(Exchange exchange) { this.exchange = exchange; }
 
+    /**
+     * 只构造固定目标的一次 POST，限制请求、凭据形状和剩余期限；状态、Content-Type、正文边界通过后才交给编解码器。
+     */
     byte[] post(byte[] body, String key, Duration timeout) {
         if (body == null || body.length == 0 || body.length > 6000 || key == null
                 || !key.matches("[A-Za-z0-9._-]{16,256}") || timeout == null

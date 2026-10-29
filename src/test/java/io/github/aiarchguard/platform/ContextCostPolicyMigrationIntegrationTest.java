@@ -24,11 +24,16 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Private databases prevent migration fixtures from entering any shared recovery worker. */
+/**
+ * 在私有 PostgreSQL 数据库验证 V15 上下文费用策略迁移，保留旧批准、请求、尝试和费用事实。数据库约束与串行存储规则共同保证两用途顺序和不可退款历史。
+ *
+ * Private databases prevent migration fixtures from entering any shared recovery worker.
+ */
 class ContextCostPolicyMigrationIntegrationTest extends PostgresIntegrationTestSupport {
     private static final String LEGACY = "deepseek-flash-peak-usd-2026-10-06";
     private static final String CONTEXT = "deepseek-flash-context-peak-usd-2026-10-15";
 
+    // 先核实旧约束名称，避免替换错误约束仍让迁移看似成功。
     @Test void v14CostConstraintNamesAreVerifiedBeforeTheirV15Replacement() throws Exception {
         String url = newDatabase(); mainMigration(url).migrate();
         agentMigration(url).target(MigrationVersion.fromVersion("14")).load().migrate();
@@ -58,6 +63,7 @@ class ContextCostPolicyMigrationIntegrationTest extends PostgresIntegrationTestS
         }
     }
 
+    // 种入完整旧版本事实再升级，检查业务历史与迁移校验和保持原样。
     @Test void v14UpgradePreservesOldRequestsApprovalsAttemptsChargesAndChecksums() throws Exception {
         String url = newDatabase(); mainMigration(url).migrate();
         var previous = agentMigration(url).target(MigrationVersion.fromVersion("14")).load();
@@ -89,6 +95,7 @@ class ContextCostPolicyMigrationIntegrationTest extends PostgresIntegrationTestS
         }
     }
 
+    // 旧批次继续用旧限制，新上下文策略必须符合获批两次范围。
     @Test void databaseKeepsLegacyBatchLimitsAndRequiresTheTwoCallContextRange() throws Exception {
         String url = latestDatabase();
         try (var connection = connect(url)) {
@@ -124,6 +131,7 @@ class ContextCostPolicyMigrationIntegrationTest extends PostgresIntegrationTestS
         }
     }
 
+    // 已知费用不能超出对应预留，UNKNOWN 保留明确形状而不是零费用。
     @Test void knownOutcomeCannotExceedItsOwnAttemptReservationAndUnknownShapeIsRetained() throws Exception {
         String url = latestDatabase();
         try (var connection = connect(url)) {
@@ -164,6 +172,7 @@ class ContextCostPolicyMigrationIntegrationTest extends PostgresIntegrationTestS
         }
     }
 
+    // 摘要依赖解释成功且结算；仅有费用结果或已停批都不能继续。
     @Test void serialStoreRequiresSuccessfulExplanationNotJustSettledFeesAndStopsBlockLaterWork() throws Exception {
         String url = latestDatabase();
         try (var connection = connect(url)) {
@@ -192,6 +201,7 @@ class ContextCostPolicyMigrationIntegrationTest extends PostgresIntegrationTestS
         }
     }
 
+    // 两次额度只能对应两个不同用途，不能通过重复用途或复用模板绕过。
     @Test void serialStoreRejectsDuplicatePurposesAndTemplateReuse() throws Exception {
         String url = latestDatabase();
         try (var connection = connect(url)) {

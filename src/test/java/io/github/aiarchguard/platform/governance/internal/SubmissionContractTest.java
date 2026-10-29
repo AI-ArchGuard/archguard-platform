@@ -12,12 +12,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证报告提交元数据、原字节摘要和 UTF-8 边界。
+ * 这里使用最小 JSON 片段，不把这些测试当成完整 Scanner Result Schema 的验收。
+ */
 class SubmissionContractTest {
     private final UUID project = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private final UUID repository = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private final UUID rules = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private final byte[] report = "{\"schemaVersion\":\"0.1.0\"}".getBytes(StandardCharsets.UTF_8);
 
+    /** 请求摘要依赖冻结的字段顺序、末尾 LF 和 Project 身份，不能简化成报告摘要。 */
     @Test void digestUsesFrozenOrderedFieldsAndTrailingLf() {
         var metadata = metadata("a".repeat(40), "a".repeat(40), SubmissionContract.sha256(report));
         var validated = SubmissionContract.validate(metadata, report);
@@ -31,6 +36,7 @@ class SubmissionContractTest {
             .isNotEqualTo(SubmissionContract.digest(UUID.randomUUID(), repository, validated));
     }
 
+    /** 原字节摘要不符与 PR head／commit 不一致分别触发报告错误和元数据错误。 */
     @Test void wrongReportHashAndPrHeadCannotBeSubmitted() {
         assertThatThrownBy(() -> SubmissionContract.validate(metadata("a".repeat(40), "a".repeat(40),
             "0".repeat(64)), report)).isInstanceOf(InvalidGovernanceReportException.class);
@@ -38,6 +44,7 @@ class SubmissionContractTest {
             SubmissionContract.sha256(report)), report)).isInstanceOf(InvalidGovernanceInputException.class);
     }
 
+    /** 非支持的 Scanner 标签和非法 UTF-8 都应在接收写入之前被契约层拒绝。 */
     @Test void unsupportedScannerAndMalformedUtf8FailClosed() {
         var metadata = metadata("a".repeat(40), "a".repeat(40), SubmissionContract.sha256(report));
         var unsupported = new ReportSubmissionMetadata(rules, metadata.revision(), metadata.pullRequest(),

@@ -62,7 +62,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-/** Actual Spring/runtime/credential/ledger chain; only HTTP and operator provenance are synthetic test seams. */
+/**
+ * 在完整 Spring 运行时、加密合成凭据、真实编解码器与 PostgreSQL 账本之间验证个人执行链。仅 HTTP 交换和来源证明被替换；OIDC 身份由测试注入，不构成真实供应商调用、验签或部署验收。
+ *
+ * Actual Spring/runtime/credential/ledger chain; only HTTP and operator provenance are synthetic test seams.
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.live.enabled=true",
     "archguard.agent.credentials.enabled=true", "archguard.agent.synthetic-enabled=false",
     "archguard.agent.credentials.owner-id=11111111-1111-1111-1111-111111111111",
@@ -155,6 +159,7 @@ class PersonalLiveRuntimeIntegrationTest {
         finally { Thread.interrupted(); SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId"); }
     }
 
+    // 从 HTTP 显式创建解释再摘要，核对引用、单次发送与独立费用事实，网络回复仍是假响应。
     @Test void springHttpRunsExplanationThenSummaryWithRealCodecCredentialsAccountingAndVerifiedVersionedCitations() throws Exception {
         mvc.perform(get(root() + "/settings").with(owner())).andExpect(status().isOk())
             .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.modelCallsAvailable").value(true))
@@ -187,6 +192,7 @@ class PersonalLiveRuntimeIntegrationTest {
         assertThat(audits).doesNotContain(SyntheticRuntimeLiveAdapter.KEY, "ignore prior instructions", "disclose other projects");
     }
 
+    // 其他准入都匹配也不能让旧映射重新获得当前运行许可。
     @Test void oldContextMappingIsLocallyUnavailableEvenWhenEveryOtherLiveGateIsConfigured() throws Exception {
         useHistoricalContextMapping();
         // This fixture explicitly preserves the 0.3.0/2026-10-15 acknowledgement and its own batch.
@@ -240,6 +246,7 @@ class PersonalLiveRuntimeIntegrationTest {
         SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId");
     }
 
+    // 单 worker 队列不是唯一防线，摘要发送还依赖解释成功并结算。
     @Test void singleWorkerDoesNotSendSummaryBeforeTheExplanationHasSucceededAndSettled() throws Exception {
         adapter.mode.set("BEFORE_KEY"); JsonNode first = run(explanation, "blocked-explanation");
         try {
@@ -252,6 +259,7 @@ class PersonalLiveRuntimeIntegrationTest {
         } finally { adapter.release.countDown(); }
     }
 
+    // 用途顺序与永久请求槽共同禁止先摘要或失败后换 ID 补发。
     @Test void summaryCannotBeTheFirstProviderAttemptAndFailureCannotBeReplaced() throws Exception {
         JsonNode result = terminal(run(summary, "summary-too-early"));
         assertThat(result.path("state").asText()).isEqualTo("FAILED"); assertThat(adapter.calls.get()).isZero();
@@ -272,6 +280,7 @@ class PersonalLiveRuntimeIntegrationTest {
         assertRejectedWithoutHttp(submit(project, explanation, "disabled-egress", ORIGIN, owner()).andReturn()); assertNoLiveRequests();
     }
 
+    // Project、owner 和 Origin 各自检查，越界不能发请求或读结果。
     @Test void otherProjectWrongOwnerAndHostileOriginCannotSendOrReadTheResult() throws Exception {
         var other = AgentExplanationIntegrationTest.fixture(jdbc);
         assertRejectedWithoutHttp(submit(other.project(), explanation, "other-project", ORIGIN, owner()).andReturn());
@@ -285,6 +294,7 @@ class PersonalLiveRuntimeIntegrationTest {
         assertThat(adapter.calls.get()).isZero(); assertNoLiveRequests();
     }
 
+    // 排队身份过期后不能沿用最初 HTTP 权限发送。
     @Test void anExpiredTrustedOidcContinuationCannotReachHttp() throws Exception {
         assertRejectedWithoutHttp(submit(project, explanation, "expired-oidc", ORIGIN, token(OWNER, NOW.minusSeconds(1))).andReturn());
     }
@@ -298,6 +308,7 @@ class PersonalLiveRuntimeIntegrationTest {
         assertRejectedWithoutHttp(submit(project, explanation, "revoked-enablement", ORIGIN, owner()).andReturn()); assertNoLiveRequests();
     }
 
+    // 用真实审计表锁验证预算取消发生于 Secret 回调与 HTTP 之前，失败清理仍可独立完成。
     @Test void actualUseRequestedAuditTableLockCancelsBeforeSecretCallbackAndHttpThenAllowsFailureCleanup() throws Exception {
         adapter.mode.set("AUDIT_LOCK"); JsonNode created = run(explanation, "blocked-use-audit");
         assertThat(adapter.credentialEntered.await(5, TimeUnit.SECONDS)).isTrue();
@@ -317,6 +328,7 @@ class PersonalLiveRuntimeIntegrationTest {
             .param("v", credentialVersion.toString()).query(Integer.class).single()).isZero();
     }
 
+    // 伪造引用拒绝输出、保留可信费用并停批，原门禁事实不能被解释结果改变。
     @Test void fabricatedCitationsKeepKnownUsageAndStopTheSummaryWithoutChangingEitherGateOutcome() throws Exception {
         adapter.mode.set("BAD_CITATION"); JsonNode first = run(explanation, "invalid-citation"); JsonNode failed = terminal(first);
         assertThat(failed.path("state").asText()).isEqualTo("FAILED"); assertThat(failed.at("/failure/code").asText()).isEqualTo("CITATION_INVALID");
@@ -325,6 +337,7 @@ class PersonalLiveRuntimeIntegrationTest {
         assertThat(adapter.calls.get()).isOne(); assertThat(projectAmount("spent_microusd")).isEqualTo(273);
     }
 
+    // HTTP 失败不证明费用为零，保持 UNKNOWN 预留且不自动重发或继续摘要。
     @Test void httpFailureRetainsUnknownReservationAndDoesNotAutomaticallyRetryOrSendTheSummary() throws Exception {
         adapter.mode.set("HTTP_ERROR"); JsonNode first = run(explanation, "http-unavailable");
         assertThat(terminal(first).path("state").asText()).isEqualTo("FAILED");
@@ -350,6 +363,7 @@ class PersonalLiveRuntimeIntegrationTest {
             .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(body(template)));
     }
     private String body(UUID template) throws Exception { return mapper.writeValueAsString(new LiveAgentRunInput(batch, template)); }
+    // 有限轮询已创建请求的终态，不把 202 受理直接当作完成。
     private JsonNode terminal(JsonNode created) throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
         while (System.nanoTime() < until) {
@@ -390,6 +404,7 @@ class PersonalLiveRuntimeIntegrationTest {
             + jdbc.sql("SELECT row_to_json(g)::text FROM governance.gate_evaluations g WHERE id IN (:pass,:fail) ORDER BY id")
                 .param("pass", passGate).param("fail", failGate).query(String.class).list();
     }
+    // 只在当前测试环境绑定具体 Project/批次，避免把宽泛开关当作所有批次的许可。
     private void bindRuntime(Map<String, Object> values) {
         environment.getPropertySources().addFirst(new MapPropertySource("synthetic-runtime-binding", values));
     }

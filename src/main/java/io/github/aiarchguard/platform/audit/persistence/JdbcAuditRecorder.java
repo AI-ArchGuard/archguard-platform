@@ -21,6 +21,10 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+/**
+ * 审计表 JDBC 适配器。普通写入沿用当前连接事务；有界写入显式开启新事务，
+ * 在剩余预算内检查锁等待、语句执行及提交前后时效，不向调用方泄露数据库错误详情。
+ */
 @Repository
 public class JdbcAuditRecorder implements AuditRecorder {
     private final JdbcClient jdbcClient;
@@ -48,6 +52,7 @@ public class JdbcAuditRecorder implements AuditRecorder {
         insert(jdbcClient, event);
     }
 
+    /** 数据源必须与事务管理器一致；预算耗尽或确认过晚都拒绝后续凭据消费授权。 */
     @Override
     public void record(AuditEvent event, LongSupplier remainingNanos) {
         try {
@@ -57,7 +62,7 @@ public class JdbcAuditRecorder implements AuditRecorder {
             var transaction = new TransactionTemplate(transactions);
             transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
             transaction.setTimeout((int) ((deadline.remaining() + 999_999_999L) / 1_000_000_000L));
-            // Use this exact transaction connection domain, not a caller-supplied JdbcClient.
+            // 从同一数据源建立客户端，确保超时参数和 INSERT 使用当前事务的连接域。
             JdbcClient boundedJdbc = JdbcClient.create(source);
             transaction.executeWithoutResult(status -> {
                 long remaining = deadline.remaining();
@@ -75,7 +80,7 @@ public class JdbcAuditRecorder implements AuditRecorder {
                     @Override public void beforeCommit(boolean ignored) { deadline.remaining(); }
                 });
             });
-            // A late commit acknowledgement cannot authorize the credential callback either.
+            // 提交确认晚于预算时，也不能据此授权后续读取凭据；这不等于撤销已提交的记录。
             deadline.remaining();
         } catch (RuntimeException failure) { throw unavailable(); }
     }
@@ -112,7 +117,7 @@ public class JdbcAuditRecorder implements AuditRecorder {
 
     private static IllegalStateException unavailable() { return new IllegalStateException("Bounded audit unavailable"); }
 
-    /** Can only shorten the caller's original budget; constant/increasing suppliers cannot renew it. */
+    /** 同时按单调时钟扣减初始预算；调用方返回恒定或递增值也不能给本次写入续期。 */
     private static final class Deadline {
         private static final long MAX_NANOS = Duration.ofSeconds(30).toNanos();
         private final long started = System.nanoTime();

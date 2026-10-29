@@ -19,7 +19,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-/** Trusted process-local dispatch; no polling or automatic retry. Public construction denies dispatch. */
+/**
+ * 可信进程内调度器：捕获不含 JWT 的身份事实与 trace，提交后排队，领取胜者才执行。无轮询或自动重试；
+ * 公开构造器默认拒绝调度。
+ */
 public final class LiveRequestDispatcher {
     private static final Logger LOGGER = LoggerFactory.getLogger(LiveRequestDispatcher.class);
     private final AgentStore requests;
@@ -61,6 +64,7 @@ public final class LiveRequestDispatcher {
         this.nanos = java.util.Objects.requireNonNull(nanos);
     }
 
+    /** 对外只传播稳定身份/输入错误；其余失败转为不可用，避免执行器或数据库异常穿透 API。 */
     public void dispatch(UUID project, UUID request) {
         try { dispatchTrusted(project, request); }
         catch (AgentInvalidException | AgentNotFoundException | ProjectPermissionDeniedException
@@ -68,6 +72,7 @@ public final class LiveRequestDispatcher {
         catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
     }
 
+    /** 捕获经核验请求者和持久化 trace 的受控作用域；当前有事务时在提交之后才排队，不捕获 JWT 或模型正文。 */
     private void dispatchTrusted(UUID project, UUID request) {
         admission.run();
         if (project == null || request == null) throw new AgentInvalidException();
@@ -96,6 +101,7 @@ public final class LiveRequestDispatcher {
         }
     }
 
+    /** 排队拒绝只报告不可用；同请求可能已被其他调度副本接收，不能在这里终结它或补发。 */
     private void queue(Runnable task) {
         try { executor.execute(task); }
         catch (RuntimeException rejected) {
@@ -104,6 +110,7 @@ public final class LiveRequestDispatcher {
         }
     }
 
+    /** 从 worker 开始建立一个原始预算，领取和核心共同消耗；只有持有已提交 Claim 的胜者才能执行失败收尾。 */
     private void process(UUID project, UUID request) {
         LiveDispatchTransitions.Claim claim = null;
         try {

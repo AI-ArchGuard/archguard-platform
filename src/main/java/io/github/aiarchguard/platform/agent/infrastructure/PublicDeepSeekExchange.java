@@ -11,7 +11,10 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Fixed-host production preflight; deliberately separate from loopback-only transport tests. */
+/**
+ * 生产固定主机传输的有界 DNS 预检：仅放行官方 Responses POST 和保守公网地址集合。
+ * 预检不证明防止 DNS 重绑定，实际出口约束仍属部署边界。
+ */
 final class PublicDeepSeekExchange implements DeepSeekHttpTransport.Exchange, AutoCloseable {
     private final DeepSeekHttpTransport.Exchange delegate;
     private final Resolver resolver;
@@ -28,6 +31,7 @@ final class PublicDeepSeekExchange implements DeepSeekHttpTransport.Exchange, Au
     PublicDeepSeekExchange(DeepSeekHttpTransport.Exchange delegate, Resolver resolver) {
         this.delegate = delegate; this.resolver = resolver;
     }
+    /** 在原剩余时间内执行最多两秒 DNS 预检，全部解析地址都须通过公网子集；只把扣除解析耗时后的预算交给 HTTP。 */
     @Override public DeepSeekHttpTransport.Response exchange(HttpRequest request, Duration remaining) {
         requireOpen();
         if (request == null || remaining == null || remaining.isZero() || remaining.isNegative()
@@ -62,6 +66,9 @@ final class PublicDeepSeekExchange implements DeepSeekHttpTransport.Exchange, Au
         }
     }
 
+    /**
+     * 使用保守 IPv4/IPv6 公网子集，拒绝内网、回环及列明特殊用途段；这是本地准入筛选，不等于完整路由或 DNS 重绑定保证。
+     */
     private static boolean publicAddress(InetAddress address) {
         if (address == null || address.isAnyLocalAddress() || address.isLoopbackAddress()
                 || address.isLinkLocalAddress() || address.isSiteLocalAddress() || address.isMulticastAddress()) return false;
@@ -94,6 +101,7 @@ final class PublicDeepSeekExchange implements DeepSeekHttpTransport.Exchange, Au
             try { resource.close(); } catch (Exception unavailable) { throw unavailable(); }
         }
     }
+    /** 关闭验证同时等待 DNS 和 HTTP 实际退出；系统解析若忽略中断，不能仅凭取消标志声称资源已回收。 */
     boolean awaitTermination(Duration timeout) throws InterruptedException {
         long started = System.nanoTime();
         if (!dns.awaitTermination(timeout.toNanos(), TimeUnit.NANOSECONDS)) return false;

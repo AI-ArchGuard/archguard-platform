@@ -10,7 +10,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证合成批次生产者 Schema 的严格字段、次数和费用上界。只接受明确版本的获批声明，自报身份和 Secret 不得混入。
+ */
 class LiveBatchContractTest {
+    // 合法样本及越界变异共同锁定生产者输入边界，不把 JSON 声明等同于运行时授权。
     @Test void batchInputIsStrictBoundedAndDoesNotAcceptSelfReportedIdentityOrSecret() throws Exception {
         var mapper = new ObjectMapper();
         try (var stream = Files.newInputStream(Path.of("contracts/agent-live-batch-0.1.0.schema.json"))) {

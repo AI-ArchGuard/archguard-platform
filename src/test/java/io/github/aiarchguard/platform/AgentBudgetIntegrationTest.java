@@ -20,6 +20,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+/**
+ * 使用真实 PostgreSQL 事务验证旧合成账本的单次、Project/部署日额度与并发预留。新建存储实例重读同一数据库，检查额度不会随实例重建丢失。
+ */
 @SpringBootTest
 class AgentBudgetIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired AgentBudgetStore budgets;
@@ -27,6 +30,7 @@ class AgentBudgetIntegrationTest extends PostgresIntegrationTestSupport {
     @Autowired PlatformTransactionManager transactions;
 
     @ParameterizedTest @ValueSource(strings = {"PROJECT", "DEPLOYMENT"})
+    // 同步并发请求竞争剩余额度，最多一项成功；换存储实例后仍受同一日账本约束。
     void concurrentReservationsHoldBothDailyCapsAndSurviveNewStore(String limitedScope) throws Exception {
         var day = LocalDate.of(2031, 1, limitedScope.equals("PROJECT") ? 1 : 10);
         var projects = IntStream.range(0, 8).mapToObj(i -> UUID.randomUUID()).toList();
@@ -54,6 +58,7 @@ class AgentBudgetIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(new TransactionTemplate(transactions).<Boolean>execute(status -> restarted.reserve(retryProject, day.plusDays(1), 100_000))).isTrue();
     }
 
+    // 非法预留或超额结算不能改变账本，合法结算同时更新 Project 与部署范围。
     @Test void singleRequestCapAndInvalidSettlementDoNotMutateLedger() {
         UUID project = UUID.randomUUID();
         LocalDate day = LocalDate.of(2031, 2, 1);

@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+/** 从已经认证的 Spring Security 上下文提取 UUID 与权限，业务层不接收请求体中的 actorId 作为身份。 */
 @Component
 class SpringSecurityCurrentActorProvider implements CurrentActorProvider {
 
@@ -24,6 +25,7 @@ class SpringSecurityCurrentActorProvider implements CurrentActorProvider {
             throw new IllegalStateException("An authenticated actor is required");
         }
 
+        // 统一身份标识格式，既适用于 JWT 请求，也适用于受控的一次性后台任务。
         UUID actorId;
         try {
             actorId = UUID.fromString(authentication.getName());

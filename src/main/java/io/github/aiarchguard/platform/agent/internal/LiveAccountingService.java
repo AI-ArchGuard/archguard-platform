@@ -29,6 +29,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
+/**
+ * 真实请求关联和费用账本的应用服务。按设置、批次、部署日、项目日的顺序加锁，独立事务记录唯一尝试和结算，结果失败不能撤销已发生费用。
+ */
 @Service
 final class LiveAccountingService implements LiveAccountingOperations, LiveRequestOperations {
     private final ProjectAuthorization projects;
@@ -76,6 +79,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     @Override public String preview(UUID project, List<UUID> ids) {
         projects.requireViewer(project); schema.requireReady(); return LiveManifest.hash(mapper, manifest(project, ids));
     }
+    /** 锁设置、校验确认与费用策略，再将模板清单和受控来源证明一同固定；批准次数和费用不等于发起调用。 */
     @Override public LiveBatchView approve(UUID project, String origin, boolean secure, LiveBatchInput input) {
         return write(project, "agent.batch.approved", () -> {
             controls.authorizeWrite(project, origin, secure); schema.requireReady();
@@ -142,6 +146,9 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
         return boundedWrite(project, "agent.live.request.created", remainingNanos,
             () -> createBody(project, batchId, templateId, key, origin, secure, remainingNanos));
     }
+    /**
+     * 从已完成的合成模板复制最小输入，保存独立 live 请求及精确关联；资源复核耗时后再次检查期限/版本，事务失败不会留下半条关联。
+     */
     private AgentRequestView createBody(UUID project, UUID batchId, UUID templateId, String key, String origin, boolean secure,
             LongSupplier remainingNanos) {
             controls.authorizeWrite(project, origin, secure); schema.requireReady();
@@ -197,11 +204,16 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
         if (remainingNanos == null) throw new AgentUnavailableException();
         return boundedWrite(project, "agent.live.reserved", remainingNanos, () -> reserveBody(project, batchId, templateId, requestId, remainingNanos));
     }
+    /**
+     * 固定按设置→批次→部署日→项目日锁序预留三层费用和唯一 attempt；
+     * 锁等待后重验授权、凭据和 UTC 日，重放返回 newAttempt=false。
+     */
     private Admission reserveBody(UUID project, UUID batchId, UUID templateId, UUID requestId, LongSupplier remainingNanos) {
             projects.requireViewer(project); schema.requireReady();
             var snapshot = request(project, requestId); sameActor(snapshot);
             var settings = enablements.lockSettings(project); var batch = batch(project, batchId); store.lockBatch(batchId);
             var existing = store.attempt(project, requestId);
+            // 唯一 attempt 同时约束计费与执行资格；额度释放不能让同一请求重新取得发送次数。
             if (existing.isPresent()) {
                 var attempt = existing.orElseThrow();
                 if (!batchId.equals(attempt.batchId()) || !templateId.equals(attempt.templateId())) throw new AgentConflictException();
@@ -215,6 +227,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             if (projectLimit < 0 || projectLimit > 5_000_000 || deploymentLimit < 0 || deploymentLimit > 20_000_000) throw new AgentUnavailableException();
             LocalDate day = Instant.now(clock).atZone(ZoneOffset.UTC).toLocalDate();
             var batchUsage = store.lockBatch(batchId);
+            // 所有项目先锁同一部署日记录，再锁项目日记录；固定顺序既防超额竞争，也减少反向锁死。
             var deploymentUsage = store.lockBudget("DEPLOYMENT", deployment(), day);
             var projectUsage = store.lockBudget("PROJECT", project, day);
             // Budget locks may wait while external inventory, credentials or the UTC day changes.
@@ -242,6 +255,9 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
         if (remainingNanos == null) throw new AgentUnavailableException();
         return boundedWrite(project, "agent.live.send_check", remainingNanos, () -> checkBeforeSendBody(project, batchId, templateId, requestId, remainingNanos));
     }
+    /**
+     * 唯一预留之后重新核对开关、撤销、来源、设置修订、凭据版本、当前请求及日期；结果只是本轮账本许可，仍需网络和资源准入。
+     */
     private SendApproval checkBeforeSendBody(UUID project, UUID batchId, UUID templateId, UUID requestId, LongSupplier remainingNanos) {
             projects.requireViewer(project); schema.requireReady();
             var snapshot = request(project, requestId); sameActor(snapshot);
@@ -276,12 +292,17 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             return null;
         });
     }
+    /**
+     * 结算使用原尝试的部署及 UTC 日，以独立清理事务落库；
+     * 撤权、关闭或跨日不抹去已发生费用，UNKNOWN/SETTLED 不二次改写。
+     */
     private Outcome finish(UUID project, UUID id, String price, LiveTokenUsage usage) {
         return cleanupWrite(project, "agent.live.finished", () -> {
             schema.requireReady(); var snapshot = request(project, id); sameActor(snapshot);
             enablements.lockSettings(project);
             var initial = store.attempt(project, id).orElseThrow(AgentNotFoundException::new);
             store.lockBatch(initial.batchId()); var attempt = store.attempt(project, id).orElseThrow();
+            // outcome 是不可变事实：UNKNOWN 也不接受迟到 usage 来退款或重新结算。
             if (attempt.outcome() != null) return new Outcome(attempt.outcome(), attempt.actual());
             // Closing/revoking, removing membership or crossing midnight cannot erase an incurred charge.
             store.lockBudget("DEPLOYMENT", attempt.deploymentId(), attempt.day()); store.lockBudget("PROJECT", project, attempt.day());
@@ -313,6 +334,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             return new LiveManifest.Template(id, LiveManifest.selection(snapshot), LiveManifest.payload(mapper, snapshot), LiveManifest.hash(mapper, snapshot.candidates()));
         }).toList(); return new LiveManifest("0.1.0", project, templates);
     }
+    /** 逐项比对用途、模型/Prompt/价格、输入摘要、资源选择与候选摘要，防止新请求偷偷替换已批准模板内容。 */
     private void validateRequest(AgentSnapshot snapshot, LiveAccountingStore.Batch batch, UUID templateId, String state) {
         var expected = template(batch, templateId); var bindings = snapshot.view().bindings();
         String prompt = "PR_SUMMARY".equals(snapshot.view().purpose()) ? SUMMARY_PROMPT : EXPLANATION_PROMPT;
@@ -336,6 +358,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
         return value.reserved() >= 0 && value.spent() >= 0 && value.reserved() <= limit && value.spent() <= limit - value.reserved()
             && reservation <= limit - value.reserved() - value.spent();
     }
+    /** 每次重查当前受控来源证明并与批准时快照精确相等；同名清单被换内容或期限失效都拒绝。 */
     private void validateBatch(UUID project, AgentEnablementStore.Settings settings, LiveAccountingStore.Batch batch) {
         if (!LiveCostPolicy.supported(batch.costPolicyVersion())
                 || !batch.costPolicyVersion().equals(approval(project, batch.view().enablementId()).acknowledgement().priceCatalogVersion())
@@ -382,6 +405,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
     private void record(UUID project, UUID actor, String trace, String action, Map<String, Object> metadata) {
         audit.record(new AuditEvent(actor, project, action, AuditResult.SUCCESS, trace, metadata));
     }
+    /** 成功写入与审计同事务；业务回滚后另起事务记录拒绝，不能把失败审计写进已回滚的事务。 */
     private <T> T write(UUID project, String action, Supplier<T> operation) {
         try { return transaction.execute(status -> operation.get()); }
         catch (RuntimeException failure) {
@@ -389,6 +413,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             throw failure;
         }
     }
+    /** 生产执行使用原剩余预算的数据库边界，失败审计使用独立有限清理，不能给发送续期。 */
     private <T> T boundedWrite(UUID project, String action, LongSupplier remainingNanos, Supplier<T> operation) {
         try { return database.transaction(remainingNanos, false, operation); }
         catch (RuntimeException failure) {
@@ -396,6 +421,7 @@ final class LiveAccountingService implements LiveAccountingOperations, LiveReque
             throw failure;
         }
     }
+    /** 已发生费用和失败收尾使用新的有限清理期限；该期限只能完成账本/审计，不能恢复外发能力。 */
     private <T> T cleanupWrite(UUID project, String action, Supplier<T> operation) {
         try { return database.cleanup(operation); }
         catch (RuntimeException failure) {

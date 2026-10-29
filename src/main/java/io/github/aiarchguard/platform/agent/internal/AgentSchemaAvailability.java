@@ -12,7 +12,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 
-/** Agent schema failure must not prevent deterministic Platform routes from starting. */
+/**
+ * 主平台就绪后独立迁移 Agent Schema，以单独历史表隔离主迁移链；失败关闭 Agent 路由，但不阻止确定性平台启动。
+ */
 @Component
 public class AgentSchemaAvailability {
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentSchemaAvailability.class);
@@ -32,6 +34,7 @@ public class AgentSchemaAvailability {
 
     AgentSchemaAvailability(Runnable migrate) { this.migrate = migrate; }
 
+    /** 在主应用就绪事件中运行 Agent 专属迁移，只有迁移实际成功才发布 ready；失败日志不输出数据库异常正文。 */
     @EventListener(ApplicationReadyEvent.class)
     @Order(Ordered.HIGHEST_PRECEDENCE)
     public void migrateOnReady() {

@@ -23,9 +23,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
 
-/** Wires controlled same-package capabilities without creating any client or thread at startup. */
+/**
+ * 在同模块装配真实执行能力，串起身份/原始期限、精确批次、公开资源核验与基础设施惰性适配器；旧无界入口拒绝，启动装配不自动外发。
+ */
 @Configuration
 class PersonalLiveRuntimeConfiguration {
+    /**
+     * 将默认拒绝的公共构造边界替换为同模块受控能力；每次调用检查配置/身份，资源核验位于有界只读事务而非 Key 回调中。
+     */
     @Bean(destroyMethod = "close")
     PersonalLiveRuntime personalLiveRuntime(PersonalLivePolicy policy, LiveAdapterBundle adapters,
             AgentStore requests, LiveRequestStore links, ProjectAuthorization projects, CurrentActorProvider actors,

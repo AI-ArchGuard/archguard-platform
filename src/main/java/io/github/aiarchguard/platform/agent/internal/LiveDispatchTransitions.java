@@ -25,7 +25,10 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Claim and audit commit before any execution; no cost-budget locks or HTTP in the transaction. */
+/**
+ * 真实请求领取与审计的独立事务边界。精确关联 CAS 胜者取得进程内 Claim，提交后才执行；
+ * 失败收尾须持有该所有权，不能替重复调度者终结共享请求。
+ */
 public final class LiveDispatchTransitions {
     private final AgentStore requests;
     private final LiveRequestStore links;
@@ -81,6 +84,9 @@ public final class LiveDispatchTransitions {
         return database.transaction(budget, false, () -> startBody(project, request, deadline));
     }
 
+    /**
+     * 核对原请求者、trace、队列年龄与完整关联后 CAS 领取；锁等待、审计后和提交前重新检查期限及身份，防止迟到领取提交。
+     */
     private Claim startBody(UUID project, UUID request, Runnable deadline) {
         deadline.run(); identities.requireActive(); projects.requireViewer(project);
         var snapshot = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
@@ -135,6 +141,9 @@ public final class LiveDispatchTransitions {
         }
     }
 
+    /**
+     * 要求持久化 trace 与当前隔离作用域一致，并限制创建后 60 秒的队列年龄；UUID 相等不能代替可信身份有效性。
+     */
     private void requireContext(AgentSnapshot snapshot, LiveRequestStore.Link link) {
         var view = snapshot.view();
         if (!actors.currentActor().id().equals(view.requesterId())) throw new ProjectPermissionDeniedException();

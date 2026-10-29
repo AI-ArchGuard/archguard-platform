@@ -5,6 +5,7 @@ import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jwt.Jwt;
 
+/** 要求 JWT 的受众包含本平台，避免直接接受发给其他应用的令牌。 */
 final class OidcAudienceValidator implements OAuth2TokenValidator<Jwt> {
     private static final OAuth2Error INVALID_AUDIENCE = new OAuth2Error(
         "invalid_token", "The token audience is not accepted.", null);

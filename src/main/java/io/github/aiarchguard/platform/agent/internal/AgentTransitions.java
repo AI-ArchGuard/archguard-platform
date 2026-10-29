@@ -13,6 +13,7 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/** 原合成流程的事务状态机：领取与额度预留原子进行，终态及审计一同保存；未知费用保留预留，遗留恢复不会重发模型。 */
 @Service
 public class AgentTransitions {
     private final AgentStore store;
@@ -26,6 +27,7 @@ public class AgentTransitions {
         this.routing = routing;
     }
 
+    /** 领取与两级额度预留共用事务，重复 worker 不会重复调用；限额不足则在同事务保存拒绝终态及审计。 */
     @Transactional
     public Start start(AgentSnapshot snapshot, long estimate) {
         if (!routing.synthetic(snapshot)) return null;
@@ -45,6 +47,7 @@ public class AgentTransitions {
         return new Start(day, estimate);
     }
 
+    /** 先 CAS 写终态，只有实际改写者才结算；costUnknown 时不释放预留，防止未知收费被再次消费。 */
     @Transactional
     public void finish(AgentSnapshot snapshot, Start start, AgentRequestView.AgentResult result,
             AgentRequestView.AgentFailure failure, AgentRequestView.AgentUsage usage, boolean costUnknown) {
@@ -92,6 +95,7 @@ public class AgentTransitions {
             Map.of("costUnknown", true));
     }
 
+    /** 按原状态及截止时间再做条件更新，防止恢复查询后抢占刚完成的请求；运行中遗留费用按未知保留。 */
     @Transactional
     public void recoverExpired(AgentSnapshot snapshot, Instant cutoff) {
         var view = snapshot.view();

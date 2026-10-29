@@ -10,7 +10,11 @@ import java.util.List;
 import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 离线验证门禁 API 契约的固定结果、退出码和可解析引用。不执行真实 CI，也不验证某一报告的门禁结论。
+ */
 class GovernanceGateContractTest {
+    // 结果与退出码是 CI 兼容边界，契约变更不能静默重排其取值。
     @Test void runtimeContractHasResolvableReferencesAndFixedExitCodes() throws Exception {
         JsonNode root = new ObjectMapper().readTree(Path.of("openapi", "governance-gates-v1.json").toFile());
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
@@ -27,6 +31,7 @@ class GovernanceGateContractTest {
         assertThat(StreamSupport.stream(root.at("/components/schemas/GateEvaluation/properties/ciExitCode/enum")
             .spliterator(), false).map(JsonNode::asInt).toList()).containsExactly(0, 2, 64, 70);
     }
+    // 遍历嵌套组件以核对所有本地引用均有定义。
     private static void collect(JsonNode node, List<String> refs) {
         if (node.isObject()) node.fields().forEachRemaining(entry -> {
             if ("$ref".equals(entry.getKey())) refs.add(entry.getValue().asText());

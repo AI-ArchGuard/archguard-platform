@@ -8,9 +8,13 @@ import org.postgresql.util.PSQLException;
 import org.postgresql.util.ServerErrorMessage;
 import org.springframework.dao.DuplicateKeyException;
 
+/**
+ * 验证模板槽冲突只由 PostgreSQL 结构化约束元数据识别。其他唯一约束、外键和异常文本都不能被误判为可重放冲突。
+ */
 class LiveTemplateSlotConflictTest {
     private static final String SLOT = "live_template_request_slots_pkey";
 
+    // 同时核对 SQLSTATE 与精确约束名，不能只看到唯一冲突就重放。
     @Test void recognizesOnlyTheExactPostgresUniqueConstraintUsingStructuredMetadata() {
         assertThat(LiveTemplateSlotConflict.isConflict(new DuplicateKeyException("Synthetic", error("23505", SLOT, "Untrusted provider-independent database text")))).isTrue();
     }
@@ -21,6 +25,7 @@ class LiveTemplateSlotConflictTest {
         assertThat(LiveTemplateSlotConflict.isConflict(error("23505", null, SLOT))).isFalse();
     }
 
+    // 异常消息是不可信文本，不能用关键词推断数据库约束。
     @Test void doesNotParseMessagesOrTreatNonPostgresExceptionsAsTrustedConstraintMetadata() {
         assertThat(LiveTemplateSlotConflict.isConflict(new SQLException(SLOT, "23505"))).isFalse();
         assertThat(LiveTemplateSlotConflict.isConflict(new DuplicateKeyException(SLOT))).isFalse();
@@ -28,6 +33,7 @@ class LiveTemplateSlotConflictTest {
         assertThat(LiveTemplateSlotConflict.isConflict(null)).isFalse();
     }
 
+    // 原因链遍历必须有界，循环异常也不能造成无限检查。
     @Test void causeTraversalIsBoundedEvenForACycle() {
         var first = new RuntimeException(); var second = new RuntimeException();
         first.initCause(second); second.initCause(first);

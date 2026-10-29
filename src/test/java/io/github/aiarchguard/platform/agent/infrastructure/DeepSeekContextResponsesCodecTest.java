@@ -10,11 +10,15 @@ import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 验证上下文费用策略的独立用量边界：可信用量可超过观察阈值，旧策略仍保持原上界。输入是本地构造响应，不证明供应商实际行为。
+ */
 class DeepSeekContextResponsesCodecTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final DeepSeekResponsesCodec codec = new DeepSeekResponsesCodec(mapper);
     private final Set<String> models = Set.of("deepseek-flash");
 
+    // 兼容入口仍按旧策略校验，不能随新策略自动放宽。
     @Test void legacyDefaultAccountingAndDecodeStillRejectInputsAboveEightThousand() throws Exception {
         byte[] legacy = bytes(envelope(8000, 1500, 0));
         assertThat(codec.decodeAccounting(legacy, models).inputTokens()).isEqualTo(8000);
@@ -26,6 +30,7 @@ class DeepSeekContextResponsesCodecTest {
         assertInvalid(() -> codec.decodeAccounting(larger, models, LiveCostPolicy.VERSION));
     }
 
+    // 观察阈值不是丢弃账单的边界，合法范围内仍保留可信用量。
     @Test void contextAccountingAcceptsBillableUsagePastTheObservationThresholdAndAtTheFullBound() throws Exception {
         for (int input : new int[] {8000, 8001, 1_048_576}) {
             byte[] bytes = bytes(envelope(input, 1500, input));
@@ -41,6 +46,7 @@ class DeepSeekContextResponsesCodecTest {
         }
     }
 
+    // 业务文本拒绝不能抹去已确认费用依据。
     @Test void rejectedBusinessOutputCannotEraseValidContextAccounting() throws Exception {
         for (String raw : List.of("private-synthetic-invalid-json", "[1]", "null", "{} {}")) {
             ObjectNode root = envelope(8001, 20, 40);
@@ -77,6 +83,7 @@ class DeepSeekContextResponsesCodecTest {
         var reasoning = envelope(8001, 20, 0); ((ObjectNode) reasoning.at("/usage/output_tokens_details")).put("reasoning_tokens", 1); reject(reasoning);
     }
 
+    // 费用范围变化不放宽外层响应、模型、状态和大小校验。
     @Test void contextPolicyDoesNotRelaxEnvelopeModelStatusOrSizeValidation() throws Exception {
         reject(envelope(8001, 20, 0).put("model", "other-model"));
         reject(envelope(8001, 20, 0).put("model", "DeepSeek-V4.1-Flash-1017"));

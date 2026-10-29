@@ -10,7 +10,11 @@ import java.util.List;
 import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 离线锁定治理只读 API 的路径、可信 PR 修订标识及差异可用性枚举。只读契约把不可用原因明确建模，不把缺少历史伪装成空差异。
+ */
 class GovernanceReadContractTest {
+    // 检查读取范围、分类及 PR 修订差异状态，同时保证所有组件引用可解析。
     @Test void readContractReferencesResolveAndScopeIsExplicit() throws Exception {
         JsonNode root = new ObjectMapper().readTree(Path.of("openapi", "governance-read-v1.json").toFile());
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
@@ -32,6 +36,7 @@ class GovernanceReadContractTest {
             .spliterator(), false).map(JsonNode::asText).toList()).containsExactly("AVAILABLE",
                 "NO_PREVIOUS_REVISION", "CURRENT_REPORT_MISSING", "PREVIOUS_REPORT_MISSING", "INCOMPATIBLE");
     }
+    // 递归遍历 JSON 收集本地引用，不执行网络或业务读取。
     private static void collect(JsonNode node, List<String> refs) {
         if (node.isObject()) node.fields().forEachRemaining(entry -> {
             if ("$ref".equals(entry.getKey())) refs.add(entry.getValue().asText());

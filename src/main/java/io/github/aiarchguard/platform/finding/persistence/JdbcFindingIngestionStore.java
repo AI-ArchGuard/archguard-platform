@@ -9,13 +9,22 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * Finding 规范化写入的 JDBC 适配器，仅写本模块的证据、Finding 和关联表。
+ * store 使用本模块写入事务，也可加入 CI 导入已有的外层事务；邮箱路径没有覆盖任务完成的统一事务。
+ */
 @Repository
 public class JdbcFindingIngestionStore implements FindingIngestionStore {
     private final JdbcClient jdbc;
     public JdbcFindingIngestionStore(JdbcClient jdbc){this.jdbc=jdbc;}
+    /**
+     * 接收消费器已校验的数据，先写证据再写 Finding 与关联，任一步失败均回滚本次事务。
+     * 不使用 ON CONFLICT 忽略重复；已有 Finding 时显式拒绝，其他主键／唯一冲突由数据库拒绝。
+     */
     @Override
     @Transactional
     public void store(UUID jobId,List<NormalizedEvidence> evidences,List<NormalizedFinding> findings){
+        // 此检查只发现已有非空 Finding 集，不是任务锁；Finding 与 Evidence 均为空时不会留下接受标记。
         if(jdbc.sql("SELECT COUNT(*) FROM finding.findings WHERE job_id=:job").param("job",jobId).query(Long.class).single()>0){
             throw new IllegalStateException("Findings were already normalized for this job");
         }
@@ -29,6 +38,7 @@ public class JdbcFindingIngestionStore implements FindingIngestionStore {
                 .param("sl",e.location().startLine()).param("sc",e.location().startColumn())
                 .param("el",e.location().endLine()).param("ec",e.location().endColumn()).update();
         }
+        // 人工处置与报告事实分开维护：首次写入固定从 OPEN、版本零开始，不从其他扫描继承状态。
         for(NormalizedFinding f:findings){
             jdbc.sql("""
                 INSERT INTO finding.findings

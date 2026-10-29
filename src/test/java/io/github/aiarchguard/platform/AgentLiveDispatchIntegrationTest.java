@@ -39,6 +39,9 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 
+/**
+ * 在真实 PostgreSQL 验证 live 精确领取与审计同事务、期限复核及胜者专属失败权。身份作用域为测试替身，未注册调度器或模型核心，不触发预算和网络。
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -111,6 +114,7 @@ class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         return jdbc.sql("SELECT count(*) FROM audit.audit_records WHERE project_id=:p AND action='agent.live.request.running'")
             .param("p", fixture.project).query(Long.class).single();
     }
+    // 公共断言检查没有 attempt 和预算副作用，领取不能偷偷转成费用预留。
     void untouchedBudgets() {
         assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE request_id=:r")
             .param("r", request).query(Integer.class).single()).isZero();
@@ -120,6 +124,7 @@ class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         assertThat(fixture.amount("PROJECT", fixture.project, "spent_microusd")).isZero();
     }
 
+    // 一次领取只提交状态与脱敏审计，并核对默认上下文未装配真实执行组件。
     @Test void claimAndSanitizedAuditCommitOnceWithoutReservingOrRegisteringLiveComponents() {
         var transition = transitions(audit);
         var claim = transition.start(fixture.project, request);
@@ -137,6 +142,7 @@ class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         untouchedBudgets();
     }
 
+    // 审计失败必须回滚领取，不能消耗执行权或预算。
     @Test void auditFailureRollsBackClaimAndDoesNotCreateAttemptOrBudgetUsage() {
         AgentPersonalEnablementIntegrationTest.FAIL_AUDIT_ACTION.set("agent.live.request.running");
         assertThatThrownBy(() -> transitions(audit).start(fixture.project, request)).isInstanceOf(AgentUnavailableException.class);
@@ -150,6 +156,7 @@ class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         assertThat(state()).isEqualTo("QUEUED"); assertThat(audits()).isZero(); untouchedBudgets();
     }
 
+    // 审计后身份过期仍回滚领取，同时保留后续合规失败清理能力。
     @Test void identityExpiryAfterAuditRollsBackClaimWithoutBlockingFutureFailurePersistence() {
         AuditRecorder delayed = event -> { audit.record(event); active.set(false); };
         assertThatThrownBy(() -> transitions(delayed).start(fixture.project, request))
@@ -168,6 +175,7 @@ class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         assertThat(state()).isEqualTo("QUEUED"); assertThat(audits()).isZero(); untouchedBudgets();
     }
 
+    // 仅已提交胜者可写一次失败，不能借失败清理访问账本或重试。
     @Test void committedWinnerCanFailOnceWithoutTouchingLedgerOrRetrying() {
         var transition = transitions(audit);
         var claim = transition.start(fixture.project, request);
@@ -181,6 +189,7 @@ class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         untouchedBudgets();
     }
 
+    // 执行权绑定发放实例，其他迁移实例不能借用该 claim。
     @Test void anotherTransitionsInstanceCannotUseAClaimToFailTheWinner() {
         var transition = transitions(audit);
         var claim = transition.start(fixture.project, request);
@@ -226,6 +235,7 @@ class AgentLiveDispatchIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         }
     }
 
+    // 原预算须在锁尚未释放时取消领取，不能仅在解锁后判断迟到。
     @Test void originalBudgetCancelsClaimWhileBlockingTransactionStillHoldsItsLock() throws Exception {
         var worker = Executors.newSingleThreadExecutor();
         try (Connection blocker = dataSource.getConnection()) {

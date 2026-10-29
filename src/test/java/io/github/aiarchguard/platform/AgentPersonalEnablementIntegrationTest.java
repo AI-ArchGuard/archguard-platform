@@ -34,6 +34,9 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 验证个人项目设置、不可变启用确认和撤销历史的 HTTP/数据库边界。凭据元数据为测试替身；批准与 enabled 设置均不自动发送模型或产生费用。
+ */
 @SpringBootTest(properties = {
     "archguard.agent.credentials.enabled=true", "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -92,6 +95,7 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
             .andReturn().getResponse().getContentAsString());
     }
 
+    // 默认关闭以及批准后的零模型副作用都要显式核对。
     @Test void defaultsOffAndApprovalCannotInvokeModel() throws Exception {
         mvc.perform(get(root() + "/settings").with(user(OWNER))).andExpect(status().isOk())
             .andExpect(header().string("ETag", "\"0\"")).andExpect(jsonPath("$.enabled").value(false))
@@ -108,6 +112,7 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
         assertThat(jdbc.sql("SELECT count(*) FROM agent.budget_usage WHERE scope_id=:id").param("id", project).query(Integer.class).single()).isZero();
     }
 
+    // 1017 映射须显式确认，保存元数据不能顺带启用或消费预算。
     @Test void approved1017InputIsExplicitStrictMetadataOnlyAndCannotEnableOrSpendAutomatically() throws Exception {
         com.fasterxml.jackson.databind.node.ObjectNode input = mapper.valueToTree(input());
         input.put("schemaVersion", "0.4.0").put("mappingSnapshot", "DeepSeek-V4.1-Flash-1017")
@@ -138,6 +143,7 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
         assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p").param("p", project).query(Integer.class).single()).isZero();
     }
 
+    // 更新设置必须携带匹配版本，缺少前置条件不能覆盖并发写入。
     @Test void optimisticLockAndMissingPreconditionAreStrict() throws Exception {
         mvc.perform(put(root() + "/settings").with(user(OWNER)).header("Origin", "http://localhost:8083")
             .contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":false,\"enablementId\":null}"))
@@ -167,6 +173,7 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
             .andExpect(status().isNotFound());
     }
 
+    // 部署 owner、Project Maintainer 与安全 Origin 是并列要求。
     @Test void approvalRequiresOwnerAndProjectMaintainerAndSafeOrigin() throws Exception {
         mvc.perform(get(root() + "/settings")).andExpect(status().isUnauthorized())
             .andExpect(header().string("Cache-Control", "no-store"));
@@ -205,6 +212,7 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
                 .doesNotContain("synthetic-forbidden-key", "apiKey", "accountRef", "sources", "arbitrary-model"));
     }
 
+    // 撤销当前确认关闭设置且只生效一次，历史继续保留。
     @Test void activeRevocationDisablesSettingsOnceAndKeepsImmutableHistory() throws Exception {
         UUID id = UUID.fromString(approve().path("id").asText());
         mvc.perform(put(root() + "/settings").with(user(OWNER)).header("Origin", "http://localhost:8083").header("If-Match", "\"0\"")
@@ -259,6 +267,7 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
         assertThat(jdbc.sql("SELECT count(*) FROM agent.personal_enablements WHERE project_id=:p").param("p", project).query(Integer.class).single()).isZero();
     }
 
+    // 成功审计写不成时，确认与设置一起回滚，避免未审计授权。
     @Test void failedSuccessAuditRollsBackApprovalAndSettings() throws Exception {
         FAIL_AUDIT_ACTION.set("agent.enablement.acknowledged");
         mvc.perform(post(root() + "/enablements").with(user(OWNER)).header("Origin", "http://localhost:8083")
@@ -275,6 +284,7 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
             .param("p", project).query(Integer.class).single()).isEqualTo(2);
     }
 
+    // 真实并发下乐观锁只允许有效更新，不丢失已提交版本。
     @Test void concurrentSettingsWritesCannotLoseUpdates() throws Exception {
         var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
         var ready = new java.util.concurrent.CountDownLatch(2);
@@ -317,6 +327,7 @@ class AgentPersonalEnablementIntegrationTest extends AgentLiveDatabaseIntegratio
             .andExpect(jsonPath("$.revoked").value(false));
     }
 
+    // 数据库层也保护确认与撤销事实不可改写或删除。
     @Test void enablementAndRevocationHistoryCannotBeMutatedOrDeleted() throws Exception {
         UUID id = UUID.fromString(approve().path("id").asText());
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.sql("UPDATE agent.personal_enablements SET approved_by=:a WHERE id=:id")

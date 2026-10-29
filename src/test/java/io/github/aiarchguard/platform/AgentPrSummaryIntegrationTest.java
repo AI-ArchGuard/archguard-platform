@@ -29,6 +29,9 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 在完整应用和数据库上以确定性假模型验证 PR 摘要的选择范围、可信修订、逐 Finding 引用及幂等。输出不改变确定性治理事实。
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true"})
 @AutoConfigureMockMvc
 @Import(AgentPrSummaryIntegrationTest.FakeConfiguration.class)
@@ -43,6 +46,7 @@ class AgentPrSummaryIntegrationTest extends PostgresIntegrationTestSupport {
 
     @BeforeEach void reset() { model.calls.set(0); model.mode.set("SUPPORTED"); }
 
+    // 摘要只包含显式选择的 Finding，同输入重放不增加模型尝试。
     @Test void summarizesOnlySelectedFindingsWithVerifiedPerFindingCitationsAndIdempotency() throws Exception {
         Fixture fixture = fixture();
         JsonNode created = create(fixture, "summary-one", fixture.selected(), fixture.revision());
@@ -63,6 +67,7 @@ class AgentPrSummaryIntegrationTest extends PostgresIntegrationTestSupport {
             .param("id", fixture.job()).query(String.class).single()).isEqualTo("PASS");
     }
 
+    // 空集、重复、跨 Project 或未验证修订在模型前拒绝。
     @Test void rejectsEmptyDuplicateForeignAndUnverifiedPrSelectionsBeforeCallingModel() throws Exception {
         Fixture fixture = fixture();
         Fixture foreign = fixture();
@@ -74,6 +79,7 @@ class AgentPrSummaryIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(model.calls.get()).isZero();
     }
 
+    // 即使引用属于已选集合，也不能借用另一 Finding 的证据支持当前项。
     @Test void rejectsCitationTakenFromAnotherSelectedFinding() throws Exception {
         Fixture fixture = fixture();
         model.mode.set("CROSS_FINDING_CITATION");
@@ -85,6 +91,7 @@ class AgentPrSummaryIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(model.calls.get()).isOne();
     }
 
+    // 选择顺序先规范化，集合相同不应被误判为不同幂等输入。
     @Test void selectedFindingOrderIsCanonicalForIdempotency() throws Exception {
         Fixture fixture = fixture();
         JsonNode first = create(fixture, "same-set", fixture.selected(), fixture.revision());
@@ -114,6 +121,7 @@ class AgentPrSummaryIntegrationTest extends PostgresIntegrationTestSupport {
             "findingIds", selected, "documentVersionIds", List.of()));
     }
 
+    // 有限轮询异步终态，避免把 HTTP 受理直接当作摘要成功。
     private JsonNode awaitTerminal(UUID project, String id) throws Exception {
         for (int attempt = 0; attempt < 100; attempt++) {
             JsonNode view = mapper.readTree(mvc.perform(get("/api/v1/projects/{project}/agent/requests/{id}",

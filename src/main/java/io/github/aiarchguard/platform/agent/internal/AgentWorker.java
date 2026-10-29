@@ -21,6 +21,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 提交后执行原合成请求的 worker。
+ * CAS 仅放行一个执行者，调用前后复核项目及 PR 范围，限制模型等待并在验证输出后交由事务服务落库。
+ */
 @Component
 public class AgentWorker {
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentWorker.class);
@@ -52,6 +56,7 @@ public class AgentWorker {
         this.providerTimeout = providerTimeout;
     }
 
+    /** 包住后台异常并尝试失败落库；日志只带请求、trace 和异常类型，落库不可用时由后续遗留恢复继续收尾。 */
     public void process(UUID projectId, UUID requestId) {
         try {
             processOnce(projectId, requestId);
@@ -69,6 +74,7 @@ public class AgentWorker {
         }
     }
 
+    /** 只有路由判为合成且 CAS 领取成功才调用模型；先预留，再限时等待、校验用量/输出与当前权限，未知费用保留预留。 */
     private void processOnce(UUID projectId, UUID requestId) {
         AgentSnapshot snapshot = store.find(projectId, requestId).orElse(null);
         if (!routing.synthetic(snapshot) || !"QUEUED".equals(snapshot.view().state())) return;
@@ -76,6 +82,7 @@ public class AgentWorker {
             transitions.failQueued(snapshot, "MODEL_TIMEOUT");
             return;
         }
+        // 这里的字节估计及价格只适用于原合成目录，不能拿来证明真实提供方的 Token 上界。
         int inputTokens = inputLength(snapshot.input());
         long estimate = inputTokens + 3_000L; // Synthetic catalog: 1 µUSD/input token, 2 µUSD/output token.
         AgentTransitions.Start start = transitions.start(snapshot, estimate);
@@ -115,6 +122,7 @@ public class AgentWorker {
         } finally {
             executor.shutdownNow();
         }
+        // 用量和追溯字段先过界限检查；无法证明费用时不能保存原值，也不能把预留当作零费用释放。
         if (response == null || response.inputTokens() < 0 || response.inputTokens() > 8000
                 || response.outputTokens() < 0 || response.outputTokens() > 1500
                 || response.latencyMs() < 0 || !safeIdentifier(response.providerResponseId())
@@ -141,6 +149,7 @@ public class AgentWorker {
         }
     }
 
+    /** 摘要必须持续对应已完成报告的可信 PR 修订；创建时通过并不代表异步完成时仍有效。 */
     private boolean prScopeStillValid(AgentSnapshot snapshot) {
         if (!"PR_SUMMARY".equals(snapshot.view().purpose())) return true;
         var bindings = snapshot.view().bindings();

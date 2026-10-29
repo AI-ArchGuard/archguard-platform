@@ -16,7 +16,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-/** Unregistered real-result writer. Never touches the synthetic budget store. */
+/**
+ * 真实结果的独立事务写入器，与原合成预算无关。CAS 后及提交前复核成功期限，失败使用独立有限清理；已独立结算的费用不随结果回滚。
+ */
 public final class LiveResultTransitions {
     private final AgentStore store;
     private final AuditRecorder audit;
@@ -77,6 +79,9 @@ public final class LiveResultTransitions {
         transaction.executeWithoutResult(status -> persistBody(snapshot, result, failure, usage, deadline));
     }
 
+    /**
+     * 只有 RUNNING 行可变更；CAS 可能等待行锁，因此写后、审计后和提交前都检查成功期限，超期回滚结果与审计，独立费用保留。
+     */
     private void persistBody(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
             AgentRequestView.AgentFailure failure, AgentRequestView.AgentUsage usage, Runnable deadline) {
         deadline.run();

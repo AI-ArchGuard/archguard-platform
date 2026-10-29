@@ -12,7 +12,9 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
+/** 用小型内存快照验证基线／候选集合分类、冲突拒绝及 API 计数，不涉及数据库。 */
 class FindingClassifierTest {
+    /** 输入顺序不改变集合成员与输出排序：候选独有为新增，交集为存量，基线独有为已解决。 */
     @Test void setDifferenceIsStableAcrossInputOrder() {
         FindingSnapshot a = finding("a", "payload-a");
         FindingSnapshot b = finding("b", "payload-b");
@@ -24,12 +26,14 @@ class FindingClassifierTest {
         assertThat(first).extracting(value -> value.fingerprint()).containsExactly("c", "b", "a");
     }
 
+    /** 相同指纹对应不同规范载荷不能当成同一个问题静默合并。 */
     @Test void sameFingerprintWithDifferentPayloadFailsClosed() {
         assertThatThrownBy(() -> FindingClassifier.classify(
             List.of(finding("same", "one")), List.of(finding("same", "two"))))
             .isInstanceOf(InvalidGovernanceReportException.class);
     }
 
+    /** 比较对象序列化后的三类计数应与实际集合一致，供 Web 直接消费。 */
     @Test void comparisonCountsAreExposedInTheApiResponse() {
         var items = FindingClassifier.classify(List.of(finding("a", "a")),
             List.of(finding("b", "b")));

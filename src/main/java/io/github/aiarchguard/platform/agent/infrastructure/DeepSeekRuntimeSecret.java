@@ -5,10 +5,14 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 
-/** No default path/configuration, no Spring bean. Caller must verify Secret mount ACLs before use. */
+/**
+ * 未注册且无默认路径的运行时 Secret 文件读取工具。仅检查规范常规文件和有界 Key 形状；
+ * 挂载 ACL 仍须调用者确认，字节清理不等于可清除 Java String。
+ */
 final class DeepSeekRuntimeSecret {
     private DeepSeekRuntimeSecret() { }
 
+    /** 从调用者指定的规范文件有界读取，最多去掉一个末尾换行再校验 Key 形状；错误不暴露路径、内容或底层 cause。 */
     static String read(Path path) {
         try {
             if (path == null || !path.isAbsolute() || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)

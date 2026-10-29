@@ -12,12 +12,17 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Repository;
 
+/**
+ * 真实请求关联的 JDBC 实现；
+ * 关联插入由数据库触发器保护模板唯一槽位，领取时精确匹配请求者、版本投影及完整不可变关联，不预留模型费用。
+ */
 @Repository
 class JdbcLiveRequestStore implements LiveRequestStore {
     private final JdbcClient jdbc;
 
     JdbcLiveRequestStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
+    /** 关联插入会触发数据库模板唯一槽位约束；只把指定槽位冲突转成幂等冲突，其他数据库错误保持失败并由外层事务回滚。 */
     @Override public void insert(Link link) {
         try {
             jdbc.sql("""
@@ -43,6 +48,9 @@ class JdbcLiveRequestStore implements LiveRequestStore {
                 rs.getLong("settings_revision"), rs.getTimestamp("created_at").toInstant())).optional();
     }
 
+    /**
+     * 一次 UPDATE 精确匹配请求者、用途/版本和全部不可变关联，CAS 只放行 QUEUED 胜者；费用预留仍在后续独立事务。
+     */
     @Override public boolean claim(Link link, UUID requester, Instant at) {
         if (link == null || requester == null || at == null || link.requestId() == null || link.projectId() == null
                 || link.batchId() == null || link.templateId() == null || link.enablementId() == null

@@ -19,12 +19,17 @@ import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
 
-/** Isolated databases keep historic/crash fixtures away from application recovery workers. */
+/**
+ * 在隔离数据库验证 V16 每批次/模板唯一请求槽：并发创建只有一个胜者，旧历史与迁移校验和不变。请求槽在 attempt 前即占用，失败后也不能换 ID 补发。
+ *
+ * Isolated databases keep historic/crash fixtures away from application recovery workers.
+ */
 class LiveTemplateSlotMigrationIntegrationTest extends PostgresIntegrationTestSupport {
     private static final String LEGACY = "deepseek-flash-peak-usd-2026-10-06";
     private static final String CONTEXT = "deepseek-flash-context-peak-usd-2026-10-15";
     private static final String SLOTS = "agent.live_template_request_slots";
 
+    // 唯一性从请求关联时生效，尚无 attempt 也不能替换已领取模板。
     @Test void aSecondRequestCannotReplaceAClaimedTemplateEvenBeforeAnyAttemptExists() throws Exception {
         String url = database(null);
         try (var connection = connect(url)) {
@@ -39,6 +44,7 @@ class LiveTemplateSlotMigrationIntegrationTest extends PostgresIntegrationTestSu
         }
     }
 
+    // 空库升级至目标版本，随后验证与重复迁移都无额外修改。
     @Test void emptyDatabaseUpgradesToV16AndRepeatIsValidatedAndEmpty() throws Exception {
         String url = newDatabase();
         assertThat(mainMigration(url).migrate().migrationsExecuted).isEqualTo(8);
@@ -52,6 +58,7 @@ class LiveTemplateSlotMigrationIntegrationTest extends PostgresIntegrationTestSu
         }
     }
 
+    // 只对明确上下文策略关联回填槽，不升级旧策略历史。
     @Test void v15UpgradeBackfillsOnlyContextLinksAndPreservesAllExistingHistoryAndChecksums() throws Exception {
         String url = database("15");
         try (var connection = connect(url)) {
@@ -83,6 +90,7 @@ class LiveTemplateSlotMigrationIntegrationTest extends PostgresIntegrationTestSu
         }
     }
 
+    // 歧义历史使迁移失败，不能任意选择胜者或删除冲突数据。
     @Test void duplicateContextHistoryFailsUpgradeWithoutSelectingAWinnerOrRewritingHistory() throws Exception {
         String url = database("15");
         try (var connection = connect(url)) {
@@ -137,6 +145,7 @@ class LiveTemplateSlotMigrationIntegrationTest extends PostgresIntegrationTestSu
         }
     }
 
+    // 真实并发链接竞争同槽，失败事务不得留下孤立请求。
     @Test void simultaneousSameSlotLinksCommitOneWinnerAndRollBackTheOtherRequest() throws Exception {
         String url = database(null);
         Fixture f;
@@ -172,6 +181,7 @@ class LiveTemplateSlotMigrationIntegrationTest extends PostgresIntegrationTestSu
         }
     }
 
+    // 尚未提交的创建回滚后，槽和请求都不可见。
     @Test void rolledBackUncommittedCreationLeavesNoSlotAndCannotLeakTheAbortedRequest() throws Exception {
         String url = database(null);
         try (var connection = connect(url)) {
@@ -259,6 +269,7 @@ class LiveTemplateSlotMigrationIntegrationTest extends PostgresIntegrationTestSu
         while (failure.getCause() != null) failure = failure.getCause();
         return failure instanceof SQLException sql ? sql.getSQLState() : "not-sql";
     }
+    // 通过 PostgreSQL 活动状态确认实际发生事务锁等待，不靠线程启动顺序推断竞争。
     private void assertWaitingForTransactionLock(Connection observer, long pid) throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
         do {

@@ -24,6 +24,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 注入失败的 Agent 独立迁移，验证其路由不可用时主 Project 路由仍可运行。测试覆盖模块故障隔离，不证明所有数据库故障均可隔离。
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(AgentMigrationIsolationIntegrationTest.FailingAgentConfiguration.class)
@@ -33,6 +36,7 @@ class AgentMigrationIsolationIntegrationTest extends PostgresIntegrationTestSupp
     @Autowired ObjectMapper mapper;
     @Autowired JdbcClient jdbc;
 
+    // 让 Agent Schema 明确失效，同时从 HTTP 检查核心 Project 功能没有被一并阻断。
     @Test void unavailableAgentSchemaDoesNotBlockCoreProjectRoutes() throws Exception {
         String key = "p" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         String created = mvc.perform(post("/api/v1/projects")

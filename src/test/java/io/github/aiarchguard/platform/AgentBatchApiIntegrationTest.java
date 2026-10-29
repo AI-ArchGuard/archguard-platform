@@ -26,6 +26,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 通过 HTTP 和 PostgreSQL 验证批次预览、批准、读取与撤销的元数据边界。来源清单与凭据元数据为合成替身，管理操作不创建 live attempt 或触发网络。
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -72,6 +75,7 @@ class AgentBatchApiIntegrationTest extends AgentLiveDatabaseIntegrationTestSuppo
     int count(String table) { return jdbc.sql("SELECT count(*) FROM agent." + table + " WHERE project_id=:p")
         .param("p", fixture.project).query(Integer.class).single(); }
 
+    // 预览和批准只保存可追溯批准元数据，不能顺带创建执行或费用事实。
     @Test void previewAndApprovalNeverCreateAttemptsRequestsOrNetworkAndRetainProvenance() throws Exception {
         int before = count("requests"); var preview = preview();
         assertThat(preview.path("schemaVersion").asText()).isEqualTo("0.1.0");
@@ -90,6 +94,7 @@ class AgentBatchApiIntegrationTest extends AgentLiveDatabaseIntegrationTestSuppo
         assertThat(jdbc.sql("SELECT count(*) FROM agent.live_batch_revocations WHERE batch_id=:id")
             .param("id", UUID.fromString(id)).query(Integer.class).single()).isOne();
     }
+    // 在解析输入前完成身份、owner、Project 角色及 Origin 检查。
     @Test void authenticationOwnerMaintainerOriginAndForeignProjectAreEnforcedBeforeParsing() throws Exception {
         mvc.perform(post(root() + "/preview").contentType(MediaType.APPLICATION_JSON).content("bad"))
             .andExpect(status().isUnauthorized()).andExpect(header().string("Cache-Control", "no-store"));
@@ -108,6 +113,7 @@ class AgentBatchApiIntegrationTest extends AgentLiveDatabaseIntegrationTestSuppo
             .andExpect(status().isNotFound()).andExpect(header().string("Cache-Control", "no-store"));
         assertThat(count("live_batches")).isZero(); assertThat(count("live_attempts")).isZero();
     }
+    // 严格有界输入被拒绝时产生脱敏审计，不回显原始请求。
     @Test void strictBoundedPreviewAndConsentInputHaveSanitizedAuditedFailures() throws Exception {
         for (String body : List.of("null", "{}", "{\"templateRequestIds\":[]}", previewBody() + "{}",
                 "{\"templateRequestIds\":[],\"templateRequestIds\":[]}", "{\"apiKey\":\"synthetic-forbidden-input\"}", "x".repeat(8193),
@@ -126,6 +132,7 @@ class AgentBatchApiIntegrationTest extends AgentLiveDatabaseIntegrationTestSuppo
         assertThat(audits).doesNotContain("synthetic-forbidden-input", "templateRequestIds", "apiKey");
         assertThat(audits).contains("agent.invalid"); assertThat(count("live_batches")).isZero();
     }
+    // 清单缺失、审计失败或撤销携带正文都不能悄然成功。
     @Test void missingInventoryAuditFailureAndBodyOnRevocationCannotSucceed() throws Exception {
         String hash = preview().path("manifestSha256").asText();
         mvc.perform(post(root()).with(user(OWNER)).header("Origin", "http://localhost:8083")
@@ -142,6 +149,7 @@ class AgentBatchApiIntegrationTest extends AgentLiveDatabaseIntegrationTestSuppo
             .andExpect(status().isOk()).andExpect(jsonPath("$.revoked").value(false));
     }
 
+    // 跨 Project 与非法 ID 使用稳定错误，边界审计不可用则失败关闭。
     @Test void foreignProjectAndMalformedIdsAreSanitizedAndBoundaryAuditFailureIsClosed() throws Exception {
         var batch = approve(); UUID foreign = UUID.randomUUID();
         jdbc.sql("INSERT INTO project.projects(id,project_key,name,created_at,created_by) VALUES (:p,:key,'Synthetic other',NOW(),:owner)")

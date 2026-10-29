@@ -10,10 +10,14 @@ import java.util.List;
 import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 离线核对治理与 GitHub 适配器契约的版本、接口范围及引用，保持门禁结果枚举固定。Webhook 的传输边界描述不代替运行时签名校验。
+ */
 class GovernanceContractTest {
     private static final Path CONTRACT = Path.of("openapi", "governance-v1.json");
 
     @Test
+    // 固定 Webhook 契约入口和认证描述，实际真实性仍由运行时 HMAC 校验负责。
     void githubAdapterContractHasResolvableReferencesAndUnsignedWebhookBoundary() throws Exception {
         JsonNode root = new ObjectMapper().readTree(Path.of("openapi", "governance-github-v1.json").toFile());
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
@@ -29,6 +33,7 @@ class GovernanceContractTest {
     }
 
     @Test
+    // 合同中的门禁枚举与路径不应因解释或适配器增量漂移。
     void contractHasResolvableReferencesAndFrozenGateResults() throws Exception {
         JsonNode root = new ObjectMapper().readTree(CONTRACT.toFile());
         assertThat(root.path("openapi").asText()).isEqualTo("3.1.0");
@@ -52,6 +57,7 @@ class GovernanceContractTest {
                 .isEqualTo("platform-finding-v1");
     }
 
+    // 递归检查本地组件引用是否存在，不发起远程解析。
     private static void collectReferences(JsonNode node, List<String> references) {
         if (node.isObject()) {
             node.fields().forEachRemaining(entry -> {

@@ -31,6 +31,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 验证真实数据库上的有界费用预留与发送复核：原始预算贯穿凭据元数据与 SQL/锁等待；已知/未知结算使用独立清理期限。固定合成配置不授权真实发送。
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -62,6 +65,7 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
         Thread.interrupted(); SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId");
     }
 
+    // 接口默认有界方法必须拒绝，不能调用旧无界实现。
     @Test void boundedDefaultsRejectWithoutCallingLegacyImplementations() {
         var legacyCalls = new AtomicInteger();
         LiveAccountingOperations legacy = new LiveAccountingOperations() {
@@ -81,6 +85,7 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
         assertThat(legacyCalls.get()).isZero();
     }
 
+    // 有界能力只限制等待，不改变既有请求、批次与凭据冻结关系。
     @Test void boundedReserveAndSendCheckKeepTheExistingFrozenAccountingBindings() {
         var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
         var remaining = deadline(5);
@@ -91,6 +96,7 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
         fixture.assertPendingReservation(batch.id(), request);
     }
 
+    // 原预算对象传至两处凭据元数据读取，不能重新分配等待时间。
     @Test void boundedReserveAndSendCheckExplicitlyPropagateTheOriginalBudgetToCredentialMetadata() {
         var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
         var remaining = deadline(5);
@@ -117,6 +123,7 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
         assertNoReservation(batch.id(), request);
     }
 
+    // 预算锁仍持有时预留必须先取消，三层预算都不能留下半次写入。
     @Test void budgetLockTimesOutAndRollsBackAllThreeReservationsBeforeHolderIsReleased() throws Exception {
         var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
         fixture.seedBudget("DEPLOYMENT", AgentLiveAccountingIntegrationTest.DEPLOYMENT, 0);
@@ -127,6 +134,7 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
         assertNoReservation(batch.id(), request);
     }
 
+    // 发送前设置锁超时不退款也不计费，原 attempt 状态保持。
     @Test void settingsLockTimesOutBoundedSendCheckWithoutReleasingOrChargingTheAttempt() throws Exception {
         var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
         assertThat(accounting.reserve(fixture.project, batch.id(), fixture.template, request, deadline(5)).newAttempt()).isTrue();
@@ -135,6 +143,7 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
         fixture.assertPendingReservation(batch.id(), request);
     }
 
+    // 执行期限或身份失效后，已知费用仍由独立有限事务结算。
     @Test void elapsedExecutionAndInterruptedCallerStillSettleKnownUsageAfterRecoveryAndRevocation() {
         var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
         assertThat(accounting.reserve(fixture.project, batch.id(), fixture.template, request, deadline(5)).newAttempt()).isTrue();
@@ -161,6 +170,7 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
             .param("p", fixture.project).query(Integer.class).single()).isOne();
     }
 
+    // UNKNOWN 清理保留原预留且幂等，不能因中断重复写入或释放。
     @Test void interruptedUnknownFinalizationRetainsTheReservationExactlyOnce() {
         var batch = fixture.batch(1, 4200); UUID request = fixture.request(batch.id(), true);
         accounting.reserve(fixture.project, batch.id(), fixture.template, request, deadline(5));
@@ -221,6 +231,7 @@ class AgentLiveDatabaseAccountingIntegrationTest extends AgentLiveDatabaseIntegr
         }
     }
 
+    // 先确认真正等待持有者锁，再断言预算在持有者释放前终止操作。
     private void awaitPostgresLock(int holderPid, Future<?> waiting) {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (System.nanoTime() < until) {

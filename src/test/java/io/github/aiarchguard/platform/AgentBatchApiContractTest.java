@@ -26,6 +26,9 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
+/**
+ * 离线验证批次预览、批准及操作员来源清单的严格 Schema，以及元数据 API 的边界。契约不提供预留、发送或结算入口。
+ */
 class AgentBatchApiContractTest {
     private static final String PREFIX = "/api/v1/projects/{projectId}/agent/batches";
     private static final String ID = "11111111-1111-4111-8111-111111111111";
@@ -33,6 +36,7 @@ class AgentBatchApiContractTest {
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
         .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
+    // 预览仅接受有界唯一模板选择，不能携带新请求正文。
     @Test void previewInputOnlyAcceptsUniqueBoundedTemplateIds() throws Exception {
         Schema schema = fileSchema("contracts/agent-batch-preview-0.1.0.schema.json");
         JsonNode definition = mapper.readTree(Path.of("contracts/agent-batch-preview-0.1.0.schema.json").toFile());
@@ -53,6 +57,7 @@ class AgentBatchApiContractTest {
         invalid(schema, oversized);
     }
 
+    // 批准保持既有字段形状，并把同意、期限和费用范围显式化。
     @Test void approvalRetainsEightFieldContractAndRequiresBoundedConsent() throws Exception {
         JsonNode definition = mapper.readTree(Path.of("contracts/agent-live-batch-0.1.0.schema.json").toFile());
         Schema schema = fileSchema("contracts/agent-live-batch-0.1.0.schema.json");
@@ -73,6 +78,7 @@ class AgentBatchApiContractTest {
         }
     }
 
+    // 清单是受控本地审查材料，不允许 Secret 或外部抓取配置。
     @Test void inventoryIsStrictBoundedOperatorReviewWithoutSecretsOrExternalFetches() throws Exception {
         JsonNode definition = mapper.readTree(Path.of("contracts/agent-synthetic-inventory-0.1.0.schema.json").toFile());
         Schema schema = fileSchema("contracts/agent-synthetic-inventory-0.1.0.schema.json");
@@ -109,6 +115,7 @@ class AgentBatchApiContractTest {
         resolve(definition, definition, Path.of("contracts/agent-synthetic-inventory-0.1.0.schema.json"));
     }
 
+    // 管理接口只处理元数据，响应统一禁止缓存。
     @Test void apiExposesOnlyMetadataManagementAndAllResponsesAreNoStore() throws Exception {
         Path file = Path.of("openapi/agent-batches-v1.json"); JsonNode api = mapper.readTree(file.toFile());
         assertThat(api.path("openapi").asText()).isEqualTo("3.1.0");
@@ -144,6 +151,7 @@ class AgentBatchApiContractTest {
         resolve(api, api, file);
     }
 
+    // 返回字段对齐公开 DTO，不泄漏来源证明或批准输入正文。
     @Test void returnedMetadataMatchesExistingDtoAndDoesNotExposeProofOrInputs() throws Exception {
         JsonNode api = mapper.readTree(Path.of("openapi/agent-batches-v1.json").toFile());
         JsonNode batchSchema = api.at("/components/schemas/Batch");
@@ -197,6 +205,7 @@ class AgentBatchApiContractTest {
     private List<String> strings(JsonNode node) { List<String> values = new ArrayList<>(); node.forEach(value -> values.add(value.asText())); return values; }
     private String[] recordNames(Class<?> type) { return Arrays.stream(type.getRecordComponents()).map(RecordComponent::getName).toArray(String[]::new); }
     private JsonNode dereference(JsonNode node, JsonNode root) { return node.has("$ref") ? root.at(node.path("$ref").asText().substring(1)) : node; }
+    // 递归解析本地引用，同时校验复用 Schema 的路径有效。
     private void resolve(JsonNode value, JsonNode root, Path file) throws Exception {
         if (value.isObject()) {
             if (value.has("$ref")) {

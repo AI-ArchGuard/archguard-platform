@@ -30,6 +30,10 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * 独立真实请求 HTTP 入口。先确认身份、项目及部署准入，再读取两个选择 ID；
+ * 严格限制头部、正文大小与 UUID 表示，并返回不可缓存的 202。
+ */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/agent/live-requests")
 final class AgentLiveController {
@@ -48,6 +52,9 @@ final class AgentLiveController {
             .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS);
     }
 
+    /**
+     * 在读取正文前完成身份及部署检查，并要求唯一 Origin/幂等头；创建/调度失败审计由应用层负责，控制器只覆盖自身边界拒绝。
+     */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<AgentRequestView> create(@PathVariable UUID projectId, HttpServletRequest request) {
         String origin = request.getHeader("Origin");
@@ -69,6 +76,7 @@ final class AgentLiveController {
             .header("Cache-Control", "no-store").header("Pragma", "no-cache").body(view);
     }
 
+    /** JSON 必须恰好包含两个选择 ID；不接受用户提供模型输入、凭据、价格或目标地址。 */
     private LiveAgentRunInput read(HttpServletRequest request) {
         byte[] bytes = null;
         try {
@@ -82,6 +90,7 @@ final class AgentLiveController {
         finally { if (bytes != null) Arrays.fill(bytes, (byte) 0); }
     }
 
+    /** 拒绝 UUID.fromString 可接受的缩短分组表示，以规范 UUID 文本封住同一 ID 多种输入表示。 */
     private UUID identifier(JsonNode value) {
         if (value == null || !value.isTextual()) throw new AgentInvalidException();
         String text = value.textValue();

@@ -29,6 +29,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * 使用隔离 PostgreSQL 验证 live 三层预算、唯一 attempt、发送前复核与不可变结算。时间、来源和凭据元数据由夹具控制；这些账本操作本身不访问模型或真实 Key。
+ */
 @SpringBootTest(properties = {"archguard.agent.enabled=true", "archguard.agent.credentials.enabled=true",
     "archguard.agent.credentials.owner-id=11111111-1111-4111-8111-111111111111",
     "archguard.agent.credentials.deployment-id=22222222-2222-4222-8222-222222222222",
@@ -77,6 +80,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         org.slf4j.MDC.put("traceId", "d".repeat(32));
         SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(actor.toString(), null, List.of()));
     }
+    // 以下夹具显式区分旧合成模板与 live 请求，并可选择是否创建关联来覆盖历史缺失场景。
     UUID request(UUID batch, boolean live) {
         return request(batch, live, true);
     }
@@ -131,6 +135,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         }
     }
 
+    // 重复预留或结算不能重复记账，实际费用应使用可信缓存命中用量。
     @Test void oneAttemptAndKnownSettlementAreIdempotentAndUseActualCacheTokens() throws Exception {
         var batch = batch(2, 8400);
         UUID id = request(batch.id(), true);
@@ -154,6 +159,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertThat(metadata).doesNotContain("Synthetic evidence");
     }
 
+    // 快照形状不足以授权，必须有精确关联且设置版本仍有效。
     @Test void unlinkedLiveSnapshotCannotReserveAndStaleCreationRevisionCannotBeReenabled() {
         var batch = batch(2, 8400); UUID unlinked = request(batch.id(), true, false), linked = request(batch.id(), true);
         assertThatThrownBy(() -> accounting.reserve(project, batch.id(), template, unlinked)).isInstanceOf(AgentEnablementInvalidStateException.class);
@@ -164,6 +170,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertThat(amount("PROJECT", project, "reserved_microusd")).isZero();
     }
 
+    // 历史 attempt 可读和可结算，不等于重新获得发送许可。
     @Test void legacyUnlinkedAttemptCanReplayAndSettleButCannotSend() {
         var batch = batch(1, 4200); UUID id = request(batch.id(), true, false);
         var day = now.atZone(java.time.ZoneOffset.UTC).toLocalDate();
@@ -196,6 +203,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertThat(amount("PROJECT", project, "reserved_microusd")).isZero();
     }
 
+    // 发送复核须存在预留，并返回冻结版本而不再次扣费。
     @Test void sendCheckRequiresReservationAndReturnsItsFrozenCredentialWithoutChargingAgain() {
         var batch = batch(1, 4200); UUID id = request(batch.id(), true);
         assertThatThrownBy(() -> accounting.checkBeforeSend(project, batch.id(), template, id))
@@ -251,6 +259,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertSendRejectionCount(2);
     }
 
+    // 预留后的换 Key 或删除也必须阻止新发送。
     @Test void credentialRotationAndClearingEachRejectReservedSendChecks() {
         var batch = batch(1, 4200); UUID id = request(batch.id(), true);
         accounting.reserve(project, batch.id(), template, id);
@@ -270,6 +279,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertSendRejectionCount(2);
     }
 
+    // 来源撤回影响当前准入，但不能改写历史批准证明。
     @Test void withdrawnOrChangedInventoryProofRejectsReservedSendWithoutRewritingProof() {
         var batch = batch(1, 4200); UUID id = request(batch.id(), true);
         accounting.reserve(project, batch.id(), template, id);
@@ -298,6 +308,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertSendRejectionCount(1);
     }
 
+    // 费用按 UTC 日绑定，批准有效也不能跨日沿用旧发送许可。
     @Test void utcRolloverRejectsSendEvenWhileBatchApprovalAndProofRemainValid() {
         now = now.atZone(java.time.ZoneOffset.UTC).toLocalDate().atTime(23, 59, 50).toInstant(java.time.ZoneOffset.UTC);
         AgentPersonalEnablementIntegrationTest.TIME.set(now);
@@ -318,6 +329,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertSendRejectionCount(1);
     }
 
+    // 请求终态阻止发送，但已发生用量仍能独立入账。
     @Test void recoveredTerminalRequestCannotSendButItsIncurredUsageCanStillSettle() {
         var batch = batch(1, 4200); UUID id = request(batch.id(), true);
         accounting.reserve(project, batch.id(), template, id);
@@ -402,6 +414,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertSendRejectionCount(2);
     }
 
+    // 锁后重读当前请求，不能把等待前状态当成有效发送证据。
     @Test void sendCheckRereadsTheRequestAfterAnActualPostgresLockWait() throws Exception {
         var batch = batch(1, 4200); UUID id = request(batch.id(), true);
         accounting.reserve(project, batch.id(), template, id);
@@ -502,6 +515,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
             .isInstanceOf(AgentInvalidException.class);
     }
 
+    // 真实并发结算最多写一份结果和一次费用。
     @Test void concurrentSettlementsWriteExactlyOneOutcomeAndCharge() throws Exception {
         var batch = batch(1, 4200); UUID id = request(batch.id(), true); accounting.reserve(project, batch.id(), template, id);
         var usage = new LiveTokenUsage(1000, 100, 500, 1100, 0);
@@ -513,6 +527,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertThat(jdbc.sql("SELECT count(*) FROM agent.live_outcomes WHERE request_id=:id").param("id", id).query(Integer.class).single()).isOne();
     }
 
+    // 未知或非法用量不生成零费用，保留预留且禁止退款重试。
     @Test void unknownUsageAndInvalidUsageKeepReservationAndCannotRefundOrRetry() {
         var batch = batch(2, 8400);
         UUID first = request(batch.id(), true), second = request(batch.id(), true);
@@ -553,6 +568,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertThat(accounting.get(project, batch.id()).manifestSha256()).isEqualTo(hash);
     }
 
+    // 历史不可变由数据库约束共同保护，不能只依赖服务约定。
     @Test void settledHistoryAndBatchHistoryCannotBeEditedOrDeleted() {
         var batch = batch(1, 4200);
         UUID id = request(batch.id(), true);
@@ -564,6 +580,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
             .isInstanceOf(org.springframework.dao.DataAccessException.class);
     }
 
+    // 结算不恢复批次次数或累计费用上限，避免反复使用同一批准。
     @Test void batchRequestLimitAndCostLimitCannotBeReplenishedBySettlement() {
         var countLimited = batch(1, 4200);
         UUID first = request(countLimited.id(), true), second = request(countLimited.id(), true);
@@ -596,6 +613,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
             .param("p", project).query(Integer.class).single()).isOne();
     }
 
+    // 不同 Project 仍竞争同一部署额度，不能借项目隔离突破全局日上限。
     @Test void deploymentQuotaIsSerializedAcrossDifferentProjects() throws Exception {
         var firstBatch = batch(1, 4200); UUID firstProject = project, firstTemplate = template;
         UUID firstRequest = request(firstBatch.id(), true);
@@ -618,6 +636,7 @@ class AgentLiveAccountingIntegrationTest extends AgentLiveDatabaseIntegrationTes
         assertThat(old.credentialVersion()).isEqualTo(AgentPersonalEnablementIntegrationTest.CREDENTIAL);
     }
 
+    // 成功审计与账本动作原子提交，审计失败不留半次预留或结算。
     @Test void auditFailuresRollBackReservationsAndSettlements() {
         var batch = batch(1, 4200); UUID id = request(batch.id(), true);
         AgentPersonalEnablementIntegrationTest.FAIL_AUDIT_ACTION.set("agent.live.reserved");

@@ -13,21 +13,31 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+/**
+ * 门禁结果及命中例外版本的 JDBC 存储适配器；只保存上层已经求出的决定。
+ * 写入、命中、封存和审计的事务由 GateWriteService 组织。
+ */
 @Repository
 public class JdbcGateEvaluationStore implements GateEvaluationStore {
     private final JdbcClient jdbc;
     public JdbcGateEvaluationStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
+    /** 在项目范围内查幂等键，并带回请求摘要供上层辨别重放与冲突。 */
     @Override public Optional<Stored> byKey(UUID projectId, String key) {
         return jdbc.sql(select() + " WHERE g.project_id=:project AND g.idempotency_key=:key")
             .param("project", projectId).param("key", key)
             .query((row, number) -> new Stored(map(row, number), row.getString("request_sha256"))).optional();
     }
+    /** 同时限定项目、仓库和门禁 ID；查询条件本身不是成员授权。 */
     @Override public Optional<GateEvaluationView> find(UUID projectId, UUID repositoryId, UUID id) {
         return jdbc.sql(select() + " WHERE g.project_id=:project AND g.repository_id=:repository AND g.id=:id")
             .param("project", projectId).param("repository", repositoryId).param("id", id)
             .query(JdbcGateEvaluationStore::map).optional();
     }
+    /**
+     * 在确切分支和规则集版本内读取历史，可按已关联的提交 PR 编号过滤。
+     * 用求值时间及 ID 降序分页；调用方多取一条判断是否还有下一页。
+     */
     @Override public List<GateEvaluationView> list(UUID projectId, UUID repositoryId, String branch,
             UUID ruleSetVersionId, String pullRequestId, long offset, int limit) {
         String sql = select() + """
@@ -48,6 +58,10 @@ public class JdbcGateEvaluationStore implements GateEvaluationStore {
         if (pullRequestId != null) query = query.param("pr", pullRequestId);
         return query.query(JdbcGateEvaluationStore::map).list();
     }
+    /**
+     * 单条插入借项目内唯一键处理竞争；失败返回 false，由上层核对原请求摘要。
+     * 插入成功后写命中例外的确切版本，不能将返回值理解为外部 CI 状态已发布。
+     */
     @Override public boolean insert(GateEvaluationView value, String key, String requestSha256, UUID actorId) {
         int inserted = jdbc.sql("""
             INSERT INTO governance.gate_evaluations(id,project_id,repository_id,target_branch,rule_set_version_id,
@@ -80,10 +94,12 @@ public class JdbcGateEvaluationStore implements GateEvaluationStore {
         }
         return true;
     }
+    /** 封存结果；V4 触发器随后禁止改写门禁或追加命中记录。 */
     @Override public void seal(UUID id) {
         jdbc.sql("UPDATE governance.gate_evaluations SET sealed=TRUE WHERE id=:id")
             .param("id", id).update();
     }
+    /** 将命中例外版本按 UUID 排序聚合，稳定地还原历史门禁视图。 */
     private static String select() {
         return """
             SELECT g.*, COALESCE((SELECT array_agg(h.exception_version_id ORDER BY h.exception_version_id)

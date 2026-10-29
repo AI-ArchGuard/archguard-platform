@@ -27,7 +27,10 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
-/** Revalidates current resources through public domain APIs, without trusting stored candidates. */
+/**
+ * 通过其他模块公开 API 重新核验当前授权和持久化候选；
+ * 逐项比对扫描、Finding 所属 Evidence、文档摘要与有界片段，避免把保存的候选直接当事实。
+ */
 public final class LiveResourceAuthorizer {
     private final ProjectAuthorization projects;
     private final ScanJobOperations jobs;
@@ -44,7 +47,7 @@ public final class LiveResourceAuthorizer {
         this.reports = Objects.requireNonNull(reports);
     }
 
-    /** Call again before admission, send and result persistence; this class never caches authorization. */
+    /** 创建、准入/发送与保存结果前重复调用；逐项复核当前资源且不缓存授权，已持久化候选也必须重新证明。 */
     public void validate(AgentSnapshot snapshot) {
         require(snapshot != null && snapshot.view() != null && snapshot.input() != null
             && snapshot.candidates() != null && snapshot.candidates().size() <= 410);
@@ -124,9 +127,13 @@ public final class LiveResourceAuthorizer {
                 && Objects.equals(actual.content(), document.excerpt())
                 && Objects.equals("Document fragment " + actual.fragmentIndex(), candidate.label()));
         }
+        // 每个候选必须恰好被获授权输入消费，拒绝夹带未使用的额外引用。
         require(used.size() == candidates.size());
     }
 
+    /**
+     * 按原 Finding 的 Evidence 顺序核对精确归属及最小投影；属于同一扫描或另一个已选 Finding 仍不足以放行。
+     */
     private void validateEvidence(AgentRequestView view, FindingView finding,
             List<AgentModelPort.EvidenceInput> selected, Map<String, AgentSnapshot.Candidate> candidates,
             Set<String> used) {
@@ -155,6 +162,7 @@ public final class LiveResourceAuthorizer {
         }
     }
 
+    /** 通过文档公开接口取不可变版本，再核对实际 UTF-8 大小与 SHA-256，不仅信任数据库中的摘要字段。 */
     private Map<UUID, DocumentVersionView> versions(AgentRequestView view) {
         List<AgentRequestView.DocumentVersionBinding> bindings = view.bindings().documentVersions();
         require(bindings != null && bindings.size() <= 10);
@@ -176,6 +184,7 @@ public final class LiveResourceAuthorizer {
         return versions;
     }
 
+    /** 目前无公开精确片段读取接口，故重放原有界检索并比对版本正文、偏移和摘要；无法重现的快照拒绝。 */
     private Map<String, DocumentFragmentView> replayFragments(UUID projectId, List<FindingView> selected,
             Map<UUID, DocumentVersionView> versions) {
         Map<String, DocumentFragmentView> accepted = new LinkedHashMap<>();

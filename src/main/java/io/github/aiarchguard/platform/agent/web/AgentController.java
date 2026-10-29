@@ -19,6 +19,9 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * 原合成 Agent API 的 HTTP 入口：拒绝未知请求字段，创建返回 202 与查询地址，权限、版本绑定和提交后排队由应用服务负责。
+ */
 @RestController
 @RequestMapping("/api/v1/projects/{projectId}/agent/requests")
 final class AgentController {
@@ -30,6 +33,7 @@ final class AgentController {
         this.mapper = mapper.copy().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
     }
 
+    /** 创建仅提交异步工作，因此返回 202 与请求查询地址；模型执行结果通过后续 GET 读取。 */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<AgentRequestView> create(@PathVariable UUID projectId,
             @RequestHeader("Idempotency-Key") String key, @RequestBody String json) {

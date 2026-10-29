@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
-/** Scoped sanitization only; application and boundary failures are audited at their owning layer. */
+/** 批次入口的脱敏错误映射；审计由实际拥有操作的应用或 HTTP 边界记录，避免在异常处理器重复计数。 */
 @RestControllerAdvice(assignableTypes = AgentBatchController.class)
 @Order(Ordered.HIGHEST_PRECEDENCE)
 final class BatchExceptionHandler {

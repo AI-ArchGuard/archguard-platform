@@ -71,10 +71,10 @@ DailyRequestPage list(UUID project, int limit, String cursor);
 record Creation<T>(T value, boolean created) {} // 只供controller选择201/200，不是wire wrapper
 ```
 
-- [ ] **RED:** `schemasRejectCoercionUnknownFieldsAndMissingConsent`逐个变异有效fixture：未知源码/Prompt/URL字段、缺字段、false确认、null/重复数组、无效UUID/hash、空purpose、过大数值均失败；接受schemaVersion 0.1.0。测试fixture只用合成UUID/文本，不放Key形状。
-- [ ] **RED:** `apiReferencesAndOldContractBytesStayStable`检查新API全部本地`$ref`可解析、response严格字段、金额nullable及原错误结构；比较基线旧API/Schema的SHA-256，不允许重生成旧文件。同键重放响应为200且不发新Location；首次201带Location。
-- [ ] 运行 `./mvnw -Dtest=AgentDailyContractTest test`；须因新契约/类型缺失而失败，保留RED证据。
-- [ ] 实现三份严格Schema、新OpenAPI及nested records。JSON Schema只验证结构；`maxCost<=maxAttempts*350000`、授权/期限/所有者等跨字段业务约束由服务/数据库双重验证，不能伪称Schema已经证明。
+- [x] **RED:** `schemasRejectCoercionUnknownFieldsAndMissingConsent`逐个变异有效fixture：未知源码/Prompt/URL字段、缺字段、false确认、null/重复数组、无效UUID/hash、空purpose、过大数值均失败；接受schemaVersion 0.1.0。测试fixture只用合成UUID/文本，不放Key形状。
+- [x] **RED:** `apiReferencesAndOldContractBytesStayStable`检查新API全部本地`$ref`可解析、response严格字段、金额nullable及原错误结构；比较基线旧API/Schema的SHA-256，不允许重生成旧文件。同键重放响应为200且不发新Location；首次201带Location。
+- [x] 运行 `./mvnw -Dtest=AgentDailyContractTest test`；须因新契约/类型缺失而失败，保留RED证据。
+- [x] 实现三份严格Schema、新OpenAPI及nested records。JSON Schema只验证结构；`maxCost<=maxAttempts*350000`、授权/期限/所有者等跨字段业务约束由服务/数据库双重验证，不能伪称Schema已经证明。
 - [ ] 重跑本任务及`AgentContractTest,AgentEnablementContractTest,AgentLiveContractTest,AgentBatchApiContractTest`；全部通过后记录实际命令/数量，再以本任务文件做独立提交。
 
 ### Task 2: 提取快照并锁定日常最小投影
@@ -180,4 +180,4 @@ record Creation<T>(T value, boolean created) {} // 只供controller选择201/200
 
 设计§1–4对应任务1/3/8；§5对应任务2/4；§6对应任务6/7；§7对应任务3–5；§8对应任务4–7；§9对应任务9。五项Review Focus均有具体测试归属，公共DTO和新内部接口遵循同一生产者设计。日常全篇区间使用公开UTF-16偏移，纯金额端口无次数，成功释放槽在原结果事务内且锁序明确。内部小适配不引入新服务、通用工作流或所有者重复审批流程。
 
-2026-10-30文档切片只完成设计、计划、README链接及本地静态报告；上述所有任务仍未执行，所有checkbox保持未勾选。不把文档检查记为Maven/数据库/真实HTTP/部署成功。完成独立文档评审后即可在已批准范围内进行默认关闭的离线实现；此计划无需再次请求所有者批准相同设计。维护期间的运行限制和真实外发授权限制分别继续有效。
+2026-10-30已完成生产者设计评审及任务1的独立机器契约、DTO、合成 fixtures 和结构测试。LF/CRLF 校验基线缺陷已有失败回归、修复及独立复审；最终15项所选离线测试通过。完整 enablement 测试中的一项会静态启动数据库，维护期间未在本机运行，任务1最后一步及其余任务仍未勾选，等待托管完整 CI。不把结构测试记为迁移、运行时、真实 HTTP 或部署成功；维护和真实外发授权限制继续有效。

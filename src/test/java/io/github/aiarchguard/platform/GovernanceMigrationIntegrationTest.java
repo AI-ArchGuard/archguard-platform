@@ -141,8 +141,8 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
         Flyway latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
             .locations("classpath:db/agent-migration").defaultSchema("public")
             .table("flyway_agent_schema_history").baselineOnMigrate(true).baselineVersion("8").load();
-        assertThat(latest.migrate().migrationsExecuted).isEqualTo(7);
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("16");
+        assertThat(latest.migrate().migrationsExecuted).isEqualTo(8);
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("17");
         assertThat(latest.migrate().migrationsExecuted).isZero();
     }
 
@@ -172,8 +172,8 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             var latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
                 .locations("classpath:db/agent-migration").defaultSchema("public").table("flyway_agent_schema_history")
                 .baselineOnMigrate(true).baselineVersion("8").load();
-            assertThat(latest.migrate().migrationsExecuted).isEqualTo(6);
-            assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("16");
+            assertThat(latest.migrate().migrationsExecuted).isEqualTo(7);
+            assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("17");
             assertThat(latest.migrate().migrationsExecuted).isZero();
             try (var rows = statement.executeQuery("SELECT row_to_json(r)::text FROM agent.requests r")) { rows.next(); assertThat(rows.getString(1)).isEqualTo(before); }
             assertThatThrownBy(() -> statement.execute("UPDATE agent.requests SET trace_id='" + "c".repeat(32) + "'"))
@@ -205,8 +205,8 @@ class GovernanceMigrationIntegrationTest extends PostgresIntegrationTestSupport 
             try (var rows = statement.executeQuery("SELECT row_to_json(e)::text FROM agent.personal_enablements e")) { rows.next(); before = rows.getString(1); }
             var latest = Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword())
                 .locations("classpath:db/agent-migration").defaultSchema("public").table("flyway_agent_schema_history").load();
-            assertThat(latest.migrate().migrationsExecuted).isEqualTo(5);
-            assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("16");
+            assertThat(latest.migrate().migrationsExecuted).isEqualTo(6);
+            assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("17");
             assertThat(latest.migrate().migrationsExecuted).isZero();
             try (var rows = statement.executeQuery("SELECT row_to_json(e)::text FROM agent.personal_enablements e")) { rows.next(); assertThat(rows.getString(1)).isEqualTo(before); }
             try (var rows = statement.executeQuery("SELECT enabled,revision,enablement_id FROM agent.project_settings")) {

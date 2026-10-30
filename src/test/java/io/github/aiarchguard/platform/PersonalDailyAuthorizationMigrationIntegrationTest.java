@@ -77,10 +77,12 @@ class PersonalDailyAuthorizationMigrationIntegrationTest extends PostgresIntegra
         try (var c = connect(url)) {
             UUID p = project(c); String valid = riskSql(p, UUID.randomUUID(), envelope());
             List<String> invalid = List.of(valid.replace("'risk-key'", "''"), valid.replace("'risk-key'", "'with space'"),
-                valid.replace("'risk-key'", "'" + "x".repeat(129) + "'"), valid.replace(HASH, HASH.toUpperCase()),
+                valid.replace(HASH, HASH.toUpperCase()),
                 valid.replace(POLICY, "wrong-policy"), valid.replace("'" + EXPIRY + "'", "'2026-10-30T01:00:00Z'"),
                 valid.replace("'" + EXPIRY + "'", "'2026-11-07T03:00:00Z'"));
             for (String sql : invalid) rejects(c, sql, "23514");
+            // varchar(128) 的长度转换先于 CHECK；PostgreSQL 对这一精确超长类型错误返回 22001。
+            rejects(c, valid.replace("'risk-key'", "'" + "x".repeat(129) + "'"), "22001");
             assertThat(number(c, "SELECT count(*) FROM agent.daily_risk_acknowledgements")).isZero();
             execute(c, valid); assertThat(number(c, "SELECT count(*) FROM agent.daily_risk_acknowledgements")).isOne();
         }

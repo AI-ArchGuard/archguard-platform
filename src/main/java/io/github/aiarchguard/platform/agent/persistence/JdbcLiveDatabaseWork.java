@@ -1,6 +1,7 @@
 package io.github.aiarchguard.platform.agent.persistence;
 
 import io.github.aiarchguard.platform.agent.AgentConflictException;
+import io.github.aiarchguard.platform.agent.AgentDailyStateInvalidException;
 import io.github.aiarchguard.platform.agent.AgentEnablementInvalidStateException;
 import io.github.aiarchguard.platform.agent.AgentInvalidException;
 import io.github.aiarchguard.platform.agent.AgentNotFoundException;
@@ -103,6 +104,7 @@ public final class JdbcLiveDatabaseWork implements LiveDatabaseWork {
         if (failure instanceof AgentInvalidException) return new AgentInvalidException();
         if (failure instanceof AgentNotFoundException) return new AgentNotFoundException();
         if (failure instanceof AgentEnablementInvalidStateException) return new AgentEnablementInvalidStateException();
+        if (failure instanceof AgentDailyStateInvalidException) return new AgentDailyStateInvalidException();
         if (failure instanceof AgentSettingsPreconditionException precondition) return new AgentSettingsPreconditionException(precondition.missing());
         if (failure instanceof ProjectPermissionDeniedException) return new ProjectPermissionDeniedException();
         if (failure instanceof ProjectNotFoundException) return new ProjectNotFoundException();

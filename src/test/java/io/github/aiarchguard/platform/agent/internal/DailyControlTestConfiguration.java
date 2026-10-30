@@ -4,12 +4,19 @@ import io.github.aiarchguard.platform.agent.*;
 import io.github.aiarchguard.platform.agentcredential.*;
 import io.github.aiarchguard.platform.audit.*;
 import io.github.aiarchguard.platform.audit.persistence.JdbcAuditRecorder;
+import io.github.aiarchguard.platform.agent.persistence.JdbcDailyAgentStore;
+import io.github.aiarchguard.platform.common.TraceIdProvider;
+import io.github.aiarchguard.platform.identity.CurrentActorProvider;
+import io.github.aiarchguard.platform.project.ProjectAuthorization;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.*;
 import java.util.UUID;
 import java.util.concurrent.atomic.*;
 import java.util.function.LongSupplier;
 import javax.sql.DataSource;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.context.annotation.*;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.mock.env.MockEnvironment;
@@ -66,8 +73,13 @@ public class DailyControlTestConfiguration {
         }
         return e;
     }
-    @Bean DailyAgentControlService dailyControl(DataSource source, CredentialVersionSource versions, Clock clock) {
-        return new DailyAgentControlService(new DailyRuntimePolicy(ENV, source, versions, clock));
+    @Bean DailyAgentControlService dailyControl(DataSource source, CredentialVersionSource versions, Clock clock,
+            ProjectAuthorization projects, CurrentActorProvider actors, CredentialOperations credentials, JdbcClient jdbc,
+            AgentSchemaAvailability schema, AuditRecorder audit, TraceIdProvider traces, ObjectMapper mapper,
+            @Value("${archguard.agent.live-accounting.project-day-limit-microusd:5000000}") long projectLimit,
+            @Value("${archguard.agent.live-accounting.deployment-day-limit-microusd:20000000}") long deploymentLimit) {
+        return new DailyAgentControlService(projects, actors, credentials, new DailyRuntimePolicy(ENV, source, versions, clock),
+            new JdbcDailyAgentStore(jdbc, mapper), schema, audit, traces, clock, mapper, ENV, projectLimit, deploymentLimit);
     }
     @Bean @Primary Clock dailyClock() {
         return new Clock() {

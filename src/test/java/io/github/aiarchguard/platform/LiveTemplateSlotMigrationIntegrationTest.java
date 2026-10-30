@@ -251,7 +251,7 @@ class LiveTemplateSlotMigrationIntegrationTest extends PostgresIntegrationTestSu
     private Flyway mainMigration(String url) { return Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).load(); }
     private org.flywaydb.core.api.configuration.FluentConfiguration migration(String url) {
         return Flyway.configure().dataSource(url, POSTGRES.getUsername(), POSTGRES.getPassword()).locations("classpath:db/agent-migration")
-            .defaultSchema("public").table("flyway_agent_schema_history").baselineOnMigrate(true).baselineVersion("8");
+            .defaultSchema("public").table("flyway_agent_schema_history").baselineOnMigrate(true).baselineVersion("8").target("16");
     }
     private Connection connect(String url) throws SQLException { return DriverManager.getConnection(url, POSTGRES.getUsername(), POSTGRES.getPassword()); }
     private void execute(Connection connection, String sql) throws SQLException { try (var statement = connection.createStatement()) { statement.execute(sql); } }

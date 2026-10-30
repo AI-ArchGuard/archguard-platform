@@ -20,6 +20,7 @@ public interface DailyAgentStore {
     boolean insertGrant(Grant grant);
     boolean revokeGrant(UUID grant, UUID actor, Instant at);
     Usage lockUsage(UUID project, UUID grant);
+    void lockRiskUsage(UUID project, UUID risk);
     void initializeUsage(UUID project, UUID grant);
     record Settings(boolean enabled, long revision, UUID grantId) {}
     record Revocation(UUID actor, Instant at) {}

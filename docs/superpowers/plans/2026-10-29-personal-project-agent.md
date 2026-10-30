@@ -87,7 +87,7 @@ record Creation<T>(T value, boolean created) {} // 只供controller选择201/200
 - [x] **RED:** `dailyRejectsWholeShortDocumentAndUnionCoverage`验证短文单片、两片相邻覆盖全文、重叠区间覆盖、非ASCII/代理对使用Java UTF-16偏移都400/零模型准备或发送；真正部分片段可用，不无声删片段。按公开startOffset验证边界及hash，不引入新文档接口。
 - [x] **RED:** `dailySelectionRejectsCrossProjectPrAndInjectedFields`覆盖跨Project scan/Finding/文档、错误reportSha、未完成报告、混PR/修订、别的Finding的Evidence，以及文档指令/角色声明无法增加模型字段或工具。文档有注入文本本身不视为执行许可，也不宣称所有敏感内容已被过滤。
 - [x] 先运行上述新单元测试确认RED，再抽取原授权/投影；旧profile传false并保留原算法，日常profile传true并固定既有DeepSeek常量。采用设计规定的日常固定顺序JSON digest，随机alias/requestId不入业务摘要。
-- [ ] 重跑新测试及旧解释/摘要、`LiveResourceAuthorizerTest`、`AgentWorkerIsolationTest`。失败不能靠放宽旧断言修复；通过后仅提交快照相关文件。
+- [x] 重跑新测试及旧解释/摘要、`LiveResourceAuthorizerTest`、`AgentWorkerIsolationTest`。失败不能靠放宽旧断言修复；通过后仅提交快照相关文件。PR #71 在 86ac2fb 上的完整 CI 通过 956 项测试及容器构建；合并 33ee9f6 后 main CI 40996293977 成功。本机仅运行 49 项无数据库测试，数据库验证由托管 CI 完成。
 
 ### Task 3: V17日常风险、grant、设置与运行绑定
 

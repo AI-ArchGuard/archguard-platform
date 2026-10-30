@@ -75,18 +75,18 @@ record Creation<T>(T value, boolean created) {} // 只供controller选择201/200
 - [x] **RED:** `apiReferencesAndOldContractBytesStayStable`检查新API全部本地`$ref`可解析、response严格字段、金额nullable及原错误结构；比较基线旧API/Schema的SHA-256，不允许重生成旧文件。同键重放响应为200且不发新Location；首次201带Location。
 - [x] 运行 `./mvnw -Dtest=AgentDailyContractTest test`；须因新契约/类型缺失而失败，保留RED证据。
 - [x] 实现三份严格Schema、新OpenAPI及nested records。JSON Schema只验证结构；`maxCost<=maxAttempts*350000`、授权/期限/所有者等跨字段业务约束由服务/数据库双重验证，不能伪称Schema已经证明。
-- [ ] 重跑本任务及`AgentContractTest,AgentEnablementContractTest,AgentLiveContractTest,AgentBatchApiContractTest`；全部通过后记录实际命令/数量，再以本任务文件做独立提交。
+- [x] 重跑本任务及`AgentContractTest,AgentEnablementContractTest,AgentLiveContractTest,AgentBatchApiContractTest`；全部通过后记录实际命令/数量，再以本任务文件做独立提交。
 
 ### Task 2: 提取快照并锁定日常最小投影
 
 **Files:** Create `A/internal/AuthorizedAgentSnapshotBuilder.java`、`T/agent/internal/AuthorizedAgentSnapshotBuilderTest.java`；Modify `A/internal/AgentApplicationService.java`、`LiveResourceAuthorizer.java`；Extend `T/agent/internal/LiveResourceAuthorizerTest.java`及`T/AgentExplanationIntegrationTest.java`、`AgentPrSummaryIntegrationTest.java`。
 
-**Interfaces:** 按设计§5提供`authorize(project,CreateAgentRequest):AuthorizedSelection`、`build(AuthorizedSelection,SnapshotIdentity,SnapshotProfile,String):AgentSnapshot`及两个精确record。`AuthorizedSelection`内部保存原purpose/PR、scan、按UUID排序的Finding/DocumentVersion和已验证的有界片段；不跨模块暴露。`validateDaily(AgentSnapshot):void`先执行原`validate`，再检查非全篇区间并集。
+**Interfaces:** 按设计§5提供`authorize(project,CreateAgentRequest):AuthorizedSelection`、`build(AuthorizedSelection,SnapshotIdentity,SnapshotProfile,String):AgentSnapshot`及两个精确record。`AuthorizedSelection`内部保存原purpose/PR、scan、按UUID排序的Finding/DocumentVersion等授权元数据；有界片段仅在新快照build阶段检索并验证，旧请求先按原摘要重放且不读取Evidence或检索文档；不跨模块暴露。`validateDaily(AgentSnapshot):void`先执行原`validate`，再检查非全篇区间并集。
 
-- [ ] **RED:** `legacyProjectionAndDigestRemainCompatible`固定旧synthetic模型/Prompt/Schema/价格、原digest算法、最多20 Evidence/10片段、kind代summary及alias不可见内部ID；保持旧创建failure优先级和afterCommit行为。新builder不能替旧服务决定启用、失败或调度。
-- [ ] **RED:** `dailyRejectsWholeShortDocumentAndUnionCoverage`验证短文单片、两片相邻覆盖全文、重叠区间覆盖、非ASCII/代理对使用Java UTF-16偏移都400/零模型准备或发送；真正部分片段可用，不无声删片段。按公开startOffset验证边界及hash，不引入新文档接口。
-- [ ] **RED:** `dailySelectionRejectsCrossProjectPrAndInjectedFields`覆盖跨Project scan/Finding/文档、错误reportSha、未完成报告、混PR/修订、别的Finding的Evidence，以及文档指令/角色声明无法增加模型字段或工具。文档有注入文本本身不视为执行许可，也不宣称所有敏感内容已被过滤。
-- [ ] 先运行上述新单元测试确认RED，再抽取原授权/投影；旧profile传false并保留原算法，日常profile传true并固定既有DeepSeek常量。采用设计规定的日常固定顺序JSON digest，随机alias/requestId不入业务摘要。
+- [x] **RED:** `legacyProjectionAndDigestRemainCompatible`固定旧synthetic模型/Prompt/Schema/价格、原digest算法、最多20 Evidence/10片段、kind代summary及alias不可见内部ID；保持旧创建failure优先级和afterCommit行为。新builder不能替旧服务决定启用、失败或调度。
+- [x] **RED:** `dailyRejectsWholeShortDocumentAndUnionCoverage`验证短文单片、两片相邻覆盖全文、重叠区间覆盖、非ASCII/代理对使用Java UTF-16偏移都400/零模型准备或发送；真正部分片段可用，不无声删片段。按公开startOffset验证边界及hash，不引入新文档接口。
+- [x] **RED:** `dailySelectionRejectsCrossProjectPrAndInjectedFields`覆盖跨Project scan/Finding/文档、错误reportSha、未完成报告、混PR/修订、别的Finding的Evidence，以及文档指令/角色声明无法增加模型字段或工具。文档有注入文本本身不视为执行许可，也不宣称所有敏感内容已被过滤。
+- [x] 先运行上述新单元测试确认RED，再抽取原授权/投影；旧profile传false并保留原算法，日常profile传true并固定既有DeepSeek常量。采用设计规定的日常固定顺序JSON digest，随机alias/requestId不入业务摘要。
 - [ ] 重跑新测试及旧解释/摘要、`LiveResourceAuthorizerTest`、`AgentWorkerIsolationTest`。失败不能靠放宽旧断言修复；通过后仅提交快照相关文件。
 
 ### Task 3: V17日常风险、grant、设置与运行绑定
@@ -180,4 +180,4 @@ record Creation<T>(T value, boolean created) {} // 只供controller选择201/200
 
 设计§1–4对应任务1/3/8；§5对应任务2/4；§6对应任务6/7；§7对应任务3–5；§8对应任务4–7；§9对应任务9。五项Review Focus均有具体测试归属，公共DTO和新内部接口遵循同一生产者设计。日常全篇区间使用公开UTF-16偏移，纯金额端口无次数，成功释放槽在原结果事务内且锁序明确。内部小适配不引入新服务、通用工作流或所有者重复审批流程。
 
-2026-10-30已完成生产者设计评审及任务1的独立机器契约、DTO、合成 fixtures 和结构测试。LF/CRLF 校验基线缺陷已有失败回归、修复及独立复审；最终15项所选离线测试通过。完整 enablement 测试中的一项会静态启动数据库，维护期间未在本机运行，任务1最后一步及其余任务仍未勾选，等待托管完整 CI。不把结构测试记为迁移、运行时、真实 HTTP 或部署成功；维护和真实外发授权限制继续有效。
+2026-10-30任务1已通过独立评审、15项所选离线回归及 [PR #70 完整 CI](https://github.com/AI-ArchGuard/archguard-platform/actions/runs/40993934038)（946项测试，零失败/错误/跳过，包含完整 enablement 测试和容器构建）；合入 `e394d86e0bca06628473b932625231a7e0bb704e` 后的 [main CI](https://github.com/AI-ArchGuard/archguard-platform/actions/runs/40994371742) 也成功。任务2快照提取及日常投影已实现，49项数据库无关测试通过，独立评审和该切片完整托管 CI 待完成；后续任务仍未执行。本机维护期间未运行数据库、完整 verify 或容器验证，不把托管检查等同本机环境修复、真实 HTTP 或部署成功。维护和真实外发授权限制继续有效。

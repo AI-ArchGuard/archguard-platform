@@ -302,6 +302,16 @@ class LiveResourceAuthorizerTest {
         assertEquals(0, fixture.searches);
     }
 
+    @Test
+    void dailyValidationReusesOriginalChecksAndRejectsWholeDocument() {
+        Fixture fixture = new Fixture(); AgentSnapshot snapshot = fixture.snapshot(false);
+        assertDoesNotThrow(() -> fixture.authorizer.validate(snapshot));
+        assertThrows(io.github.aiarchguard.platform.agent.AgentInvalidException.class,
+            () -> fixture.authorizer.validateDaily(snapshot));
+        fixture.member = false;
+        assertThrows(ProjectNotFoundException.class, () -> fixture.authorizer.validateDaily(snapshot));
+    }
+
     private static void rejected(Fixture fixture, AgentSnapshot snapshot) {
         assertThrows(AgentEnablementInvalidStateException.class, () -> fixture.authorizer.validate(snapshot));
     }

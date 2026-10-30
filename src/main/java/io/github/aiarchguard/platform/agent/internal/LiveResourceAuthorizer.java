@@ -48,7 +48,17 @@ public final class LiveResourceAuthorizer {
     }
 
     /** 创建、准入/发送与保存结果前重复调用；逐项复核当前资源且不缓存授权，已持久化候选也必须重新证明。 */
-    public void validate(AgentSnapshot snapshot) {
+    public void validate(AgentSnapshot snapshot) { validateResources(snapshot); }
+
+    /** 先复用原资源核验，再检查已选片段的 UTF-16 区间并集。 */
+    public void validateDaily(AgentSnapshot snapshot) {
+        Projection projection = validateResources(snapshot);
+        rejectWholeDocuments(projection.versions(), projection.fragments());
+    }
+
+    private record Projection(Map<UUID, DocumentVersionView> versions, Map<String, DocumentFragmentView> fragments) {}
+
+    private Projection validateResources(AgentSnapshot snapshot) {
         require(snapshot != null && snapshot.view() != null && snapshot.input() != null
             && snapshot.candidates() != null && snapshot.candidates().size() <= 410);
         AgentRequestView view = snapshot.view();
@@ -109,7 +119,7 @@ public final class LiveResourceAuthorizer {
         Map<UUID, DocumentVersionView> versions = versions(view);
         // No public exact-fragment reader exists. Replay the original bounded public searches and
         // reject a snapshot that no longer reproduces its exact immutable fragment selection.
-        Map<String, DocumentFragmentView> fragments = replayFragments(view.projectId(), actualFindings, versions);
+        Map<String, DocumentFragmentView> fragments = replayFragments(documents, view.projectId(), actualFindings, versions);
         require(input.documents().size() == fragments.size());
         Set<String> usedFragments = new HashSet<>();
         for (AgentModelPort.DocumentInput document : input.documents()) {
@@ -129,6 +139,7 @@ public final class LiveResourceAuthorizer {
         }
         // 每个候选必须恰好被获授权输入消费，拒绝夹带未使用的额外引用。
         require(used.size() == candidates.size());
+        return new Projection(versions, fragments);
     }
 
     /**
@@ -171,21 +182,40 @@ public final class LiveResourceAuthorizer {
             require(binding != null && binding.documentVersionId() != null && hash(binding.contentSha256())
                 && !versions.containsKey(binding.documentVersionId()));
             DocumentVersionView actual = documents.getVersionById(view.projectId(), binding.documentVersionId());
+            validateVersion(view.projectId(), binding, actual);
+            versions.put(actual.id(), actual);
+        }
+        return versions;
+    }
+
+    static void validateVersion(UUID projectId, AgentRequestView.DocumentVersionBinding binding, DocumentVersionView actual) {
             require(actual != null && binding.documentVersionId().equals(actual.id())
-                && view.projectId().equals(actual.projectId())
+                && projectId.equals(actual.projectId())
                 && binding.contentSha256().equals(actual.contentSha256())
                 && actual.content() != null && actual.content().length() <= 262144
                 && actual.fragmentCount() >= 1 && actual.fragmentCount() <= 256);
             byte[] bytes = actual.content().getBytes(StandardCharsets.UTF_8);
             require(bytes.length <= 262144 && bytes.length == actual.byteSize()
                 && binding.contentSha256().equals(sha256(bytes)));
-            versions.put(actual.id(), actual);
+    }
+
+    /** 只合并真正选入快照的区间；偏移来自已核验的公开检索结果。 */
+    static void rejectWholeDocuments(Map<UUID, DocumentVersionView> versions, Map<String, DocumentFragmentView> fragments) {
+        for (DocumentVersionView version : versions.values()) {
+            List<DocumentFragmentView> selected = fragments.values().stream()
+                .filter(f -> version.id().equals(f.documentVersionId()))
+                .sorted(java.util.Comparator.comparingInt(DocumentFragmentView::startOffset)).toList();
+            int covered = 0;
+            for (DocumentFragmentView fragment : selected) {
+                if (fragment.startOffset() > covered) break;
+                covered = Math.max(covered, fragment.startOffset() + fragment.content().length());
+                if (covered >= version.content().length()) throw new io.github.aiarchguard.platform.agent.AgentInvalidException();
+            }
         }
-        return versions;
     }
 
     /** 目前无公开精确片段读取接口，故重放原有界检索并比对版本正文、偏移和摘要；无法重现的快照拒绝。 */
-    private Map<String, DocumentFragmentView> replayFragments(UUID projectId, List<FindingView> selected,
+    static Map<String, DocumentFragmentView> replayFragments(DocumentOperations documents, UUID projectId, List<FindingView> selected,
             Map<UUID, DocumentVersionView> versions) {
         Map<String, DocumentFragmentView> accepted = new LinkedHashMap<>();
         if (versions.isEmpty()) return accepted;

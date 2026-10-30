@@ -71,6 +71,8 @@ final class DailyRuntimePolicy {
             CredentialStatus status = remaining == null ? credentials.current() : credentials.current(remaining);
             checkRemaining(remaining);
             if (status == null || !status.configured() || status.credentialVersion() == null) throw unavailable();
+            // 元数据等待可能跨过证据期限；按当前时间重验同一快照，不重读配置或凭据。
+            requireFresh(evidence, clock.instant());
             var profile = AuthorizedAgentSnapshotBuilder.DAILY;
             return new DailyBindingSnapshot(deployment, owner, revision, status.credentialVersion(), profile.modelId(),
                 "DeepSeek-V4.1-Flash-1017", List.of(profile.modelId()), profile.protocol(), profile.explanationPrompt(),
@@ -91,12 +93,18 @@ final class DailyRuntimePolicy {
                     || !PersonalEnablementPolicy.sources().get(kind).equals(url) || !kinds.add(kind)) throw unavailable();
             String version = reference(row.get("version"));
             Instant checkedAt = Instant.parse(row.get("checked-at"));
-            if (checkedAt.isAfter(now) || checkedAt.isBefore(now.minus(Duration.ofDays(7)))) throw unavailable();
             sources.add(new DailySource(kind, url, version, checkedAt));
         }
         Instant expiry = Instant.parse(required(PREFIX + "evidence.price-catalog-expires-at"));
-        if (!expiry.isAfter(now)) throw unavailable();
-        return new DailyEvidence(sources, expiry);
+        var evidence = new DailyEvidence(sources, expiry);
+        requireFresh(evidence, now);
+        return evidence;
+    }
+    private static void requireFresh(DailyEvidence evidence, Instant now) {
+        if (!evidence.priceCatalogExpiresAt().isAfter(now)) throw unavailable();
+        for (var source : evidence.sources()) {
+            if (source.checkedAt().isAfter(now) || source.checkedAt().isBefore(now.minus(Duration.ofDays(7)))) throw unavailable();
+        }
     }
     private String required(String key) {
         String value = environment.getProperty(key);

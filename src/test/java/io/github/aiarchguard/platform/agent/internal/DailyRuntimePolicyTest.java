@@ -171,6 +171,68 @@ class DailyRuntimePolicyTest {
             assertThatThrownBy(unavailable::binding).isInstanceOf(AgentUnavailableException.class).hasNoCause();
         }
     }
+    // 元数据锁等待结束时必须按新时间校验同一份证据，不能只依赖仍为正的执行预算。
+    @Test void ordinaryMetadataWaitCannotReturnAnExpiredPriceCatalog() {
+        assertThatThrownBy(() -> bindingAfterMetadataWait(false, NOW.plusSeconds(3600), NOW.plusSeconds(3600), NOW.minusSeconds(60)))
+            .isInstanceOf(AgentUnavailableException.class).hasNoCause();
+    }
+    @Test void boundedMetadataWaitCannotReturnAnExpiredPriceCatalog() {
+        assertThatThrownBy(() -> bindingAfterMetadataWait(true, NOW.plusSeconds(3601), NOW.plusSeconds(3600), NOW.minusSeconds(60)))
+            .isInstanceOf(AgentUnavailableException.class).hasNoCause();
+    }
+    @Test void ordinaryMetadataWaitCannotReturnASourceOlderThanSevenDays() {
+        assertThatThrownBy(() -> bindingAfterMetadataWait(false, NOW.plusSeconds(2), NOW.plusSeconds(3600), NOW.minusSeconds(604799)))
+            .isInstanceOf(AgentUnavailableException.class).hasNoCause();
+    }
+    @Test void boundedMetadataWaitCannotReturnASourceOlderThanSevenDays() {
+        assertThatThrownBy(() -> bindingAfterMetadataWait(true, NOW.plusSeconds(2), NOW.plusSeconds(3600), NOW.minusSeconds(604799)))
+            .isInstanceOf(AgentUnavailableException.class).hasNoCause();
+    }
+    @Test void postMetadataFreshnessKeepsInclusiveSourceBoundaryAndStrictPriceBoundary() {
+        for (boolean bounded : List.of(false, true)) {
+            var b = bindingAfterMetadataWait(bounded, NOW.plusSeconds(1), NOW.plusSeconds(2), NOW.minusSeconds(604799));
+            assertThat(b.evidence().sources().getFirst().checkedAt()).isEqualTo(NOW.minusSeconds(604799));
+            assertThat(b.evidence().priceCatalogExpiresAt()).isEqualTo(NOW.plusSeconds(2));
+            assertThat(b.ownerId()).isEqualTo(OWNER); assertThat(b.runtimeRevision()).isEqualTo("a".repeat(64));
+            assertThat(b.credentialVersion()).isEqualTo(VERSION);
+            assertThatThrownBy(() -> bindingAfterMetadataWait(bounded, NOW.plusSeconds(2), NOW.plusSeconds(2), NOW.minusSeconds(60)))
+                .isInstanceOf(AgentUnavailableException.class).hasNoCause();
+        }
+    }
+    private DailyBindingSnapshot bindingAfterMetadataWait(boolean bounded, Instant afterWait, Instant priceExpiry, Instant checkedAt) {
+        try (var pool = pool()) {
+            var env = environment().withProperty(P + "evidence.price-catalog-expires-at", priceExpiry.toString())
+                .withProperty(source(0, "checked-at"), checkedAt.toString());
+            var time = new java.util.concurrent.atomic.AtomicReference<>(NOW);
+            Clock advancing = new Clock() {
+                public ZoneId getZone() { return ZoneOffset.UTC; }
+                public Clock withZone(ZoneId zone) { return Clock.fixed(instant(), zone); }
+                public Instant instant() { return time.get(); }
+            };
+            var reads = new AtomicInteger();
+            LongSupplier remaining = () -> 1000;
+            CredentialVersionSource metadata = new CredentialVersionSource() {
+                public CredentialStatus current() {
+                    assertThat(bounded).isFalse(); return afterWait();
+                }
+                public CredentialStatus current(LongSupplier supplied) {
+                    assertThat(bounded).isTrue(); assertThat(supplied).isSameAs(remaining); return afterWait();
+                }
+                private CredentialStatus afterWait() {
+                    reads.incrementAndGet(); time.set(afterWait);
+                    // 等待期间配置变化不能替换本次捕获的配置和证据，或把过期事实刷新成有效事实。
+                    env.setProperty("archguard.agent.credentials.owner-id", DEPLOYMENT.toString());
+                    env.setProperty(P + "runtime-revision", "b".repeat(64));
+                    env.setProperty(P + "evidence.price-catalog-expires-at", afterWait.plusSeconds(3600).toString());
+                    env.setProperty(source(0, "checked-at"), afterWait.toString());
+                    return new CredentialStatus(true, VERSION, NOW);
+                }
+            };
+            var p = new DailyRuntimePolicy(env, pool, metadata, advancing);
+            try { return bounded ? p.binding(remaining) : p.binding(); }
+            finally { assertThat(reads.get()).isEqualTo(1); assertThat(pool.isRunning()).isFalse(); }
+        }
+    }
     @Test void digestUsesCapturedSnapshotIsOrderIndependentAndSensitiveToEveryBindingAndEvidenceField() throws Exception {
         try (var pool = pool()) {
             var reads = new AtomicInteger();

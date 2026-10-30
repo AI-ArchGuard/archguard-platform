@@ -1,9 +1,17 @@
 package io.github.aiarchguard.platform.agent.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.zaxxer.hikari.HikariDataSource;
 import java.util.UUID;
+import java.util.List;
+import java.util.Optional;
+import java.time.Instant;
+import java.lang.reflect.Proxy;
+import java.util.concurrent.atomic.AtomicReference;
+import io.github.aiarchguard.platform.agent.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
@@ -58,6 +66,56 @@ class PersonalLivePolicyTest {
             assertThat(new PersonalLivePolicy(env, pool, null, null).available(project)).isFalse();
             pool.addDataSourceProperty("socketTimeout", "5"); pool.setJdbcUrl("jdbc:postgresql://db:5432/archguard?socketTimeout=0");
             assertThat(new PersonalLivePolicy(env, pool, null, null).available(project)).isFalse();
+            assertThat(pool.isRunning()).isFalse();
+        }
+    }
+
+    // 共用技术防护不能删除原合成批次、模板、价格上限或当前确认的检查引用约束。
+    @Test void sharedSafetyPreservesOriginalBatchOnlyGuards() {
+        try (var pool = pool()) {
+            var env = environment(); UUID batchId = UUID.fromString(env.getProperty("archguard.agent.live.batch-id"));
+            UUID template = UUID.randomUUID(); UUID approvalId = UUID.randomUUID();
+            var now = Instant.parse("2026-10-29T00:00:00Z");
+            var manifest = new LiveManifest("0.1.0", project, List.of(new LiveManifest.Template(template, null, "a".repeat(64), "b".repeat(64))));
+            var selected = new AtomicReference<LiveAccountingStore.Batch>();
+            var approved = new AtomicReference<AgentEnablementStore.Approval>();
+            var batches = (LiveAccountingStore) Proxy.newProxyInstance(getClass().getClassLoader(), new Class[]{LiveAccountingStore.class},
+                (proxy, method, args) -> { if (method.getName().equals("batch")) return Optional.ofNullable(selected.get());
+                    throw new AssertionError("unexpected store operation"); });
+            var approvals = (AgentEnablementStore) Proxy.newProxyInstance(getClass().getClassLoader(), new Class[]{AgentEnablementStore.class},
+                (proxy, method, args) -> { if (method.getName().equals("find")) return Optional.ofNullable(approved.get());
+                    throw new AssertionError("unexpected store operation"); });
+            var policy = new PersonalLivePolicy(env, pool, batches, approvals);
+            var good = new LiveAccountingStore.Batch(new LiveBatchView(batchId, project, approvalId, project, now,
+                "a".repeat(64), now.plusSeconds(60), 2, 632746, false), project, project, manifest, null, LiveCostPolicy.CONTEXT_VERSION);
+            selected.set(good);
+            var ack = new PersonalEnablementInput("0.4.0", null, null, null, null, null, null, true, "deepseek-flash",
+                "DeepSeek-V4.1-Flash-1017", List.of("deepseek-flash"), LiveCostPolicy.CONTEXT_VERSION, null,
+                "synthetic-secret-check", "synthetic-network-check", null, null, project);
+            approved.set(new AgentEnablementStore.Approval(approvalId, project, project, project, now, ack, null));
+            assertThatCode(() -> policy.requireBatch(project, batchId, template)).doesNotThrowAnyException();
+            assertThatThrownBy(() -> policy.requireBatch(UUID.randomUUID(), batchId, template)).isInstanceOf(AgentUnavailableException.class);
+            assertThatThrownBy(() -> policy.requireBatch(project, UUID.randomUUID(), template)).isInstanceOf(AgentUnavailableException.class);
+            assertThatThrownBy(() -> policy.requireBatch(project, batchId, null)).isInstanceOf(AgentUnavailableException.class);
+            assertThatThrownBy(() -> policy.requireBatch(project, batchId, UUID.randomUUID())).isInstanceOf(AgentUnavailableException.class);
+            for (String check : List.of("network-check-ref", "secret-check-ref")) {
+                String old = env.getProperty("archguard.agent.live." + check);
+                env.setProperty("archguard.agent.live." + check, "changed");
+                assertThatThrownBy(() -> policy.requireBatch(project, batchId, template)).isInstanceOf(AgentUnavailableException.class);
+                env.setProperty("archguard.agent.live." + check, old);
+            }
+            selected.set(new LiveAccountingStore.Batch(good.view(), project, project, manifest, null, LiveCostPolicy.VERSION));
+            assertThatThrownBy(() -> policy.requireBatch(project, batchId, template)).isInstanceOf(AgentUnavailableException.class);
+            for (int count : List.of(1, 3)) {
+                selected.set(new LiveAccountingStore.Batch(new LiveBatchView(batchId, project, approvalId, project, now,
+                    "a".repeat(64), now.plusSeconds(60), count, 632746, false), project, project, manifest, null, LiveCostPolicy.CONTEXT_VERSION));
+                assertThatThrownBy(() -> policy.requireBatch(project, batchId, template)).isInstanceOf(AgentUnavailableException.class);
+            }
+            selected.set(new LiveAccountingStore.Batch(new LiveBatchView(batchId, project, approvalId, project, now,
+                "a".repeat(64), now.plusSeconds(60), 2, 700001, false), project, project, manifest, null, LiveCostPolicy.CONTEXT_VERSION));
+            assertThatThrownBy(() -> policy.requireBatch(project, batchId, template)).isInstanceOf(AgentUnavailableException.class);
+            selected.set(good); approved.set(null);
+            assertThatThrownBy(() -> policy.requireBatch(project, batchId, template)).isInstanceOf(AgentUnavailableException.class);
             assertThat(pool.isRunning()).isFalse();
         }
     }

@@ -26,6 +26,10 @@ final class PersonalEnablementPolicy {
         "PROTOCOL", "https://api-docs.deepseek.com/guides/responses_api/");
     private PersonalEnablementPolicy() { }
 
+    /** 只共享不可变材料目录；旧四来源兼容及历史版本校验保持独立。 */
+    static Map<String, String> sources() { return SOURCES; }
+    static Set<String> unknowns() { return UNKNOWNS; }
+
     /**
      * 按显式 Schema/映射/价格组合核对确认，来源 URL 只是固定材料引用，代码不会联网核对材料或替用户接受未知风险。
      */

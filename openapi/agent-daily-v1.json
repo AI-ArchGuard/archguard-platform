@@ -1,0 +1,2010 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ArchGuard personal Project daily Agent contract",
+    "version": "0.1.0",
+    "description": "Independent, default-closed daily advice contract. No runtime is registered by this contract. Explicit risk acknowledgement, bounded grant, Project selection and deployment gates are separate facts; none has default counts, cumulative spend or expiry. Advice never modifies deterministic findings, gates or CI. All writes require configured owner, current role, exact Origin and transport guards before parsing; service rechecks business authorization. All responses, including errors, are no-store. Schema structure does not prove authorization or cross-field/time business constraints."
+  },
+  "x-archguard-default-enabled": false,
+  "x-archguard-request-body-max-bytes": 8192,
+  "x-archguard-strict-json": true,
+  "x-archguard-json-rules": [
+    "Reject duplicate keys",
+    "Reject trailing content",
+    "Reject scalar coercion",
+    "Parse canonical UUID, lowercase SHA-256 and RFC3339 instants strictly",
+    "Normalize times to UTC seconds",
+    "Reject null/duplicate array members"
+  ],
+  "x-archguard-cache-control": "no-store",
+  "security": [
+    {
+      "platformIdentity": []
+    }
+  ],
+  "paths": {
+    "/api/v1/projects/{projectId}/agent/daily/context": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        }
+      ],
+      "get": {
+        "operationId": "getDailyAgentContext",
+        "description": "Configured owner + current Project Viewer. Read local binding metadata only; no credential read, provider/account probe or dispatch. Unconfigured binding/digest are null; runtimeReady=false. Technical ceilings are not approved budgets.",
+        "responses": {
+          "200": {
+            "description": "Configured owner + current Project Viewer. Read local binding metadata only; no credential read, provider/account probe or dispatch. Unconfigured binding/digest are null; runtimeReady=false. Technical ceilings are not approved budgets.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyContext"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/settings": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        }
+      ],
+      "get": {
+        "operationId": "getDailyAgentSettings",
+        "description": "Configured owner + Viewer. Default disabled; desired state alone does not authorize sending.",
+        "responses": {
+          "200": {
+            "description": "Configured owner + Viewer. Default disabled; desired state alone does not authorize sending.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"(0|[1-9][0-9]{0,18})\"$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailySettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateDailyAgentSettings",
+        "description": "Owner + Maintainer, Origin and secure transport before parsing. Compare revision under lock and increment on every successful update, including an identical value. Enabled requires the current valid grant; disabled requires grantId=null. No model call.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Origin"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DailySettingsInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated desired settings",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"(0|[1-9][0-9]{0,18})\"$"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailySettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          },
+          "428": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/risk-acknowledgements": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        }
+      ],
+      "post": {
+        "operationId": "acknowledgeDailyAgentRisk",
+        "description": "Owner + Maintainer. Explicit sources/risk/material-rights acceptance, current digest and owner-selected expiry within evidence/price and seven-day ceilings. Acknowledged time is distinct from operator source checkedAt. No defaults, spend permission or provider call.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Origin"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../contracts/agent-personal-daily-risk-0.1.0.schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Identical replay of original immutable input; no new Location, expiry extension, material retrieval or scheduling.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRiskView"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "First creation only. Location identifies the stable GET resource.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRiskView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/risk-acknowledgements/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        },
+        {
+          "$ref": "#/components/parameters/Id"
+        }
+      ],
+      "get": {
+        "operationId": "getDailyAgentRisk",
+        "description": "Configured owner + Viewer; read immutable acknowledgement metadata with current revocation state.",
+        "responses": {
+          "200": {
+            "description": "Configured owner + Viewer; read immutable acknowledgement metadata with current revocation state.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRiskView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/risk-acknowledgements/{id}/revoke": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        },
+        {
+          "$ref": "#/components/parameters/Id"
+        }
+      ],
+      "post": {
+        "operationId": "revokeDailyAgentRisk",
+        "description": "Owner + Maintainer; empty body only. Append idempotent revocation and close selected daily settings; preserve all history, in-flight requests and costs. Does not revoke synthetic enablements or call a model.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Origin"
+          }
+        ],
+        "x-archguard-empty-body": true,
+        "responses": {
+          "200": {
+            "description": "Current metadata after idempotent revocation",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRiskView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/grants": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        }
+      ],
+      "post": {
+        "operationId": "approveDailyAgentGrant",
+        "description": "Owner + Maintainer. Explicit bounded purposes/count/cumulative amount/expiry; current owner, Project, deployment, credential and binding. Service/database enforce maxCost<=maxAttempts*350000 and risk/evidence/price expiry. No defaults, Project auto-enable or provider call. State priority REVOKED, STOPPED, EXPIRED, EXHAUSTED, ACTIVE; active slot alone does not mean exhausted.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Origin"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../contracts/agent-personal-daily-grant-0.1.0.schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Identical replay of original immutable input; no new Location, expiry extension, material retrieval or scheduling.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyGrantView"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "First creation only. Location identifies the stable GET resource.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyGrantView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/grants/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        },
+        {
+          "$ref": "#/components/parameters/Id"
+        }
+      ],
+      "get": {
+        "operationId": "getDailyAgentGrant",
+        "description": "Configured owner + Viewer. Return current state and cumulative usage without dispatch; attempts and money do not reset at UTC midnight.",
+        "responses": {
+          "200": {
+            "description": "Configured owner + Viewer. Return current state and cumulative usage without dispatch; attempts and money do not reset at UTC midnight.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyGrantView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/grants/{id}/revoke": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        },
+        {
+          "$ref": "#/components/parameters/Id"
+        }
+      ],
+      "post": {
+        "operationId": "revokeDailyAgentGrant",
+        "description": "Owner + Maintainer; empty body only. Append idempotent revocation and close selected daily settings; preserve all history, in-flight requests and costs. Does not revoke synthetic enablements or call a model.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Origin"
+          }
+        ],
+        "x-archguard-empty-body": true,
+        "responses": {
+          "200": {
+            "description": "Current metadata after idempotent revocation",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyGrantView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/requests": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        }
+      ],
+      "post": {
+        "operationId": "createDailyAgentRequest",
+        "description": "Configured owner + Viewer for explanation; PR summary also requires Maintainer. Authorize before body parsing and verify selected current Project resources. One grant has one active logical request; at most one attempt. Same-key replay recovers original snapshot even when grant expired/revoked; no new retrieval/dispatch. Cross-mode key collision or changed input=409. Failure/UNKNOWN stops grant; no retry. Queued does not imply a reservation.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Origin"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../contracts/agent-personal-daily-request-0.1.0.schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Identical replay of original immutable input; no new Location, expiry extension, material retrieval or scheduling.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRequestView"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "First creation only. Location identifies the stable GET resource.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRequestView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "get": {
+        "operationId": "listDailyAgentRequests",
+        "description": "Configured owner + current Viewer; summary resources still require Maintainer. Descending (createdAt,id) keyset pagination, always owner/Project/daily-scoped. Cursor never conveys identity. Read only; never dispatches.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "description": "Opaque base64url (createdAt,id), not an identity or scope."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configured owner + current Viewer; summary resources still require Maintainer. Descending (createdAt,id) keyset pagination, always owner/Project/daily-scoped. Cursor never conveys identity. Read only; never dispatches.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRequestPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/requests/lookup": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        }
+      ],
+      "get": {
+        "operationId": "lookupDailyAgentRequest",
+        "description": "Fixed lookup route precedes UUID route. Existing current owner/Project/daily request only; absent=404. Restore original immutable snapshot without retrieval, creation, reservation or dispatch.",
+        "parameters": [
+          {
+            "name": "idempotencyKey",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "URL-encoded original visible ASCII key."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fixed lookup route precedes UUID route. Existing current owner/Project/daily request only; absent=404. Restore original immutable snapshot without retrieval, creation, reservation or dispatch.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRequestView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/agent/daily/requests/{requestId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProjectId"
+        },
+        {
+          "$ref": "#/components/parameters/RequestId"
+        }
+      ],
+      "get": {
+        "operationId": "getDailyAgentRequest",
+        "description": "Configured owner + current Viewer; reauthorize summary resources with Maintainer. Reuses validated AgentRequest/result/citations. Never dispatches; cross-Project resources are hidden as 404.",
+        "responses": {
+          "200": {
+            "description": "Configured owner + current Viewer; reauthorize summary resources with Maintainer. Reuses validated AgentRequest/result/citations. Never dispatches; cross-Project resources are hidden as 404.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyRequestView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "platformIdentity": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "parameters": {
+      "ProjectId": {
+        "name": "projectId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "Id": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "RequestId": {
+        "name": "requestId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "Origin": {
+        "name": "Origin",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Exactly one configured same-origin value; owner and transport guards checked before reading the body."
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[!-~]+$"
+        },
+        "description": "One visible ASCII key. Replay returns historical 200 without Location, extension, retrieval or scheduling; different original input is 409."
+      },
+      "IfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "pattern": "^\"(0|[1-9][0-9]{0,18})\"$"
+        },
+        "description": "Exactly one strong revision ETag within signed int64. Missing=428, stale=412, malformed=400."
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Stable sanitized API error. INVALID_INPUT=400; 409 IDEMPOTENCY_CONFLICT/DAILY_STATE_INVALID/DAILY_ACTION_IN_PROGRESS; 412 revision conflict; 428 missing If-Match; 429 QUOTA_EXHAUSTED; 503 MODEL_UNAVAILABLE. DAILY_STATE_INVALID has one sanitized message; authorized context/grant carries detail. Cross-Project resources are hidden as 404. Preserve the existing ApiError including details.",
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "./agent-v1.json#/components/schemas/ApiError"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "DailySource": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "url",
+          "version",
+          "checkedAt"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "TERMS",
+              "PRIVACY",
+              "CACHE",
+              "MODEL_PRICE",
+              "PROTOCOL"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "enum": [
+              "https://cdn.deepseek.com/policies/zh-CN/deepseek-open-platform-terms-of-service.html",
+              "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html",
+              "https://api-docs.deepseek.com/guides/kv_cache/",
+              "https://api-docs.deepseek.com/quick_start/pricing/",
+              "https://api-docs.deepseek.com/guides/responses_api/"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^(?![sS][kK]-)[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "TERMS"
+              },
+              "url": {
+                "const": "https://cdn.deepseek.com/policies/zh-CN/deepseek-open-platform-terms-of-service.html"
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "PRIVACY"
+              },
+              "url": {
+                "const": "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html"
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "CACHE"
+              },
+              "url": {
+                "const": "https://api-docs.deepseek.com/guides/kv_cache/"
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "MODEL_PRICE"
+              },
+              "url": {
+                "const": "https://api-docs.deepseek.com/quick_start/pricing/"
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "PROTOCOL"
+              },
+              "url": {
+                "const": "https://api-docs.deepseek.com/guides/responses_api/"
+              }
+            }
+          }
+        ]
+      },
+      "DailyEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sources",
+          "priceCatalogExpiresAt"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/DailySource"
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "TERMS"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "PRIVACY"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "CACHE"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "MODEL_PRICE"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "PROTOCOL"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              }
+            ]
+          },
+          "priceCatalogExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+          }
+        }
+      },
+      "DailyBindingSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deploymentId",
+          "ownerId",
+          "runtimeRevision",
+          "credentialVersion",
+          "modelAlias",
+          "mappingSnapshot",
+          "allowedResponseModels",
+          "modelProtocolVersion",
+          "explanationPromptVersion",
+          "summaryPromptVersion",
+          "outputSchemaVersion",
+          "priceCatalogVersion",
+          "dataPolicyVersion",
+          "secretCheckRef",
+          "networkCheckRef",
+          "evidence"
+        ],
+        "properties": {
+          "deploymentId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "ownerId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "runtimeRevision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "credentialVersion": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "modelAlias": {
+            "type": "string",
+            "const": "deepseek-flash"
+          },
+          "mappingSnapshot": {
+            "type": "string",
+            "const": "DeepSeek-V4.1-Flash-1017"
+          },
+          "allowedResponseModels": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "const": "deepseek-flash"
+            }
+          },
+          "modelProtocolVersion": {
+            "type": "string",
+            "const": "responses-v1-restricted"
+          },
+          "explanationPromptVersion": {
+            "type": "string",
+            "const": "finding-explanation-0.1.0"
+          },
+          "summaryPromptVersion": {
+            "type": "string",
+            "const": "pr-summary-0.1.0"
+          },
+          "outputSchemaVersion": {
+            "type": "string",
+            "const": "0.1.0"
+          },
+          "priceCatalogVersion": {
+            "type": "string",
+            "const": "deepseek-flash-context-peak-usd-2026-10-15"
+          },
+          "dataPolicyVersion": {
+            "type": "string",
+            "const": "personal-selected-nonsensitive-0.1.0"
+          },
+          "secretCheckRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^(?![sS][kK]-)[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "networkCheckRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^(?![sS][kK]-)[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/DailyEvidence"
+          }
+        }
+      },
+      "DailyLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reservationMicrousd",
+          "perRequestMicrousd",
+          "projectDayMicrousd",
+          "deploymentDayMicrousd",
+          "maxEvidenceAgeSeconds",
+          "maxRiskAgeSeconds"
+        ],
+        "properties": {
+          "reservationMicrousd": {
+            "type": "integer",
+            "const": 316373
+          },
+          "perRequestMicrousd": {
+            "type": "integer",
+            "const": 350000
+          },
+          "projectDayMicrousd": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "maximum": 5000000
+          },
+          "deploymentDayMicrousd": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "maximum": 20000000
+          },
+          "maxEvidenceAgeSeconds": {
+            "type": "integer",
+            "const": 604800
+          },
+          "maxRiskAgeSeconds": {
+            "type": "integer",
+            "const": 604800
+          }
+        }
+      },
+      "DailySettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "revision",
+          "grantId",
+          "modelCallsAvailable",
+          "unavailableReason"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "grantId": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modelCallsAvailable": {
+            "type": "boolean",
+            "default": false
+          },
+          "unavailableReason": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PROJECT_DISABLED",
+                  "DEPLOYMENT_DISABLED",
+                  "RUNTIME_NOT_READY",
+                  "RISK_ACK_REQUIRED",
+                  "RISK_ACK_REVOKED",
+                  "RISK_ACK_EXPIRED",
+                  "GRANT_REQUIRED",
+                  "GRANT_REVOKED",
+                  "GRANT_STOPPED",
+                  "GRANT_EXPIRED",
+                  "CREDENTIAL_CHANGED",
+                  "BINDING_CHANGED",
+                  "EVIDENCE_EXPIRED",
+                  "GRANT_EXHAUSTED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "DailySettingsInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "enabled",
+          "grantId"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "0.1.0"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "grantId": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "enabled": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "grantId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "grantId": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "DailyRiskView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "projectId",
+          "ownerId",
+          "acknowledgedAt",
+          "expiresAt",
+          "runtimeBindingDigest",
+          "credentialVersion",
+          "dataPolicyVersion",
+          "revokedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "projectId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "ownerId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "acknowledgedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+          },
+          "runtimeBindingDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "credentialVersion": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "dataPolicyVersion": {
+            "type": "string",
+            "const": "personal-selected-nonsensitive-0.1.0"
+          },
+          "revokedAt": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "DailyStop": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "code",
+          "createdAt"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "MODEL_DISABLED",
+              "MODEL_UNAVAILABLE",
+              "MODEL_TIMEOUT",
+              "AUTHORIZATION_REVOKED",
+              "QUOTA_EXHAUSTED",
+              "OUTPUT_INVALID",
+              "CITATION_INVALID",
+              "INTERNAL_ERROR",
+              "INPUT_TOKEN_LIMIT"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+          }
+        }
+      },
+      "DailyUsage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attempts",
+          "reservedMicrousd",
+          "spentMicrousd",
+          "activeRequestId"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "reservedMicrousd": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "spentMicrousd": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "activeRequestId": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "DailyGrantView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "projectId",
+          "ownerId",
+          "riskAcknowledgementId",
+          "runtimeBindingDigest",
+          "credentialVersion",
+          "allowedPurposes",
+          "maxAttempts",
+          "maxCostMicrousd",
+          "approvedAt",
+          "expiresAt",
+          "state",
+          "revokedAt",
+          "stop",
+          "usage"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "projectId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "ownerId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "riskAcknowledgementId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "runtimeBindingDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "credentialVersion": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "allowedPurposes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "FINDING_EXPLANATION",
+                "PR_SUMMARY"
+              ]
+            }
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "maxCostMicrousd": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 316373,
+            "maximum": 751619276450000
+          },
+          "approvedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "REVOKED",
+              "STOPPED",
+              "EXPIRED",
+              "EXHAUSTED"
+            ]
+          },
+          "revokedAt": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])[Tt]([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?([Zz]|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stop": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DailyStop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage": {
+            "$ref": "#/components/schemas/DailyUsage"
+          }
+        }
+      },
+      "DailyContext": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "runtimeBinding",
+          "runtimeBindingDigest",
+          "unknowns",
+          "limits",
+          "settings",
+          "currentGrant",
+          "runtimeReady",
+          "unavailableReason"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "0.1.0"
+          },
+          "runtimeBinding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DailyBindingSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runtimeBindingDigest": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unknowns": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "PROCESSING_REGION",
+                "STORAGE_REGION",
+                "TRAINING",
+                "HUMAN_REVIEW",
+                "LOG_RETENTION",
+                "CACHE_ISOLATION",
+                "CACHE_RETENTION",
+                "SUBPROCESSORS"
+              ]
+            }
+          },
+          "limits": {
+            "$ref": "#/components/schemas/DailyLimits"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/DailySettings"
+          },
+          "currentGrant": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DailyGrantView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runtimeReady": {
+            "type": "boolean"
+          },
+          "unavailableReason": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PROJECT_DISABLED",
+                  "DEPLOYMENT_DISABLED",
+                  "RUNTIME_NOT_READY",
+                  "RISK_ACK_REQUIRED",
+                  "RISK_ACK_REVOKED",
+                  "RISK_ACK_EXPIRED",
+                  "GRANT_REQUIRED",
+                  "GRANT_REVOKED",
+                  "GRANT_STOPPED",
+                  "GRANT_EXPIRED",
+                  "CREDENTIAL_CHANGED",
+                  "BINDING_CHANGED",
+                  "EVIDENCE_EXPIRED",
+                  "GRANT_EXHAUSTED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "DailyAuthorization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "grantId",
+          "riskAcknowledgementId",
+          "runtimeBindingDigest",
+          "settingsRevision"
+        ],
+        "properties": {
+          "grantId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "riskAcknowledgementId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "runtimeBindingDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "settingsRevision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          }
+        }
+      },
+      "DailyExecution": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attemptId",
+          "accountingDay",
+          "costState",
+          "reservedMicrousd",
+          "actualMicrousd"
+        ],
+        "properties": {
+          "attemptId": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accountingDay": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date",
+                "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "costState": {
+            "type": "string",
+            "enum": [
+              "NOT_ATTEMPTED",
+              "PENDING",
+              "SETTLED",
+              "UNKNOWN"
+            ]
+          },
+          "reservedMicrousd": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actualMicrousd": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "costState": {
+                  "const": "NOT_ATTEMPTED"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "attemptId": {
+                  "type": "null"
+                },
+                "accountingDay": {
+                  "type": "null"
+                },
+                "reservedMicrousd": {
+                  "type": "null"
+                },
+                "actualMicrousd": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "attemptId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                },
+                "accountingDay": {
+                  "type": "string",
+                  "format": "date",
+                  "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])$"
+                },
+                "reservedMicrousd": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "costState": {
+                  "const": "SETTLED"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "actualMicrousd": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "actualMicrousd": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "DailyRequestView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion",
+          "request",
+          "authorization",
+          "execution"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "const": "0.1.0"
+          },
+          "request": {
+            "$ref": "./agent-v1.json#/components/schemas/AgentRequest"
+          },
+          "authorization": {
+            "$ref": "#/components/schemas/DailyAuthorization"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/DailyExecution"
+          }
+        }
+      },
+      "DailyRequestPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/DailyRequestView"
+            }
+          },
+          "nextCursor": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

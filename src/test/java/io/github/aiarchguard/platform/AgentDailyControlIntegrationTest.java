@@ -66,11 +66,24 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
     UUID newProject() {
         UUID p = UUID.randomUUID();
         jdbc.sql("INSERT INTO project.projects(id,project_key,name,created_at,created_by) VALUES (:p,:key,'Synthetic daily RED',:now,:owner)")
-            .param("p", p).param("key", "daily-" + p.toString().substring(0, 12)).param("now", NOW).param("owner", OWNER).update();
+            .param("p", p).param("key", "daily-" + p.toString().substring(0, 12)).param("now", Timestamp.from(NOW)).param("owner", OWNER).update();
         jdbc.sql("INSERT INTO project.project_members(project_id,actor_id,role,created_at) VALUES (:p,:owner,'MAINTAINER',:now)")
-            .param("p", p).param("owner", OWNER).param("now", NOW).update(); return p;
+            .param("p", p).param("owner", OWNER).param("now", Timestamp.from(NOW)).update(); return p;
     }
-    DailyRiskInput riskInput() { return new DailyRiskInput("0.1.0", daily.context(project).runtimeBindingDigest(), NOW.plusSeconds(1800), true, true, true); }
+    // 首次正向读取必须成为业务断言，不能让未实现异常被 JUnit 误报为夹具错误。
+    DailyContext readableContext() {
+        var result = new AtomicReference<DailyContext>();
+        assertThatCode(() -> result.set(daily.context(project))).as("authorized daily context metadata read must succeed").doesNotThrowAnyException();
+        assertThat(result.get()).as("daily context snapshot").isNotNull();
+        return result.get();
+    }
+    DailySettings readableSettings() {
+        var result = new AtomicReference<DailySettings>();
+        assertThatCode(() -> result.set(daily.settings(project))).as("authorized daily settings metadata read must succeed").doesNotThrowAnyException();
+        assertThat(result.get()).as("daily settings snapshot").isNotNull();
+        return result.get();
+    }
+    DailyRiskInput riskInput() { return new DailyRiskInput("0.1.0", readableContext().runtimeBindingDigest(), NOW.plusSeconds(1800), true, true, true); }
     DailyRiskView risk(String key) { return daily.acknowledge(project, key, riskInput()).value(); }
     DailyGrantInput grantInput(DailyRiskView r) {
         return new DailyGrantInput("0.1.0", r.id(), r.runtimeBindingDigest(),
@@ -85,7 +98,7 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         assertThat(MODEL_CALLS.get()).isZero();
     }
     @Test void defaultsAreIndependentAndRiskThenGrantNeverEnableOrSpend() {
-        assertThat(daily.settings(project)).isEqualTo(new DailySettings(false, 0, null, false, DailyUnavailableReason.PROJECT_DISABLED));
+        assertThat(readableSettings()).isEqualTo(new DailySettings(false, 0, null, false, DailyUnavailableReason.PROJECT_DISABLED));
         var context = daily.context(project);
         assertThat(context.currentGrant()).isNull(); assertThat(context.runtimeBindingDigest()).matches("[a-f0-9]{64}");
         assertThat(context.runtimeBinding().mappingSnapshot()).isEqualTo("DeepSeek-V4.1-Flash-1017");
@@ -142,7 +155,7 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         assertThat(count("daily_grants")).isOne();
     }
     @Test void freshRiskRequiresEveryConfirmationExactDigestAndExplicitBoundedExpiry() {
-        String digest = daily.context(project).runtimeBindingDigest();
+        String digest = readableContext().runtimeBindingDigest();
         var bad = new ArrayList<DailyRiskInput>();
         bad.add(new DailyRiskInput("0.2.0", digest, NOW.plusSeconds(600), true, true, true));
         bad.add(new DailyRiskInput("0.1.0", digest, null, true, true, true));
@@ -178,7 +191,7 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         assertThat(daily.getRisk(project, r.id()).id()).isEqualTo(r.id());
         assertThatThrownBy(() -> daily.authorizeControlWrite(project, "http://localhost:8083", false)).isInstanceOf(ProjectPermissionDeniedException.class);
         assertThatThrownBy(() -> daily.revokeGrant(project, g.id())).isInstanceOf(ProjectPermissionDeniedException.class);
-        UUID otherActor = UUID.randomUUID(); jdbc.sql("INSERT INTO project.project_members(project_id,actor_id,role,created_at) VALUES (:p,:o,'MAINTAINER',:n)").param("p", project).param("o", otherActor).param("n", NOW).update();
+        UUID otherActor = UUID.randomUUID(); jdbc.sql("INSERT INTO project.project_members(project_id,actor_id,role,created_at) VALUES (:p,:o,'MAINTAINER',:n)").param("p", project).param("o", otherActor).param("n", Timestamp.from(NOW)).update();
         identity(otherActor);
         for (Runnable read : List.<Runnable>of(() -> daily.settings(project), () -> daily.context(project), () -> daily.getRisk(project, r.id()), () -> daily.getGrant(project, g.id())))
             assertThatThrownBy(read::run).isInstanceOf(ProjectPermissionDeniedException.class);
@@ -268,7 +281,8 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
     }
     // 持有真实设置行锁后观测 PostgreSQL 阻塞，才释放；不能用线程启动顺序或 sleep 证明串行。
     @Test void concurrentSettingsWritesObserveActualRowLockAndExactlyOneRevisionWins() throws Exception {
-        daily.updateSettings(project, 0, new DailySettingsInput("0.1.0", false, null));
+        assertThatCode(() -> daily.updateSettings(project, 0, new DailySettingsInput("0.1.0", false, null)))
+            .as("authorized disabled settings update must succeed before concurrency assertions").doesNotThrowAnyException();
         var executor = Executors.newFixedThreadPool(2); var written = new CountDownLatch(1); var release = new CountDownLatch(1); var blockerPid = new AtomicInteger();
         // 外层测试事务只控制提交时点；两次更新均实际调用应用服务，而非直接伪造 revision。
         var winner = executor.submit(() -> { identity(OWNER); try {
@@ -305,9 +319,9 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
     @Test void legacySyntheticApprovalAndSettingsNeverBecomeDailyAuthorization() {
         UUID legacy = UUID.randomUUID();
         jdbc.sql("INSERT INTO agent.personal_enablements(id,project_id,deployment_id,approved_by,approved_at,expires_at,credential_version,acknowledgement) VALUES (:id,:p,:d,:o,:at,:expiry,:v,'{}')")
-            .param("id", legacy).param("p", project).param("d", DEPLOYMENT).param("o", OWNER).param("at", NOW.minusSeconds(86400)).param("expiry", NOW.plusSeconds(3600)).param("v", VERSION).update();
+            .param("id", legacy).param("p", project).param("d", DEPLOYMENT).param("o", OWNER).param("at", Timestamp.from(NOW.minusSeconds(86400))).param("expiry", Timestamp.from(NOW.plusSeconds(3600))).param("v", VERSION).update();
         jdbc.sql("INSERT INTO agent.project_settings(project_id,enabled,enablement_id) VALUES (:p,true,:id)").param("p", project).param("id", legacy).update();
-        assertThat(daily.settings(project).enabled()).isFalse(); assertThat(daily.context(project).currentGrant()).isNull();
+        assertThat(readableSettings().enabled()).isFalse(); assertThat(daily.context(project).currentGrant()).isNull();
         assertThatThrownBy(() -> daily.updateSettings(project, 0, new DailySettingsInput("0.1.0", true, legacy))).isInstanceOf(AgentNotFoundException.class);
         assertThat(count("daily_risk_acknowledgements")).isZero(); assertThat(count("daily_grants")).isZero(); noSpending();
     }
@@ -343,6 +357,133 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         String key = "!".repeat(128); var risk = daily.acknowledge(project, key, input).value();
         assertThat(daily.approveGrant(project, key, grantInput(risk)).created()).isTrue();
         assertThat(count("daily_risk_acknowledgements")).isOne(); assertThat(count("daily_grants")).isOne(); noSpending();
+    }
+    @Test void everyMutableCurrentBindingFactInvalidatesStoredGrantWithoutChangingHistory() {
+        var g = grant("binding-permutations"); enable(g);
+        LongSupplier remaining = () -> TimeUnit.SECONDS.toNanos(5);
+        var facts = new LinkedHashMap<String, String>();
+        facts.put("archguard.agent.daily.runtime-revision", "b".repeat(64));
+        facts.put("archguard.agent.daily.secret-check-ref", "synthetic-different-secret");
+        facts.put("archguard.agent.daily.network-check-ref", "synthetic-different-network");
+        facts.put("archguard.agent.daily.evidence.sources[0].version", "synthetic-different-review-v2");
+        facts.put("archguard.agent.daily.evidence.sources[0].checked-at", "2026-10-30T00:30:00Z");
+        facts.put("archguard.agent.daily.evidence.price-catalog-expires-at", "2026-10-30T04:00:00Z");
+        for (var fact : facts.entrySet()) {
+            String original = ENV.getProperty(fact.getKey()); ENV.setProperty(fact.getKey(), fact.getValue());
+            try {
+                assertThatThrownBy(() -> work.transaction(remaining, false, () -> daily.requireCurrent(project, g.id(), "FINDING_EXPLANATION", remaining)))
+                    .as(fact.getKey()).isInstanceOf(AgentDailyStateInvalidException.class);
+                assertThat(daily.getGrant(project, g.id())).isEqualTo(g); assertThat(daily.getRisk(project, g.riskAcknowledgementId()).id()).isEqualTo(g.riskAcknowledgementId());
+            } finally { ENV.setProperty(fact.getKey(), original); }
+        }
+        METADATA.set(new CredentialStatus(true, UUID.randomUUID(), NOW));
+        assertThatThrownBy(() -> work.transaction(remaining, false, () -> daily.requireCurrent(project, g.id(), "FINDING_EXPLANATION", remaining))).isInstanceOf(AgentDailyStateInvalidException.class);
+        assertThat(daily.getGrant(project, g.id())).isEqualTo(g); noSpending();
+    }
+    @Test void expiredOrMalformedCurrentEvidenceFailsClosedAndDoesNotHideHistoricalApproval() {
+        var g = grant("evidence-permutations"); enable(g); LongSupplier remaining = () -> TimeUnit.SECONDS.toNanos(5);
+        var facts = Map.of("archguard.agent.daily.evidence.price-catalog-expires-at", NOW.toString(),
+            "archguard.agent.daily.evidence.sources[0].checked-at", NOW.minusSeconds(604801).toString(),
+            "archguard.agent.daily.evidence.sources[1].url", "https://synthetic-invalid.example/",
+            "archguard.agent.daily.evidence.sources[2].version", "", "archguard.agent.daily.runtime-revision", "invalid");
+        for (var fact : facts.entrySet()) {
+            String original = ENV.getProperty(fact.getKey()); ENV.setProperty(fact.getKey(), fact.getValue());
+            try {
+                assertThatThrownBy(() -> work.transaction(remaining, false, () -> daily.requireCurrent(project, g.id(), "PR_SUMMARY", remaining)))
+                    .as(fact.getKey()).isInstanceOf(AgentUnavailableException.class);
+                assertThat(daily.getGrant(project, g.id())).isEqualTo(g);
+                assertThat(daily.getRisk(project, g.riskAcknowledgementId()).runtimeBindingDigest()).isEqualTo(g.runtimeBindingDigest());
+            } finally { ENV.setProperty(fact.getKey(), original); }
+        }
+        noSpending();
+    }
+    @Test void syntheticHistoricalModelPromptPriceAndProtocolBindingsNeverAuthorizeCurrentSends() throws Exception {
+        var current = readableContext().runtimeBinding(); LongSupplier remaining = () -> TimeUnit.SECONDS.toNanos(5);
+        for (String field : List.of("deploymentId", "runtimeRevision", "credentialVersion", "modelAlias", "mappingSnapshot",
+                "allowedResponseModels", "modelProtocolVersion", "explanationPromptVersion", "summaryPromptVersion", "outputSchemaVersion",
+                "priceCatalogVersion", "secretCheckRef", "networkCheckRef")) {
+            var changed = mapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(current);
+            switch (field) {
+                case "deploymentId", "credentialVersion" -> changed.put(field, UUID.randomUUID().toString());
+                case "runtimeRevision" -> changed.put(field, "b".repeat(64));
+                case "allowedResponseModels" -> changed.putArray(field).add("synthetic-historical-model");
+                default -> changed.put(field, "synthetic-historical-" + field);
+            }
+            var historical = mapper.treeToValue(changed, DailyBindingSnapshot.class);
+            UUID historicalGrant = insertSyntheticSelectedHistory(historical, "history-" + field);
+            assertThatThrownBy(() -> work.transaction(remaining, false, () -> daily.requireCurrent(project, historicalGrant, "FINDING_EXPLANATION", remaining)))
+                .as(field).isInstanceOf(AgentDailyStateInvalidException.class);
+            var read = daily.getGrant(project, historicalGrant);
+            assertThat(read.id()).isEqualTo(historicalGrant); assertThat(read.runtimeBindingDigest()).isEqualTo(bindingDigest(historical));
+            assertThat(read.approvedAt()).isEqualTo(NOW); assertThat(read.usage()).isEqualTo(new DailyUsage(0, 0, 0, null));
+        }
+        noSpending();
+    }
+    UUID insertSyntheticSelectedHistory(DailyBindingSnapshot binding, String key) throws Exception {
+        UUID r = UUID.randomUUID(), g = UUID.randomUUID(); String digest = bindingDigest(binding);
+        var envelope = mapper.createObjectNode().put("schemaVersion", "0.1.0").put("runtimeBindingDigest", digest)
+            .put("expiresAt", NOW.plusSeconds(1800).toString()).put("sourcesReviewed", true).put("riskAccepted", true).put("materialRightsAccepted", true);
+        envelope.set("runtimeBinding", mapper.valueToTree(binding));
+        // 明确合成的旧历史只作为失配测试前提；不通过服务批准，更不产生请求/预留。
+        jdbc.sql("INSERT INTO agent.daily_risk_acknowledgements(id,project_id,deployment_id,owner_id,idempotency_key,input_digest,runtime_binding_digest,credential_version,data_policy_version,acknowledged_at,expires_at,acknowledgement) VALUES (:r,:p,:d,:o,:key,:input,:digest,:v,:policy,:at,:expiry,CAST(:body AS jsonb))")
+            .param("r", r).param("p", project).param("d", binding.deploymentId()).param("o", binding.ownerId()).param("key", key).param("input", "c".repeat(64)).param("digest", digest)
+            .param("v", binding.credentialVersion()).param("policy", binding.dataPolicyVersion()).param("at", Timestamp.from(NOW)).param("expiry", Timestamp.from(NOW.plusSeconds(1800))).param("body", mapper.writeValueAsString(envelope)).update();
+        jdbc.sql("INSERT INTO agent.daily_grants(id,project_id,deployment_id,owner_id,risk_acknowledgement_id,idempotency_key,input_digest,runtime_binding_digest,credential_version,allowed_purposes,max_attempts,max_cost_microusd,approved_at,expires_at) VALUES (:g,:p,:d,:o,:r,:key,:input,:digest,:v,ARRAY['FINDING_EXPLANATION','PR_SUMMARY'],3,1000000,:at,:expiry)")
+            .param("g", g).param("p", project).param("d", binding.deploymentId()).param("o", binding.ownerId()).param("r", r).param("key", key).param("input", "d".repeat(64)).param("digest", digest).param("v", binding.credentialVersion())
+            .param("at", Timestamp.from(NOW)).param("expiry", Timestamp.from(NOW.plusSeconds(1200))).update();
+        jdbc.sql("INSERT INTO agent.daily_grant_usage(grant_id,project_id) VALUES (:g,:p)").param("g", g).param("p", project).update();
+        jdbc.sql("INSERT INTO agent.daily_project_settings(project_id,enabled,grant_id) VALUES (:p,true,:g) ON CONFLICT(project_id) DO UPDATE SET enabled=true,grant_id=EXCLUDED.grant_id,revision=agent.daily_project_settings.revision+1")
+            .param("p", project).param("g", g).update();
+        return g;
+    }
+    @Test void concurrentDifferentOriginalInputsOnSameKeyYieldOneWinnerAndOneConflict() throws Exception {
+        var original = riskInput(); var other = new DailyRiskInput("0.1.0", original.runtimeBindingDigest(), original.expiresAt().minusSeconds(1), true, true, true);
+        var chosen = new AtomicInteger();
+        List<Object> risks = race(() -> { try { return daily.acknowledge(project, "mixed-risk", chosen.getAndIncrement() == 0 ? original : other); } catch (AgentConflictException conflict) { return conflict; } });
+        assertThat(risks.stream().filter(Creation.class::isInstance).count()).isOne(); assertThat(risks.stream().filter(AgentConflictException.class::isInstance).count()).isOne();
+        var risk = (DailyRiskView) ((Creation<?>) risks.stream().filter(Creation.class::isInstance).findFirst().orElseThrow()).value();
+        var first = grantInput(risk); var second = new DailyGrantInput("0.1.0", risk.id(), first.runtimeBindingDigest(), first.allowedPurposes(), 4, first.maxCostMicrousd(), first.expiresAt(), true); chosen.set(0);
+        List<Object> grants = race(() -> { try { return daily.approveGrant(project, "mixed-grant", chosen.getAndIncrement() == 0 ? first : second); } catch (AgentConflictException conflict) { return conflict; } });
+        assertThat(grants.stream().filter(Creation.class::isInstance).count()).isOne(); assertThat(grants.stream().filter(AgentConflictException.class::isInstance).count()).isOne();
+        assertThat(count("daily_risk_acknowledgements")).isOne(); assertThat(count("daily_grants")).isOne(); assertThat(count("daily_grant_usage")).isOne();
+        assertThat(auditCount()).isEqualTo(2); noSpending();
+    }
+    @Test void riskRevocationSerializesAgainstGrantApprovalOnObservedSettingsLock() throws Exception {
+        var r = risk("revoke-approval"); var input = grantInput(r);
+        var failure = competeWithHeldRevocation(() -> daily.revokeRisk(project, r.id()), () -> daily.approveGrant(project, "after-revoke", input));
+        assertThat(failure).isInstanceOf(AgentDailyStateInvalidException.class);
+        assertThat(daily.getRisk(project, r.id()).revokedAt()).isEqualTo(NOW);
+        assertThat(count("daily_grants")).isZero(); assertThat(count("daily_grant_usage")).isZero(); noSpending();
+    }
+    @Test void grantRevocationSerializesAgainstEnablementOnObservedSettingsLock() throws Exception {
+        var g = grant("revoke-enable");
+        var failure = competeWithHeldRevocation(() -> daily.revokeGrant(project, g.id()), () -> enable(g));
+        assertThat(failure).isInstanceOf(AgentDailyStateInvalidException.class);
+        assertThat(daily.settings(project).enabled()).isFalse(); assertThat(daily.settings(project).revision()).isZero();
+        assertThat(daily.getGrant(project, g.id()).state()).isEqualTo(DailyGrantState.REVOKED); noSpending();
+    }
+    Throwable competeWithHeldRevocation(Runnable revoke, Callable<?> competing) throws Exception {
+        var executor = Executors.newFixedThreadPool(2); var held = new CountDownLatch(1); var release = new CountDownLatch(1); var pid = new AtomicInteger();
+        var revocation = executor.submit(() -> { identity(OWNER); try {
+            return new org.springframework.transaction.support.TransactionTemplate(transactions).execute(status -> {
+                pid.set(jdbc.sql("SELECT pg_backend_pid()").query(Integer.class).single()); revoke.run(); held.countDown();
+                try { assertThat(release.await(10, TimeUnit.SECONDS)).isTrue(); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new AssertionError(interrupted); }
+                return true;
+            });
+        } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); } });
+        Future<Throwable> pending = null;
+        try {
+            assertThat(held.await(5, TimeUnit.SECONDS)).isTrue();
+            pending = executor.submit(() -> { identity(OWNER); try { return catchThrowable(competing::call); } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); } });
+            boolean waiting = false; long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < until) {
+                if (jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE :pid=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock'").param("pid", pid.get()).query(Long.class).single() > 0) { waiting = true; break; }
+                Thread.onSpinWait();
+            }
+            assertThat(waiting).as("control must wait for the uncommitted revocation's settings lock").isTrue(); assertThat(pending.isDone()).isFalse();
+            release.countDown(); assertThat(revocation.get(10, TimeUnit.SECONDS)).isTrue(); return pending.get(10, TimeUnit.SECONDS);
+        } finally { release.countDown(); revocation.cancel(true); if (pending != null) pending.cancel(true); executor.shutdownNow(); assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue(); }
     }
     <T> List<T> race(Callable<T> action) throws Exception {
         var executor = Executors.newFixedThreadPool(2); var barrier = new CyclicBarrier(2);

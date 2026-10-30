@@ -28,6 +28,10 @@ public class DailyControlTestConfiguration {
     public static final AtomicBoolean FAIL_AUDIT = new AtomicBoolean();
     public static final AtomicInteger MODEL_CALLS = new AtomicInteger();
     public static final MockEnvironment ENV = environment();
+    /** 仅测试桥接已有唯一摘要实现，不公开策略类，也不另造历史绑定散列算法。 */
+    public static String bindingDigest(io.github.aiarchguard.platform.agent.DailyAgentOperations.DailyBindingSnapshot binding) {
+        return DailyRuntimePolicy.digest(binding);
+    }
     /** 原地恢复全部合成配置，保留已构造策略持有的 Environment 引用，避免用例间遗留变更。 */
     public static void resetFixture() {
         TIME.set(NOW); METADATA.set(new CredentialStatus(true, VERSION, NOW.minusSeconds(500)));

@@ -9,6 +9,7 @@ import java.util.*;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationVersion;
 import org.flywaydb.core.api.configuration.FluentConfiguration;
+import org.flywaydb.core.api.output.MigrateResult;
 import org.junit.jupiter.api.Test;
 
 /** 随机隔离数据库；迁移前后显式断言目标版本，再验证 V17 的不可变历史和跨行约束。 */
@@ -23,7 +24,7 @@ class PersonalDailyAuthorizationMigrationIntegrationTest extends PostgresIntegra
 
     @Test void emptyDatabaseMigratesExactlyThrough17AndRepeatIsZeroWithoutV18() throws Exception {
         String url = database16(); var migration = agent(url).target("17").load();
-        assertThat(migration.migrate().migrationsExecuted).as("one real V17 migration must be present").isOne();
+        assertThat(migrate17(migration).migrationsExecuted).as("one real V17 migration must be present").isOne();
         assertThat(migration.info().current().getVersion()).isEqualTo(MigrationVersion.fromVersion("17"));
         assertThat(migration.migrate().migrationsExecuted).isZero(); migration.validate();
         try (var c = connect(url)) {
@@ -35,14 +36,14 @@ class PersonalDailyAuthorizationMigrationIntegrationTest extends PostgresIntegra
     }
     @Test void emptyTo17CanApplyAllNineMigrationsAndValidate() throws Exception {
         String url = emptyDatabase(); main(url).migrate(); var migration = agent(url).target("17").load();
-        assertThat(migration.migrate().migrationsExecuted).isEqualTo(9);
+        assertThat(migrate17(migration).migrationsExecuted).isEqualTo(9);
         assertThat(migration.info().current().getVersion()).isEqualTo(MigrationVersion.fromVersion("17"));
         assertThat(migration.migrate().migrationsExecuted).isZero(); migration.validate();
     }
     @Test void upgradePreservesAllPublishedChecksumsAndLegacyFactsIncludingV16Slots() throws Exception {
         String url = database16(); Map<String, String> before; List<String> checksums;
         try (var c = connect(url)) { legacy(c); before = legacyHistory(c); checksums = checksums(c); }
-        assertThat(agent(url).target("17").load().migrate().migrationsExecuted).isOne();
+        assertThat(migrate17(agent(url).target("17").load()).migrationsExecuted).isOne();
         try (var c = connect(url)) {
             assertThat(checksums(c)).isEqualTo(checksums); assertThat(legacyHistory(c)).isEqualTo(before);
             assertThat(number(c, "SELECT count(*) FROM agent.live_template_request_slots")).isOne();
@@ -202,12 +203,18 @@ class PersonalDailyAuthorizationMigrationIntegrationTest extends PostgresIntegra
         assertThatThrownBy(() -> execute(c, sql)).isInstanceOf(SQLException.class)
             .satisfies(f -> assertThat(((SQLException) f).getSQLState()).isEqualTo(state));
     }
-    void legacy(Connection c) throws SQLException {
+    void legacy(Connection c) throws Exception {
         UUID p = project(c), ack = UUID.randomUUID(), batch = UUID.randomUUID(), request = UUID.randomUUID(), template = UUID.randomUUID();
+        // 与既有 V16 测试一致，template 也必须是同 Project 中已持久化的真实合成 request 行。
+        for (UUID id : List.of(template, request)) {
+            execute(c, "INSERT INTO agent.requests(id,project_id,requester_id,idempotency_key,input_digest,trace_id,purpose,state,bindings,created_at,updated_at) VALUES ('" + id + "','" + p + "','" + OWNER + "','" + id + "','" + HASH + "','" + "c".repeat(32) + "','FINDING_EXPLANATION','RUNNING','{}','" + AT + "','" + AT + "')");
+        }
         execute(c, "INSERT INTO agent.personal_enablements(id,project_id,deployment_id,approved_by,approved_at,expires_at,credential_version,acknowledgement) VALUES ('" + ack + "','" + p + "','" + DEPLOYMENT + "','" + OWNER + "','" + AT + "','" + EXPIRY + "','" + CREDENTIAL + "','{}')");
-        execute(c, "INSERT INTO agent.live_batches(id,project_id,enablement_id,deployment_id,inventory_id,approved_by,approved_at,expires_at,manifest_sha256,manifest,max_requests,max_cost_microusd,cost_policy_version) VALUES ('" + batch + "','" + p + "','" + ack + "','" + DEPLOYMENT + "','" + p + "','" + OWNER + "','" + AT + "','" + EXPIRY + "','" + HASH + "','{}',2,700000,'deepseek-flash-context-peak-usd-2026-10-15')");
-        execute(c, "INSERT INTO agent.requests(id,project_id,requester_id,idempotency_key,input_digest,trace_id,purpose,state,bindings,created_at,updated_at) VALUES ('" + request + "','" + p + "','" + OWNER + "','legacy','" + HASH + "','" + "c".repeat(32) + "','FINDING_EXPLANATION','RUNNING','{}','" + AT + "','" + AT + "')");
+        String manifest = "{\"schemaVersion\":\"0.1.0\",\"projectId\":\"" + p + "\",\"templates\":[{\"templateRequestId\":\"" + template + "\",\"selection\":null,\"payloadSha256\":\"" + HASH + "\",\"candidatesSha256\":\"" + OTHER + "\"}]}";
+        String manifestHash = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(manifest.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        execute(c, "INSERT INTO agent.live_batches(id,project_id,enablement_id,deployment_id,inventory_id,approved_by,approved_at,expires_at,manifest_sha256,manifest,max_requests,max_cost_microusd,cost_policy_version) VALUES ('" + batch + "','" + p + "','" + ack + "','" + DEPLOYMENT + "','" + p + "','" + OWNER + "','" + AT + "','" + EXPIRY + "','" + manifestHash + "','" + manifest + "',2,700000,'deepseek-flash-context-peak-usd-2026-10-15')");
         execute(c, "INSERT INTO agent.live_request_links(request_id,project_id,batch_id,template_id,enablement_id,credential_version,settings_revision,created_at) VALUES ('" + request + "','" + p + "','" + batch + "','" + template + "','" + ack + "','" + CREDENTIAL + "',0,'" + AT + "')");
+        assertThat(number(c, "SELECT count(*) FROM agent.live_template_request_slots WHERE project_id='" + p + "' AND batch_id='" + batch + "' AND template_id='" + template + "' AND request_id='" + request + "'")).isOne();
     }
     Map<String, String> legacyHistory(Connection c) throws SQLException {
         var values = new LinkedHashMap<String, String>();
@@ -225,7 +232,12 @@ class PersonalDailyAuthorizationMigrationIntegrationTest extends PostgresIntegra
     String database16() throws SQLException { String url = emptyDatabase(); main(url).migrate(); agent(url).target("16").load().migrate(); return url; }
     String database17() throws SQLException {
         String url = database16(); var migration = agent(url).target("17").load();
-        assertThat(migration.migrate().migrationsExecuted).as("V17 must exist before constraint assertions").isOne(); return url;
+        assertThat(migrate17(migration).migrationsExecuted).as("V17 must exist before constraint assertions").isOne(); return url;
+    }
+    MigrateResult migrate17(Flyway migration) {
+        var result = new java.util.concurrent.atomic.AtomicReference<MigrateResult>();
+        assertThatCode(() -> result.set(migration.migrate())).as("real target17 migration must succeed before count/version/constraint assertions").doesNotThrowAnyException();
+        return result.get();
     }
     String emptyDatabase() throws SQLException {
         String name = "archguard_daily_" + UUID.randomUUID().toString().replace("-", "");

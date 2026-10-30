@@ -60,6 +60,12 @@ class AgentPrSummaryIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(result.toString()).doesNotContain(fixture.unselected().toString());
         JsonNode replay = create(fixture, "summary-one", fixture.selected(), fixture.revision());
         assertThat(replay.path("id").asText()).isEqualTo(created.path("id").asText());
+        // 提取快照后仍保留旧合成模型绑定和重放摘要。
+        assertThat(replay.at("/bindings/inputDigest")).isEqualTo(result.at("/bindings/inputDigest"));
+        assertThat(result.at("/bindings/promptVersion").asText()).isEqualTo("pr-summary-0.1.0");
+        assertThat(result.at("/bindings/modelProfileVersion").asText()).isEqualTo("disabled-or-test-fake-0.1.0");
+        assertThat(result.at("/bindings/modelId").asText()).isEqualTo("deterministic-fake-or-disabled");
+        assertThat(result.at("/bindings/priceCatalogVersion").asText()).isEqualTo("synthetic-0.1.0");
         assertThat(model.calls.get()).isOne();
         assertThat(jdbc.sql("SELECT version FROM finding.findings WHERE id=:id")
             .param("id", fixture.selected().getFirst()).query(Long.class).single()).isZero();

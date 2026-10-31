@@ -736,6 +736,24 @@ class AgentDailyRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrat
         else assertThatThrownBy(() -> service.create(f.project(), "after-stop", f.input())).isInstanceOf(AgentDailyStateInvalidException.class);
         unchanged(f, before);
     }
+    @Test void latestControlFixtureKeepsCoherentActiveRequestAndUsesExactSideEffectDeltas() {
+        var f = selected(false, false); var created = create(f, "control-active-handoff");
+        var stored = requests.find(f.project(), created.value().request().id()).orElseThrow();
+        var link = daily.findRequest(f.project(), stored.view().id()).orElseThrow();
+        var before = effects(f);
+        assertThat(before.usage().activeRequestId()).isEqualTo(link.requestId());
+        assertThat(link.grantId()).isEqualTo(f.grant().id());
+        controls.revokeGrant(f.project(), f.grant().id());
+        var after = effects(f);
+        assertThat(after.requests()).isEqualTo(before.requests()); assertThat(after.links()).isEqualTo(before.links());
+        assertThat(after.usage()).isEqualTo(before.usage()); assertThat(after.callbacks()).isEqualTo(before.callbacks());
+        assertThat(after.audits()).isEqualTo(before.audits() + 1);
+        assertThat(requests.find(f.project(), stored.view().id())).contains(stored);
+        assertThat(daily.findRequest(f.project(), stored.view().id())).contains(link);
+        assertThat(controls.getGrant(f.project(), f.grant().id()).state()).isEqualTo(DailyGrantState.REVOKED);
+        assertThat(count("daily_attempts", f.project())).isZero(); assertNoActivity(f.project());
+    }
+
     private UUID completedPrRevision(AgentExplanationIntegrationTest.Fixture base) {
         UUID revision = UUID.randomUUID(), gate = UUID.randomUUID();
         UUID repository = jdbc.sql("SELECT repository_id FROM scanjob.scan_jobs WHERE id=:job").param("job", base.job()).query(UUID.class).single();

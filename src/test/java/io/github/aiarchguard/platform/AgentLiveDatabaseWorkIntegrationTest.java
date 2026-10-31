@@ -89,6 +89,18 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(count()).isZero(); assertThat(setting("statement_timeout")).isEqualTo("0");
     }
 
+    // 日常状态拒绝必须保留固定分类；数据库端口不能将其伪装为未知存储故障。
+    @Test void dailyStateFailureRollsBackAndPreservesOnlyFixedSafeCategory() {
+        var failure = new io.github.aiarchguard.platform.agent.AgentDailyStateInvalidException();
+        failure.initCause(new IllegalStateException(PRIVATE)); failure.addSuppressed(new IllegalStateException(PRIVATE));
+        assertThatThrownBy(() -> work.transaction(() -> FIVE_SECONDS, false, () -> {
+            jdbc.sql("INSERT INTO " + table + " VALUES (1,10)").update(); throw failure;
+        })).isInstanceOf(io.github.aiarchguard.platform.agent.AgentDailyStateInvalidException.class)
+            .hasMessage("Agent daily state is not valid for this operation").hasNoCause()
+            .satisfies(safe -> assertThat(safe.getSuppressed()).isEmpty());
+        assertThat(count()).isZero(); assertThat(setting("statement_timeout")).isEqualTo("0");
+    }
+
     // 动作执行过后预算失效也须回滚，不能按动作起始时间放行提交。
     @Test void expiryAfterActionRollsBackAndDoesNotReuseAnExpiredBudget() {
         var remaining = new AtomicLong(FIVE_SECONDS);

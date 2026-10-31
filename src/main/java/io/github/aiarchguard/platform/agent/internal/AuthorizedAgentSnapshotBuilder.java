@@ -116,6 +116,11 @@ final class AuthorizedAgentSnapshotBuilder {
         try { return sha256(mapper.writer().without(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS).writeValueAsString(value)); }
         catch (JsonProcessingException exception) { throw new IllegalStateException("Agent digest encoding failed", exception); }
     }
+    /** RED 接缝：历史重放摘要只能读取已保存版本；实现留待完整 RED 通过后。 */
+    String dailyReplayDigest(UUID projectId, UUID ownerId, UUID grantId, String runtimeBindingDigest,
+            CreateAgentRequest incoming, AgentRequestView.VersionBindings stored) {
+        throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
+    }
     AgentSnapshot build(AuthorizedSelection selection, SnapshotIdentity identity, SnapshotProfile profile, String inputDigest) {
         UUID projectId = selection.projectId();
         CreateAgentRequest request = selection.request();

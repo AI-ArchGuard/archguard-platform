@@ -33,6 +33,7 @@ class AgentRecoveryTest {
     private final AgentRecovery recovery = new AgentRecovery(store,
         new AgentTransitions(store, null, event -> { throw new AssertionError("Unexpected audit write"); }, clock,
             new AgentRequestRouting(new LiveRequestStore() {
+                public boolean hasDailyAssociation(java.util.UUID project, java.util.UUID request) { return false; }
                 public void insert(Link link) { throw new AssertionError("Recovery cannot write links"); }
                 public java.util.Optional<Link> find(java.util.UUID project, java.util.UUID request) {
                     throw new AssertionError("Recovery does not filter routing");

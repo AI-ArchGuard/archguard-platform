@@ -485,6 +485,101 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
             release.countDown(); assertThat(revocation.get(10, TimeUnit.SECONDS)).isTrue(); return pending.get(10, TimeUnit.SECONDS);
         } finally { release.countDown(); revocation.cancel(true); if (pending != null) pending.cancel(true); executor.shutdownNow(); assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue(); }
     }
+    @Test void riskSameInputReplaySurvivesViewerDowngradeDuringObservedSettingsWait() throws Exception { roleChangeReplay(false, false, true); }
+    @Test void riskChangedInputConflictsAfterViewerDowngradeDuringObservedSettingsWait() throws Exception { roleChangeReplay(false, true, true); }
+    @Test void grantSameInputReplaySurvivesViewerDowngradeDuringObservedSettingsWait() throws Exception { roleChangeReplay(true, false, true); }
+    @Test void grantChangedInputConflictsAfterViewerDowngradeDuringObservedSettingsWait() throws Exception { roleChangeReplay(true, true, true); }
+    @Test void riskSameInputReplaySeesWinnerCommittedAfterInitialMissBeforeLock() throws Exception { roleChangeReplay(false, false, false); }
+    @Test void riskChangedInputConflictsWithWinnerCommittedAfterInitialMissBeforeLock() throws Exception { roleChangeReplay(false, true, false); }
+    @Test void grantSameInputReplaySeesWinnerCommittedAfterInitialMissBeforeLock() throws Exception { roleChangeReplay(true, false, false); }
+    @Test void grantChangedInputConflictsWithWinnerCommittedAfterInitialMissBeforeLock() throws Exception { roleChangeReplay(true, true, false); }
+
+    // 两种确定性交错分别覆盖锁后和锁前的角色门禁；所有查询/写入/提交仍使用真实 JDBC 与应用服务。
+    void roleChangeReplay(boolean grantCase, boolean changedInput, boolean observeDatabaseWait) throws Exception {
+        var riskInput = riskInput();
+        var prerequisite = grantCase ? daily.acknowledge(project, "role-prerequisite", riskInput).value() : null;
+        var grantInput = grantCase ? grantInput(prerequisite) : null;
+        var changedRisk = new DailyRiskInput("0.1.0", riskInput.runtimeBindingDigest(), riskInput.expiresAt().minusSeconds(1), true, true, true);
+        var changedGrant = grantCase ? new DailyGrantInput("0.1.0", prerequisite.id(), grantInput.runtimeBindingDigest(), grantInput.allowedPurposes(),
+            grantInput.maxAttempts() + 1, grantInput.maxCostMicrousd(), grantInput.expiresAt(), true) : null;
+        // 预先提交设置行，避免以惰性插入的唯一键等待代替被测设置行锁。
+        daily.updateSettings(project, 0, new DailySettingsInput("0.1.0", false, null));
+        long baselineAudit = auditCount(), baselineRisks = count("daily_risk_acknowledgements");
+        String key = "role-replay";
+        Callable<Creation<?>> create = () -> grantCase ? daily.approveGrant(project, key, grantInput) : daily.acknowledge(project, key, riskInput);
+        Callable<Creation<?>> replay = () -> grantCase ? daily.approveGrant(project, key, changedInput ? changedGrant : grantInput)
+            : daily.acknowledge(project, key, changedInput ? changedRisk : riskInput);
+        var executor = Executors.newFixedThreadPool(2);
+        var written = new CountDownLatch(1); var releaseCommit = new CountDownLatch(1);
+        var missed = new CountDownLatch(1); var returnMiss = new CountDownLatch(1); var holderPid = new AtomicInteger();
+        var winner = executor.submit(() -> { identity(OWNER); try {
+            return new org.springframework.transaction.support.TransactionTemplate(transactions).execute(status -> {
+                holderPid.set(jdbc.sql("SELECT pg_backend_pid()").query(Integer.class).single());
+                Creation<?> value;
+                try { value = create.call(); } catch (Exception failure) { throw new IllegalStateException(failure); }
+                written.countDown(); awaitReplayLatch(releaseCommit); return value;
+            });
+        } finally { AFTER_KEY_MISS.remove(); org.springframework.security.core.context.SecurityContextHolder.clearContext(); org.slf4j.MDC.clear(); } });
+        Future<ReplayAttempt> pending = null;
+        try {
+            assertThat(written.await(5, TimeUnit.SECONDS)).as("winner created but still uncommitted").isTrue();
+            String table = grantCase ? "daily_grants" : "daily_risk_acknowledgements";
+            assertThat(jdbc.sql("SELECT count(*) FROM agent." + table + " WHERE project_id=:p AND owner_id=:o AND idempotency_key=:key")
+                .param("p", project).param("o", OWNER).param("key", key).query(Long.class).single()).as("winner invisible to another connection before commit").isZero();
+            pending = executor.submit(() -> { identity(OWNER); AFTER_KEY_MISS.set(() -> {
+                missed.countDown(); if (!observeDatabaseWait) awaitReplayLatch(returnMiss);
+            }); try {
+                try { return new ReplayAttempt(replay.call(), null); }
+                catch (RuntimeException failure) { return new ReplayAttempt(null, failure); }
+            } finally { AFTER_KEY_MISS.remove(); org.springframework.security.core.context.SecurityContextHolder.clearContext(); org.slf4j.MDC.clear(); } });
+            assertThat(missed.await(5, TimeUnit.SECONDS)).as("loser actually queried the real owner/key and saw no committed row").isTrue();
+            if (observeDatabaseWait) {
+                long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5); boolean waiting = false;
+                while (System.nanoTime() < until) {
+                    if (jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE :pid=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock'")
+                        .param("pid", holderPid.get()).query(Long.class).single() > 0) { waiting = true; break; }
+                    Thread.onSpinWait();
+                }
+                assertThat(waiting).as("loser observed waiting on winner's actual settings lock").isTrue();
+            }
+            assertThat(pending.isDone()).isFalse();
+            assertThat(jdbc.sql("UPDATE project.project_members SET role='VIEWER' WHERE project_id=:p AND actor_id=:o")
+                .param("p", project).param("o", OWNER).update()).as("downgrade current owner while loser is paused").isOne();
+            releaseCommit.countDown(); var committed = winner.get(10, TimeUnit.SECONDS); assertThat(committed.created()).isTrue();
+            returnMiss.countDown(); var attempt = pending.get(10, TimeUnit.SECONDS);
+            // 即使被测重放当前错误地拒绝，先证明没有重复批准/审计/用量，且 Viewer 绝不能创建真正新键或写控制。
+            assertThat(auditCount()).isEqualTo(baselineAudit + 1);
+            assertThat(count("daily_risk_acknowledgements")).isEqualTo(baselineRisks + (grantCase ? 0 : 1));
+            assertThat(count("daily_grants")).isEqualTo(grantCase ? 1 : 0);
+            assertThat(count("daily_grant_usage")).isEqualTo(grantCase ? 1 : 0);
+            assertThat(daily.settings(project).revision()).isOne(); assertThat(daily.settings(project).enabled()).isFalse();
+            DailyRiskView historicalRisk = grantCase ? prerequisite : (DailyRiskView) committed.value();
+            var freshGrant = grantCase ? grantInput : grantInput(historicalRisk);
+            assertThatThrownBy(() -> daily.acknowledge(project, "genuinely-new-risk", riskInput)).isInstanceOf(ProjectPermissionDeniedException.class);
+            assertThatThrownBy(() -> daily.approveGrant(project, "genuinely-new-grant", freshGrant)).isInstanceOf(ProjectPermissionDeniedException.class);
+            assertThatThrownBy(() -> daily.authorizeControlWrite(project, "http://localhost:8083", false)).isInstanceOf(ProjectPermissionDeniedException.class);
+            assertThat(daily.getRisk(project, historicalRisk.id())).isEqualTo(historicalRisk);
+            if (grantCase) assertThat(daily.getGrant(project, ((DailyGrantView) committed.value()).id())).isEqualTo(committed.value());
+            assertThat(auditCount()).isEqualTo(baselineAudit + 1); noSpending();
+            if (changedInput) {
+                assertThat(attempt.failure()).as("Viewer-authorized historical input comparison must report conflict").isInstanceOf(AgentConflictException.class);
+                assertThat(attempt.creation()).isNull();
+            } else {
+                assertThat(attempt.failure()).as("Viewer-authorized historical replay must succeed after role downgrade").isNull();
+                assertThat(attempt.creation().created()).isFalse();
+                assertThat(attempt.creation().value()).as("same immutable ID/times and zero unchanged usage").isEqualTo(committed.value());
+            }
+        } finally {
+            releaseCommit.countDown(); returnMiss.countDown(); winner.cancel(true); if (pending != null) pending.cancel(true);
+            executor.shutdownNow(); assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+    void awaitReplayLatch(CountDownLatch latch) {
+        try { assertThat(latch.await(15, TimeUnit.SECONDS)).as("bounded replay fixture rendezvous").isTrue(); }
+        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new AssertionError(interrupted); }
+    }
+    record ReplayAttempt(Creation<?> creation, RuntimeException failure) {}
+
     <T> List<T> race(Callable<T> action) throws Exception {
         var executor = Executors.newFixedThreadPool(2); var barrier = new CyclicBarrier(2);
         Callable<T> task = () -> { identity(OWNER); try { barrier.await(5, TimeUnit.SECONDS); return action.call(); } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); } };

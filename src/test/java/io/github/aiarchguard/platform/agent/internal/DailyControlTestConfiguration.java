@@ -34,6 +34,8 @@ public class DailyControlTestConfiguration {
     public static final AtomicBoolean BOUNDED_ONLY = new AtomicBoolean();
     public static final AtomicBoolean FAIL_AUDIT = new AtomicBoolean();
     public static final AtomicInteger MODEL_CALLS = new AtomicInteger();
+    /** 仅测试在真实 JDBC 幂等查询返回空后暂停当前线程，不替换查询结果或事务。 */
+    public static final ThreadLocal<Runnable> AFTER_KEY_MISS = new ThreadLocal<>();
     public static final MockEnvironment ENV = environment();
     /** 仅测试桥接已有唯一摘要实现，不公开策略类，也不另造历史绑定散列算法。 */
     public static String bindingDigest(io.github.aiarchguard.platform.agent.DailyAgentOperations.DailyBindingSnapshot binding) {
@@ -43,6 +45,7 @@ public class DailyControlTestConfiguration {
     public static void resetFixture() {
         TIME.set(NOW); METADATA.set(new CredentialStatus(true, VERSION, NOW.minusSeconds(500)));
         FAIL_AUDIT.set(false); BOUNDED_ONLY.set(false); ORIGINAL_BUDGET.set(null); MODEL_CALLS.set(0);
+        AFTER_KEY_MISS.remove();
         var baseline = environment();
         var current = (MapPropertySource) ENV.getPropertySources().get("mockProperties");
         var original = (MapPropertySource) baseline.getPropertySources().get("mockProperties");
@@ -78,8 +81,20 @@ public class DailyControlTestConfiguration {
             AgentSchemaAvailability schema, AuditRecorder audit, TraceIdProvider traces, ObjectMapper mapper,
             @Value("${archguard.agent.live-accounting.project-day-limit-microusd:5000000}") long projectLimit,
             @Value("${archguard.agent.live-accounting.deployment-day-limit-microusd:20000000}") long deploymentLimit) {
+        var delegate = new JdbcDailyAgentStore(jdbc, mapper);
+        var store = (DailyAgentStore) java.lang.reflect.Proxy.newProxyInstance(DailyAgentStore.class.getClassLoader(), new Class<?>[]{DailyAgentStore.class}, (proxy, method, args) -> {
+            Object result;
+            try { result = method.invoke(delegate, args); }
+            catch (java.lang.reflect.InvocationTargetException failure) { throw failure.getCause(); }
+            if ((method.getName().equals("findRiskByKey") || method.getName().equals("findGrantByKey"))
+                    && result instanceof java.util.Optional<?> found && found.isEmpty()) {
+                Runnable afterMiss = AFTER_KEY_MISS.get();
+                if (afterMiss != null) { AFTER_KEY_MISS.remove(); afterMiss.run(); }
+            }
+            return result;
+        });
         return new DailyAgentControlService(projects, actors, credentials, new DailyRuntimePolicy(ENV, source, versions, clock),
-            new JdbcDailyAgentStore(jdbc, mapper), schema, audit, traces, clock, mapper, ENV, projectLimit, deploymentLimit);
+            store, schema, audit, traces, clock, mapper, ENV, projectLimit, deploymentLimit);
     }
     @Bean @Primary Clock dailyClock() {
         return new Clock() {

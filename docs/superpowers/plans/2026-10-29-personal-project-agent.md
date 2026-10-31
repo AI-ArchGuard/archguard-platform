@@ -95,11 +95,13 @@ record Creation<T>(T value, boolean created) {} // 只供controller选择201/200
 
 **Interfaces:** `DailyAgentControlService`提供任务1中context/settings及风险/grant方法；`requireCurrent(UUID project,UUID grant,String purpose,LongSupplier remaining):DailyAgentStore.Grant`供请求/执行核验；`DailyRuntimePolicy.binding():DailyBindingSnapshot`、`requireConfigured():void`读取非敏感配置/凭据元数据，不消费Key。`DailyAgentStore`内部records对应设计§7的V17列；JDBC只实现这些表的精确查询、加锁、插入、撤销和usage更新。
 
-- [ ] **RED:** `riskGrantAndSettingsAreIndependentAndDefaultOff`：初始disabled/revision0/grant=null、缺任何显式批准不启用，risk/grant写入不调用模型，旧synthetic确认永不授权daily。所有测试approvedAt/expiresAt及预算都来自显式合成fixture，不建生产默认值。
-- [ ] **RED:** `bindingsAndRevocationsInvalidateNewSendsButKeepHistory`：逐字段改变owner/deployment/credential/runtimeRevision/模型映射/Prompt/Output/价格/证据摘要；未来或超过7天的checkedAt、价格过期、ack/grant越界到期均拒绝。撤销只追加，首次关闭关联设置并revision+1，重复撤销不再递增；同键同输入历史200、不延长期限，同键变更409。
-- [ ] **RED:** 迁移测试在空库和只到V16的库执行V17；直接SQL尝试跨Project risk/grant、错owner/deployment/digest/credential、重复purpose、金额溢出或超上限、历史UPDATE/DELETE，均失败。锁行并发更新设置只允许匹配If-Match者；惰性settings创建不留无锁窗口。
-- [ ] 分别运行 `./mvnw -Dtest=DailyRuntimePolicyTest,AgentDailyControlIntegrationTest,PersonalDailyAuthorizationMigrationIntegrationTest test`确认RED，再实现设计§3/4.1–4.3/7的限制、优先级及V17约束。sources只接受原五项固定URL；digest排序固定，保存完整binding及独立acknowledgedAt，不能用now伪造checkedAt。
-- [ ] 抽出技术防护至`PersonalRuntimeSafety`，旧`PersonalLivePolicy.requireBatch`继续要求原合成Project/batch/template；不让daily开关开启synthetic runtime。重跑本任务及`PersonalLivePolicyTest,AgentPersonalEnablementIntegrationTest,AgentMigrationIsolationIntegrationTest`，通过后提交。
+- [x] **RED:** `riskGrantAndSettingsAreIndependentAndDefaultOff`：初始disabled/revision0/grant=null、缺任何显式批准不启用，risk/grant写入不调用模型，旧synthetic确认永不授权daily。所有测试approvedAt/expiresAt及预算都来自显式合成fixture，不建生产默认值。
+- [x] **RED:** `bindingsAndRevocationsInvalidateNewSendsButKeepHistory`：逐字段改变owner/deployment/credential/runtimeRevision/模型映射/Prompt/Output/价格/证据摘要；未来或超过7天的checkedAt、价格过期、ack/grant越界到期均拒绝。撤销只追加，首次关闭关联设置并revision+1，重复撤销不再递增；同键同输入历史200、不延长期限，同键变更409。
+- [x] **RED:** 迁移测试在空库和只到V16的库执行V17；直接SQL尝试跨Project risk/grant、错owner/deployment/digest/credential、重复purpose、金额溢出或超上限、历史UPDATE/DELETE，均失败。锁行并发更新设置只允许匹配If-Match者；惰性settings创建不留无锁窗口。
+- [x] 分别运行 `./mvnw -Dtest=DailyRuntimePolicyTest,AgentDailyControlIntegrationTest,PersonalDailyAuthorizationMigrationIntegrationTest test`确认RED，再实现设计§3/4.1–4.3/7的限制、优先级及V17约束。sources只接受原五项固定URL；digest排序固定，保存完整binding及独立acknowledgedAt，不能用now伪造checkedAt。
+- [x] 抽出技术防护至`PersonalRuntimeSafety`，旧`PersonalLivePolicy.requireBatch`继续要求原合成Project/batch/template；不让daily开关开启synthetic runtime。重跑本任务及`PersonalLivePolicyTest,AgentPersonalEnablementIntegrationTest,AgentMigrationIsolationIntegrationTest`，通过后提交。
+
+完成证据：Task3A [PR #72](https://github.com/AI-ArchGuard/archguard-platform/pull/72) 与 Task3B [PR #73](https://github.com/AI-ArchGuard/archguard-platform/pull/73) 已合并；最终候选 CI 及合并后精确 main CI 均成功，Task3B 的1015项测试零失败/错误/跳过，容器构建和独立审查通过。本机维护期间未运行数据库测试，未启用运行时或调用模型。
 
 ### Task 4: V18精确关联、幂等创建和活动槽
 

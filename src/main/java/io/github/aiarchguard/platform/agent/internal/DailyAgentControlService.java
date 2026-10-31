@@ -79,9 +79,11 @@ public class DailyAgentControlService {
         String digest = riskDigest(input); UUID owner = configuredOwner();
         var previous = store.findRiskByKey(project, owner, key);
         if (previous.isPresent()) return replayRisk(previous.get(), digest);
-        access(project, true); store.lockSettings(project); access(project, true);
+        // 等锁期间角色可能降级；先按当前 owner+Viewer 重读历史，确无胜者才要求新增批准权限。
+        store.lockSettings(project); access(project, false);
         previous = store.findRiskByKey(project, owner, key);
         if (previous.isPresent()) return replayRisk(previous.get(), digest);
+        access(project, true);
         validateRisk(input);
         var binding = policy.binding(); String bindingDigest = DailyRuntimePolicy.digest(binding);
         if (!bindingDigest.equals(input.runtimeBindingDigest())) throw invalidState();
@@ -109,9 +111,11 @@ public class DailyAgentControlService {
         String digest = grantDigest(input); UUID owner = configuredOwner();
         var previous = store.findGrantByKey(project, owner, key);
         if (previous.isPresent()) return replayGrant(previous.get(), digest);
-        access(project, true); store.lockSettings(project); access(project, true);
+        // 历史重放属于读取：锁前不以 Maintainer 拦截刚提交的胜者，锁后仍须重新授权 Viewer。
+        store.lockSettings(project); access(project, false);
         previous = store.findGrantByKey(project, owner, key);
         if (previous.isPresent()) return replayGrant(previous.get(), digest);
+        access(project, true);
         validateGrant(input); var risk = risk(project, input.riskAcknowledgementId());
         if (risk.revocation() != null || !clock.instant().isBefore(risk.expiresAt())) throw invalidState();
         var binding = policy.binding(); String bindingDigest = DailyRuntimePolicy.digest(binding);

@@ -727,7 +727,14 @@ class AgentDailyRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrat
         if (expected.equals("REVOKED")) controls.revokeGrant(f.project(), f.grant().id());
         var grant = controls.getGrant(f.project(), f.grant().id());
         assertThat(grant.state()).isEqualTo(DailyGrantState.valueOf(expected));
-        assertThat(controls.context(f.project()).currentGrant().state()).isEqualTo(DailyGrantState.valueOf(expected));
+        var context = controls.context(f.project());
+        if (expected.equals("REVOKED")) {
+            // 撤销清空当前选择；历史状态仍由上方 getGrant 和下方重放证明。
+            assertThat(context.currentGrant()).isNull();
+            assertThat(context.settings().enabled()).isFalse(); assertThat(context.settings().grantId()).isNull();
+            assertThat(context.settings().revision()).isEqualTo(2);
+            assertThat(context.unavailableReason()).isEqualTo(DailyUnavailableReason.PROJECT_DISABLED);
+        } else assertThat(context.currentGrant().state()).isEqualTo(DailyGrantState.valueOf(expected));
         assertThat(requests.find(f.project(), request)).isPresent(); var before = effects(f);
         var replay = assertDoesNotThrow(() -> replayOnly().create(f.project(), "stop-history", f.input()));
         assertThat(replay.created()).isFalse(); assertThat(replay.value().request()).isEqualTo(created.value().request());

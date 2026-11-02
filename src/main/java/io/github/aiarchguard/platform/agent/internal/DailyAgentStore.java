@@ -8,7 +8,7 @@ import java.util.UUID;
 
 /** 日常授权存储边界；设置先锁，随后才锁授权用量，不提供发送或记账接口。 */
 public interface DailyAgentStore {
-    /** RED seam: no V18 queries or writes until the creation checkpoint is approved. */
+    /** 未声明日常能力的适配器失败关闭；真实 JDBC 实现使用 V18 精确关联。 */
     default Optional<RequestLink> findRequest(UUID project, UUID request) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
     default Optional<RequestLink> findRequestByKey(UUID project, UUID owner, String key) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
     default void insertRequest(RequestLink link) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }

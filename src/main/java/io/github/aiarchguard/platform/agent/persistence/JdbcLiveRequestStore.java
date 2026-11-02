@@ -22,6 +22,14 @@ class JdbcLiveRequestStore implements LiveRequestStore {
 
     JdbcLiveRequestStore(JdbcClient jdbc) { this.jdbc = jdbc; }
 
+    @Override public boolean hasDailyAssociation(UUID projectId, UUID requestId) {
+        if (!DailySchemaCapability.current(jdbc)) return false;
+        try {
+            return jdbc.sql("SELECT EXISTS(SELECT 1 FROM agent.daily_request_links WHERE project_id=:p AND request_id=:r)")
+                .param("p",projectId).param("r",requestId).query(Boolean.class).single();
+        } catch (RuntimeException unavailable) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    }
+
     /** 关联插入会触发数据库模板唯一槽位约束；只把指定槽位冲突转成幂等冲突，其他数据库错误保持失败并由外层事务回滚。 */
     @Override public void insert(Link link) {
         try {

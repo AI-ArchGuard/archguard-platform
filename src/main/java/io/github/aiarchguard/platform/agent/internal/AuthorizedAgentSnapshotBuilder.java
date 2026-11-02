@@ -95,31 +95,37 @@ final class AuthorizedAgentSnapshotBuilder {
     }
     String dailyDigest(UUID projectId, UUID ownerId, UUID grantId, String runtimeBindingDigest,
             AuthorizedSelection selection, SnapshotProfile profile) {
+        return dailyDigest(projectId, ownerId, grantId, runtimeBindingDigest, selection.request(), selection.documentBindings(),
+            "PR_SUMMARY".equals(selection.request().purpose()) ? profile.summaryPrompt() : profile.explanationPrompt(),
+            SCHEMA_VERSION, profile.modelProfile(), profile.protocol(), profile.modelId(), profile.priceVersion());
+    }
+    /** 历史比较只使用已存内容绑定和版本，不读取当前资源或策略。 */
+    String dailyReplayDigest(UUID projectId, UUID ownerId, UUID grantId, String runtimeBindingDigest,
+            CreateAgentRequest incoming, AgentRequestView.VersionBindings stored) {
+        var versions = stored.documentVersions().stream().sorted(java.util.Comparator.comparing(AgentRequestView.DocumentVersionBinding::documentVersionId)).toList();
+        if (!incoming.documentVersionIds().stream().sorted().toList().equals(versions.stream().map(AgentRequestView.DocumentVersionBinding::documentVersionId).toList()))
+            throw new io.github.aiarchguard.platform.agent.AgentConflictException();
+        return dailyDigest(projectId, ownerId, grantId, runtimeBindingDigest, incoming, versions, stored.promptVersion(),
+            stored.outputSchemaVersion(), stored.modelProfileVersion(), stored.modelProtocolVersion(), stored.modelId(), stored.priceCatalogVersion());
+    }
+    private String dailyDigest(UUID projectId, UUID ownerId, UUID grantId, String runtimeBindingDigest,
+            CreateAgentRequest request, List<AgentRequestView.DocumentVersionBinding> versions, String prompt,
+            String schema, String modelProfile, String protocol, String modelId, String price) {
         java.util.LinkedHashMap<String, Object> value = new java.util.LinkedHashMap<>();
         value.put("domain", "personal-project-agent-request-0.1.0");
         value.put("projectId", projectId); value.put("ownerId", ownerId); value.put("grantId", grantId);
         value.put("runtimeBindingDigest", runtimeBindingDigest);
-        value.put("purpose", selection.request().purpose()); value.put("scanJobId", selection.scan().id());
-        value.put("reportSha256", selection.scan().reportSha256());
-        value.put("prHeadRevisionId", selection.request().prHeadRevisionId());
-        value.put("findingIds", selection.findings().stream().map(FindingView::id).toList());
-        value.put("documentVersions", selection.documentBindings().stream().map(binding -> {
+        value.put("purpose", request.purpose()); value.put("scanJobId", request.scanJobId());
+        value.put("reportSha256", request.reportSha256()); value.put("prHeadRevisionId", request.prHeadRevisionId());
+        value.put("findingIds", request.findingIds().stream().sorted().toList());
+        value.put("documentVersions", versions.stream().sorted(java.util.Comparator.comparing(AgentRequestView.DocumentVersionBinding::documentVersionId)).map(binding -> {
             java.util.LinkedHashMap<String, Object> document = new java.util.LinkedHashMap<>();
-            document.put("documentVersionId", binding.documentVersionId());
-            document.put("contentSha256", binding.contentSha256());
-            return document;
+            document.put("documentVersionId", binding.documentVersionId()); document.put("contentSha256", binding.contentSha256()); return document;
         }).toList());
-        value.put("promptVersion", "PR_SUMMARY".equals(selection.request().purpose()) ? profile.summaryPrompt() : profile.explanationPrompt());
-        value.put("outputSchemaVersion", SCHEMA_VERSION); value.put("modelProfileVersion", profile.modelProfile());
-        value.put("modelProtocolVersion", profile.protocol()); value.put("modelId", profile.modelId());
-        value.put("priceCatalogVersion", profile.priceVersion());
+        value.put("promptVersion", prompt); value.put("outputSchemaVersion", schema); value.put("modelProfileVersion", modelProfile);
+        value.put("modelProtocolVersion", protocol); value.put("modelId", modelId); value.put("priceCatalogVersion", price);
         try { return sha256(mapper.writer().without(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS).writeValueAsString(value)); }
         catch (JsonProcessingException exception) { throw new IllegalStateException("Agent digest encoding failed", exception); }
-    }
-    /** RED 接缝：历史重放摘要只能读取已保存版本；实现留待完整 RED 通过后。 */
-    String dailyReplayDigest(UUID projectId, UUID ownerId, UUID grantId, String runtimeBindingDigest,
-            CreateAgentRequest incoming, AgentRequestView.VersionBindings stored) {
-        throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
     }
     AgentSnapshot build(AuthorizedSelection selection, SnapshotIdentity identity, SnapshotProfile profile, String inputDigest) {
         UUID projectId = selection.projectId();

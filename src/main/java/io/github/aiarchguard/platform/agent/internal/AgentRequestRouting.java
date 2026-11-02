@@ -32,6 +32,7 @@ public final class AgentRequestRouting {
                 || !view.purpose().equals(input.purpose()) || !prompt.equals(bindings.promptVersion())
                 || !prompt.equals(input.promptVersion())) return false;
         // A binding-looking request with an immutable live association is still never synthetic work.
-        return links.find(view.projectId(), view.id()).isEmpty();
+        try { return !links.hasDailyAssociation(view.projectId(), view.id()) && links.find(view.projectId(), view.id()).isEmpty(); }
+        catch (RuntimeException unavailable) { return false; }
     }
 }

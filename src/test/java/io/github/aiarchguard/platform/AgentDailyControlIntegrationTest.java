@@ -57,9 +57,11 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
     @Autowired ObjectMapper mapper;
     @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     UUID project;
+    private AgentSnapshot seededRequest;
+    private DailyAgentStore.RequestLink seededLink;
     @BeforeEach void prepare() {
         resetFixture();
-        project = newProject(); identity(OWNER);
+        project = newProject(); identity(OWNER); seededRequest=null; seededLink=null;
     }
     @AfterEach void clear() { resetFixture(); org.springframework.security.core.context.SecurityContextHolder.clearContext(); org.slf4j.MDC.clear(); }
     void identity(UUID id) { AgentLiveAccountingIntegrationTest.identity(id); }
@@ -326,8 +328,8 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         assertThat(count("daily_risk_acknowledgements")).isZero(); assertThat(count("daily_grants")).isZero(); noSpending();
     }
     @Test void grantStatePriorityIncludesExhaustionButActiveSlotAloneIsNotExhausted() {
-        var g = grant("state");
-        jdbc.sql("UPDATE agent.daily_grant_usage SET active_request_id=:r WHERE grant_id=:g").param("r", UUID.randomUUID()).param("g", g.id()).update();
+        var g = grant("state"); enable(g); UUID active = seedActiveRequest(g);
+        jdbc.sql("UPDATE agent.daily_grant_usage SET active_request_id=:r WHERE grant_id=:g").param("r", active).param("g", g.id()).update();
         assertThat(daily.getGrant(project, g.id()).state()).isEqualTo(DailyGrantState.ACTIVE);
         jdbc.sql("UPDATE agent.daily_grant_usage SET attempts=3 WHERE grant_id=:g").param("g", g.id()).update();
         assertThat(daily.getGrant(project, g.id()).state()).isEqualTo(DailyGrantState.EXHAUSTED);
@@ -338,15 +340,43 @@ class AgentDailyControlIntegrationTest extends AgentLiveDatabaseIntegrationTestS
         var second = grantAfterReset("amount-state");
         jdbc.sql("UPDATE agent.daily_grant_usage SET spent_microusd=683628 WHERE grant_id=:g").param("g", second.id()).update();
         assertThat(daily.getGrant(project, second.id()).state()).isEqualTo(DailyGrantState.EXHAUSTED);
+        assertSeedOnly(active);
     }
     DailyGrantView grantAfterReset(String key) { TIME.set(NOW); return grant(key); }
     @Test void revokingSelectedGrantPreservesInFlightSlotAndCumulativeUsage() {
-        var g = grant("in-flight"); enable(g); UUID active = UUID.randomUUID();
+        var g = grant("in-flight"); enable(g); UUID active = seedActiveRequest(g);
         jdbc.sql("UPDATE agent.daily_grant_usage SET attempts=1,reserved_microusd=316373,spent_microusd=7,active_request_id=:r WHERE grant_id=:g").param("r", active).param("g", g.id()).update();
         var first = daily.revokeGrant(project, g.id()); long audits = auditCount();
         assertThat(first.usage()).isEqualTo(new DailyUsage(1, 316373, 7, active));
         assertThat(daily.revokeGrant(project, g.id())).isEqualTo(first); assertThat(auditCount()).isEqualTo(audits);
         assertThat(daily.settings(project).revision()).isEqualTo(2); assertThat(daily.settings(project).enabled()).isFalse();
+        assertSeedOnly(active);
+    }
+    /** V18 活动槽引用真实不可变请求和同授权关联；控制动作仍必须保持这些种子不变。 */
+    private UUID seedActiveRequest(DailyGrantView grant) {
+        noSpending(); assertThat(count("daily_request_links")).isZero();
+        UUID id=UUID.randomUUID(); String prompt="finding-explanation-deepseek-0.1.0";
+        var bindings=new AgentRequestView.VersionBindings(UUID.randomUUID(),"a".repeat(64),null,List.of(UUID.randomUUID()),List.of(),
+            prompt,LiveCostPolicy.CONTEXT_MODEL_PROFILE,"responses-v1-restricted","deepseek-flash","0.1.0",LiveCostPolicy.CONTEXT_VERSION,"b".repeat(64));
+        var input=new AgentModelPort.ModelInput("FINDING_EXPLANATION","0.1.0",prompt,"f", "rule","1","HIGH","合成",null,List.of(),List.of(),null);
+        var view=new AgentRequestView(id,project,OWNER,"c".repeat(32),"FINDING_EXPLANATION","QUEUED",bindings,null,null,null,NOW,NOW);
+        var snapshot=new AgentSnapshot(view,input,List.of());
+        assertThat(new io.github.aiarchguard.platform.agent.persistence.JdbcAgentStore(jdbc,mapper).insert(snapshot,id.toString())).isTrue();
+        seededRequest=snapshot;
+        seededLink=new DailyAgentStore.RequestLink(
+            id,project,grant.id(),grant.riskAcknowledgementId(),grant.credentialVersion(),daily.settings(project).revision(),grant.runtimeBindingDigest(),
+            DailySnapshotHashes.sha256(input),DailySnapshotHashes.sha256(snapshot.candidates()),NOW);
+        new io.github.aiarchguard.platform.agent.persistence.JdbcDailyAgentStore(jdbc,mapper).insertRequest(seededLink);
+        assertSeedOnly(id); return id;
+    }
+    private void assertSeedOnly(UUID id) {
+        assertThat(new io.github.aiarchguard.platform.agent.persistence.JdbcAgentStore(jdbc,mapper).find(project,id)).contains(seededRequest);
+        assertThat(new io.github.aiarchguard.platform.agent.persistence.JdbcDailyAgentStore(jdbc,mapper).findRequest(project,id)).contains(seededLink);
+        assertThat(count("requests")).isOne(); assertThat(count("daily_request_links")).isOne();
+        assertThat(jdbc.sql("SELECT id FROM agent.requests WHERE project_id=:p").param("p",project).query(UUID.class).single()).isEqualTo(id);
+        for(String table:List.of("live_attempts","daily_attempts")) assertThat(count(table)).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM agent.live_budget_usage WHERE scope_id=:p").param("p",project).query(Long.class).single()).isZero();
+        assertThat(MODEL_CALLS.get()).isZero();
     }
     long auditCount() { return jdbc.sql("SELECT count(*) FROM audit.audit_records WHERE project_id=:p AND action LIKE 'agent.daily.%'").param("p", project).query(Long.class).single(); }
     @Test void visibleAsciiKeysAreValidatedAndSeparateRiskGrantDomainsRemainIndependent() {

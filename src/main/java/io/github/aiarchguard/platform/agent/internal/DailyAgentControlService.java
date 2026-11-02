@@ -185,7 +185,7 @@ public class DailyAgentControlService {
         if (!now.isBefore(risk.expiresAt())) return DailyUnavailableReason.RISK_ACK_EXPIRED;
         if (grant == null) return DailyUnavailableReason.GRANT_REQUIRED;
         if (grant.revocation() != null) return DailyUnavailableReason.GRANT_REVOKED;
-        // V17 没有停止事实；不能查询或虚构 V18 stop。
+        if (store.findStop(grant.projectId(), grant.id()).isPresent()) return DailyUnavailableReason.GRANT_STOPPED;
         if (!now.isBefore(grant.expiresAt())) return DailyUnavailableReason.GRANT_EXPIRED;
         if (!binding.credentialVersion().equals(risk.credentialVersion()) || !binding.credentialVersion().equals(grant.credentialVersion())) return DailyUnavailableReason.CREDENTIAL_CHANGED;
         String digest = DailyRuntimePolicy.digest(binding);
@@ -210,11 +210,12 @@ public class DailyAgentControlService {
     }
     private DailyGrantView grantView(Grant value) {
         var usage = value.usage();
-        DailyGrantState state = value.revocation() != null ? DailyGrantState.REVOKED : !clock.instant().isBefore(value.expiresAt())
+        var stop = store.findStop(value.projectId(), value.id()).orElse(null);
+        DailyGrantState state = value.revocation() != null ? DailyGrantState.REVOKED : stop != null ? DailyGrantState.STOPPED : !clock.instant().isBefore(value.expiresAt())
             ? DailyGrantState.EXPIRED : exhausted(value) ? DailyGrantState.EXHAUSTED : DailyGrantState.ACTIVE;
         return new DailyGrantView(value.id(), value.projectId(), value.ownerId(), value.riskAcknowledgementId(), value.runtimeBindingDigest(), value.credentialVersion(),
             value.allowedPurposes(), value.maxAttempts(), value.maxCostMicrousd(), value.approvedAt(), value.expiresAt(), state,
-            value.revocation() == null ? null : value.revocation().at(), null, new DailyUsage(usage.attempts(), usage.reservedMicrousd(), usage.spentMicrousd(), usage.activeRequestId()));
+            value.revocation() == null ? null : value.revocation().at(), stop, new DailyUsage(usage.attempts(), usage.reservedMicrousd(), usage.spentMicrousd(), usage.activeRequestId()));
     }
     private DailyRiskView riskView(Risk value) {
         return new DailyRiskView(value.id(), value.projectId(), value.ownerId(), value.acknowledgedAt(), value.expiresAt(), value.runtimeBindingDigest(),
@@ -268,6 +269,8 @@ public class DailyAgentControlService {
     private boolean hash(String value) { return value != null && value.matches("[a-f0-9]{64}"); }
     private void key(String value) { if (value == null || !value.matches("[!-~]{1,128}")) throw new AgentInvalidException(); }
     /** 每个操作先重新检查当前 Project 权限，再检查配置 owner/deployment；不依赖旧批准的角色快照。 */
+    /** 创建重放的读取授权不访问当前元数据或可发送性。 */
+    void authorizeRequestRead(UUID project) { access(project, false); }
     private void access(UUID project, boolean control) {
         if (control) projects.requireMaintainer(project); else projects.requireViewer(project);
         UUID owner = configuredOwner(); configuredId("deployment-id");

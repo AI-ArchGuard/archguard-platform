@@ -19,7 +19,7 @@ public final class DailySnapshotHashes {
         if (node.isTextual()) validate(node.textValue());
         if (node.isObject()) {
             var fields = new TreeMap<String, JsonNode>();
-            node.fields().forEachRemaining(entry -> { validate(entry.getKey()); fields.put(entry.getKey(), ordered(entry.getValue())); });
+            node.properties().forEach(entry -> { validate(entry.getKey()); fields.put(entry.getKey(), ordered(entry.getValue())); });
             var result = MAPPER.createObjectNode(); fields.forEach(result::set); return result;
         }
         if (node.isArray()) {

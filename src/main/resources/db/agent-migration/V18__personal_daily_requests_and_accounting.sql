@@ -71,12 +71,12 @@ BEGIN
         OR r.bindings->>'modelId' IS DISTINCT FROM 'deepseek-flash'
         OR r.bindings->>'outputSchemaVersion' IS DISTINCT FROM '0.1.0'
         OR r.bindings->>'priceCatalogVersion' IS DISTINCT FROM 'deepseek-flash-context-peak-usd-2026-10-15'
-        OR r.bindings->>'promptVersion' IS DISTINCT FROM CASE r.purpose WHEN 'PR_SUMMARY' THEN 'pr-summary-deepseek-0.1.0' ELSE 'finding-explanation-deepseek-0.1.0' END
+        OR r.bindings->>'promptVersion' IS DISTINCT FROM (CASE r.purpose WHEN 'PR_SUMMARY' THEN 'pr-summary-deepseek-0.1.0' ELSE 'finding-explanation-deepseek-0.1.0' END)
         OR r.bindings->>'modelProtocolVersion' IS DISTINCT FROM binding->>'modelProtocolVersion'
         OR r.bindings->>'modelId' IS DISTINCT FROM binding->>'modelAlias'
         OR r.bindings->>'outputSchemaVersion' IS DISTINCT FROM binding->>'outputSchemaVersion'
         OR r.bindings->>'priceCatalogVersion' IS DISTINCT FROM binding->>'priceCatalogVersion'
-        OR r.bindings->>'promptVersion' IS DISTINCT FROM CASE r.purpose WHEN 'PR_SUMMARY' THEN binding->>'summaryPromptVersion' ELSE binding->>'explanationPromptVersion' END
+        OR r.bindings->>'promptVersion' IS DISTINCT FROM (CASE r.purpose WHEN 'PR_SUMMARY' THEN binding->>'summaryPromptVersion' ELSE binding->>'explanationPromptVersion' END)
         OR r.model_input->>'purpose' IS DISTINCT FROM r.purpose
         OR r.model_input->>'schemaVersion' IS DISTINCT FROM r.bindings->>'outputSchemaVersion'
         OR r.model_input->>'promptVersion' IS DISTINCT FROM r.bindings->>'promptVersion' THEN

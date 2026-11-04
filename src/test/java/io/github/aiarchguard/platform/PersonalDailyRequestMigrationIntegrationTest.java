@@ -184,8 +184,8 @@ class PersonalDailyRequestMigrationIntegrationTest extends PostgresIntegrationTe
             v17.execute(c,"UPDATE agent.daily_grant_usage SET active_request_id='"+f.request()+"' WHERE grant_id='"+f.grant()+"'");
             insert(c,"daily_attempts",attempt(f));insert(c,"daily_outcomes",row("request_id",f.request(),"state","UNKNOWN","usage",null,"actual_microusd",null,"created_at",AT));insert(c,"daily_grant_stops",valid);
             for(String t:List.of("daily_request_links","daily_attempts","daily_outcomes","daily_grant_stops")) {
-                String snapshot=v17.snapshot(c,t);v17.rejects(c,"UPDATE agent."+t+" SET created_at=created_at","23514");
-                v17.rejects(c,"DELETE FROM agent."+t,"23514");assertThat(v17.snapshot(c,t)).isEqualTo(snapshot);
+                String snapshot=v17.snapshot(c,t);v17.rejects(c,"UPDATE agent."+t+" SET created_at=created_at","P0001");
+                v17.rejects(c,"DELETE FROM agent."+t,"P0001");assertThat(v17.snapshot(c,t)).isEqualTo(snapshot);
             }
         }
     }

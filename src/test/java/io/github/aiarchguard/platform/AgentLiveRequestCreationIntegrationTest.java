@@ -559,6 +559,9 @@ class AgentLiveRequestCreationIntegrationTest extends AgentLiveDatabaseIntegrati
                     delegate.insert(link);
                 }
                 @Override public Optional<Link> find(UUID projectId, UUID requestId) { return delegate.find(projectId, requestId); }
+                @Override public boolean hasDailyAssociation(UUID projectId, UUID requestId) {
+                    return delegate.hasDailyAssociation(projectId, requestId);
+                }
             };
         }
     }

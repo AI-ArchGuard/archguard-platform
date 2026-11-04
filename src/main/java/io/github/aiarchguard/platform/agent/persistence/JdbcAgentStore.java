@@ -70,6 +70,7 @@ public class JdbcAgentStore implements AgentStore {
     /** 仅允许原合成配置的 QUEUED→RUNNING，SQL 再排除 live 关联，形成路由判定之外的持久化防线。 */
     @Override
     public boolean claim(UUID id, Instant at) {
+        boolean daily = DailySchemaCapability.current(jdbc);
         return jdbc.sql("""
             UPDATE agent.requests r SET state='RUNNING', updated_at=:at
             WHERE r.id=:id AND r.state='QUEUED'
@@ -87,7 +88,7 @@ public class JdbcAgentStore implements AgentStore {
                         AND r.bindings->>'promptVersion'='pr-summary-0.1.0'
                         AND r.model_input->>'promptVersion'='pr-summary-0.1.0'))
                 AND NOT EXISTS (SELECT 1 FROM agent.live_request_links l WHERE l.request_id=r.id)
-            """)
+            """ + (daily ? " AND NOT EXISTS (SELECT 1 FROM agent.daily_request_links d WHERE d.project_id=r.project_id AND d.request_id=r.id)" : ""))
             .param("id", id).param("at", Timestamp.from(at)).update() == 1;
     }
 

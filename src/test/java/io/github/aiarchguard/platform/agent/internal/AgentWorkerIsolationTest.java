@@ -36,9 +36,14 @@ class AgentWorkerIsolationTest {
     private final List<AuditEvent> audit = new ArrayList<>();
     private final AtomicInteger reservations = new AtomicInteger(), settlements = new AtomicInteger(), calls = new AtomicInteger();
     private final MemoryRequests store = new MemoryRequests();
-    private boolean linked, linksUnavailable;
+    private boolean linked, linksUnavailable, dailyLinked, dailyUnavailable, unknownDaily;
     private final AgentRequestRouting routing = new AgentRequestRouting(new LiveRequestStore() {
         public void insert(Link link) { throw new AssertionError("Routing cannot write links"); }
+        public boolean hasDailyAssociation(UUID project, UUID request) {
+            if (unknownDaily) return LiveRequestStore.super.hasDailyAssociation(project, request);
+            if (dailyUnavailable) throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
+            return dailyLinked;
+        }
         public Optional<Link> find(UUID project, UUID request) {
             if (linksUnavailable) throw new IllegalStateException("Synthetic link persistence fault");
             return linked ? Optional.of(new Link(request, project, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
@@ -139,6 +144,21 @@ class AgentWorkerIsolationTest {
         worker.process(before.view().projectId(), before.view().id());
 
         assertUntouched(before);
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"DAILY", "BOTH", "UNAVAILABLE", "UNKNOWN"})
+    void dailyAssociationAndUnknownCapabilityNeverEnterSyntheticPaths(String mode) {
+        dailyLinked = mode.equals("DAILY") || mode.equals("BOTH"); linked = mode.equals("BOTH");
+        dailyUnavailable = mode.equals("UNAVAILABLE"); unknownDaily = mode.equals("UNKNOWN");
+        store.value = snapshot("QUEUED", "unchanged"); var before = store.value;
+        worker.process(before.view().projectId(), before.view().id());
+        worker.failQueued(before.view().projectId(), before.view().id(), "MODEL_UNAVAILABLE");
+        assertThat(transitions.start(before, 4000)).isNull();
+        transitions.failQueued(before, "MODEL_UNAVAILABLE"); transitions.failUnknown(before); assertUntouched(before);
+        store.value = snapshot("RUNNING", "unchanged"); var running = store.value;
+        transitions.finish(running, new AgentTransitions.Start(LocalDate.of(2026, 10, 12), 4000), null,
+            new AgentRequestView.AgentFailure("OUTPUT_INVALID", "Synthetic failure"), null, false);
+        transitions.failUnknown(running); assertUntouched(running);
     }
 
     // 保留原合成请求的正向路径，隔离不能误伤原有流程。

@@ -10,6 +10,10 @@ import java.util.UUID;
 public interface LiveRequestStore {
     record Link(UUID requestId, UUID projectId, UUID batchId, UUID templateId, UUID enablementId,
             UUID credentialVersion, long settingsRevision, Instant createdAt) { }
+    /** RED 接缝：未知日常关联能力必须失败关闭，不能推断无关联。 */
+    default boolean hasDailyAssociation(UUID projectId, UUID requestId) {
+        throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
+    }
     void insert(Link link);
     Optional<Link> find(UUID projectId, UUID requestId);
     /** Claim only the exact immutable association and live request projection; never reserves model cost. */

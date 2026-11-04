@@ -104,6 +104,7 @@ public final class JdbcLiveDatabaseWork implements LiveDatabaseWork {
         if (failure instanceof AgentInvalidException) return new AgentInvalidException();
         if (failure instanceof AgentNotFoundException) return new AgentNotFoundException();
         if (failure instanceof AgentEnablementInvalidStateException) return new AgentEnablementInvalidStateException();
+        if (failure instanceof io.github.aiarchguard.platform.agent.AgentDailyActionInProgressException) return new io.github.aiarchguard.platform.agent.AgentDailyActionInProgressException();
         if (failure instanceof AgentDailyStateInvalidException) return new AgentDailyStateInvalidException();
         if (failure instanceof AgentSettingsPreconditionException precondition) return new AgentSettingsPreconditionException(precondition.missing());
         if (failure instanceof ProjectPermissionDeniedException) return new ProjectPermissionDeniedException();

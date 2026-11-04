@@ -127,7 +127,7 @@ class DocumentApplicationService implements DocumentOperations {
         // 显式选定版本，禁止重复、空值或无界范围；不自动扩展为全项目搜索。
         projects.requireViewer(projectId);
         if (versionIds == null || versionIds.isEmpty() || versionIds.size() > MAX_SELECTED_VERSIONS
-                || versionIds.contains(null) || new HashSet<>(versionIds).size() != versionIds.size()) {
+                || versionIds.stream().anyMatch(java.util.Objects::isNull) || new HashSet<>(versionIds).size() != versionIds.size()) {
             throw new InvalidDocumentException("Search requires 1–10 distinct document versions");
         }
         if (query == null || query.strip().length() < 2 || query.strip().length() > 120) {

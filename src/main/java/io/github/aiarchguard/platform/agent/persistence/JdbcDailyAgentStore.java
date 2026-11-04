@@ -20,6 +20,39 @@ public final class JdbcDailyAgentStore implements DailyAgentStore {
     private final ObjectMapper mapper;
     public JdbcDailyAgentStore(JdbcClient jdbc, ObjectMapper mapper) { this.jdbc = jdbc; this.mapper = mapper; }
 
+    @Override public Optional<RequestLink> findRequest(UUID project, UUID request) {
+        return jdbc.sql("SELECT l.* FROM agent.daily_request_links l WHERE l.project_id=:p AND l.request_id=:r")
+            .param("p",project).param("r",request).query((rs,row) -> link(rs)).optional();
+    }
+    @Override public Optional<RequestLink> findRequestByKey(UUID project, UUID owner, String key) {
+        return jdbc.sql("SELECT l.* FROM agent.daily_request_links l JOIN agent.requests r ON r.project_id=l.project_id AND r.id=l.request_id WHERE r.project_id=:p AND r.requester_id=:o AND r.idempotency_key=:k")
+            .param("p",project).param("o",owner).param("k",key).query((rs,row) -> link(rs)).optional();
+    }
+    private RequestLink link(ResultSet rs) throws SQLException {
+        return new RequestLink(rs.getObject("request_id",UUID.class),rs.getObject("project_id",UUID.class),rs.getObject("grant_id",UUID.class),
+            rs.getObject("risk_acknowledgement_id",UUID.class),rs.getObject("credential_version",UUID.class),rs.getLong("settings_revision"),
+            rs.getString("runtime_binding_digest"),rs.getString("payload_sha256"),rs.getString("candidates_sha256"),rs.getTimestamp("created_at").toInstant());
+    }
+    @Override public void insertRequest(RequestLink link) {
+        if(jdbc.sql("""
+            INSERT INTO agent.daily_request_links(request_id,project_id,grant_id,risk_acknowledgement_id,credential_version,
+                settings_revision,runtime_binding_digest,payload_sha256,candidates_sha256,created_at)
+            VALUES (:r,:p,:g,:risk,:v,:revision,:digest,:payload,:candidates,:at)
+            """).param("r",link.requestId()).param("p",link.projectId()).param("g",link.grantId()).param("risk",link.riskAcknowledgementId())
+            .param("v",link.credentialVersion()).param("revision",link.settingsRevision()).param("digest",link.runtimeBindingDigest())
+            .param("payload",link.payloadSha256()).param("candidates",link.candidatesSha256()).param("at",Timestamp.from(link.createdAt())).update()!=1)
+            throw new AgentUnavailableException();
+    }
+    @Override public void acquireActive(UUID project, UUID grant, UUID request) {
+        if(jdbc.sql("UPDATE agent.daily_grant_usage SET active_request_id=:r WHERE project_id=:p AND grant_id=:g AND active_request_id IS NULL")
+            .param("r",request).param("p",project).param("g",grant).update()!=1)
+            throw new io.github.aiarchguard.platform.agent.AgentDailyActionInProgressException();
+    }
+    @Override public Optional<DailyStop> findStop(UUID project, UUID grant) {
+        return jdbc.sql("SELECT request_id,code,created_at FROM agent.daily_grant_stops WHERE project_id=:p AND grant_id=:g")
+            .param("p",project).param("g",grant).query((rs,row)->new DailyStop(rs.getObject("request_id",UUID.class),rs.getString("code"),rs.getTimestamp("created_at").toInstant())).optional();
+    }
+
     @Override public Settings settings(UUID project) { return settings(project, false).orElse(new Settings(false, 0, null)); }
     /** 不以不存在的行作为无锁状态；先惰性插入，再锁住实际设置行。 */
     @Override public Settings lockSettings(UUID project) {

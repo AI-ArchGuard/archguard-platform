@@ -79,6 +79,18 @@ class AgentLiveDatabaseWorkIntegrationTest extends PostgresIntegrationTestSuppor
         assertThat(count()).isZero();
     }
 
+    @Test void dailyActiveSlotFailureRollsBackAndRetainsOnlyItsFixedCategory() {
+        var occupied = new io.github.aiarchguard.platform.agent.AgentDailyActionInProgressException();
+        occupied.initCause(new IllegalStateException(PRIVATE)); occupied.addSuppressed(new IllegalStateException(PRIVATE));
+        var failure = org.assertj.core.api.Assertions.catchThrowable(() -> work.transaction(() -> FIVE_SECONDS, false, () -> {
+            jdbc.sql("INSERT INTO " + table + " VALUES (1,10)").update(); throw occupied;
+        }));
+        assertThat(count()).isZero(); assertThat(setting("statement_timeout")).isEqualTo("0");
+        assertThat(failure).isInstanceOf(io.github.aiarchguard.platform.agent.AgentDailyActionInProgressException.class)
+            .hasMessage("Agent daily action is in progress").hasNoCause()
+            .satisfies(safe -> assertThat(safe.getSuppressed()).isEmpty());
+    }
+
     @Test void knownBusinessFailureRollsBackAndRetainsOnlyItsStableCategory() {
         var quota = new AgentQuotaExceededException(); quota.initCause(new IllegalStateException(PRIVATE));
         quota.addSuppressed(new IllegalStateException(PRIVATE));

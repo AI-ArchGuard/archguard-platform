@@ -6,8 +6,20 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/** 日常授权存储边界；设置先锁，随后才锁授权用量，不提供发送或记账接口。 */
+/** 日常授权与账本存储边界；事务编排负责设置、授权用量、共享日金额及请求的固定锁序。 */
 public interface DailyAgentStore {
+    /** 账本能力由适配器明确提供；旧装饰器没有实现时继续失败关闭。 */
+    default LiveMonetaryBudgetStore money() { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    default Optional<Attempt> attempt(UUID project, UUID request) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    default void lockRequest(UUID project, UUID request) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    default void insertAttempt(Attempt attempt, Instant at) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    default void reserveUsage(UUID project, UUID grant, UUID request, long reserved) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    default void finish(Attempt attempt, io.github.aiarchguard.platform.agent.LiveTokenUsage usage, Long actual, Instant at) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    default void stop(UUID project, UUID grant, UUID request, String code, Instant at) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    default void releaseActive(UUID project, UUID grant, UUID request) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    record Attempt(UUID requestId, UUID projectId, UUID grantId, UUID attemptId, UUID deploymentId,
+            UUID credentialVersion, long settingsRevision, String runtimeBindingDigest,
+            java.time.LocalDate day, String priceVersion, long reserved, String state, Long actual) {}
     /** 未声明日常能力的适配器失败关闭；真实 JDBC 实现使用 V18 精确关联。 */
     default Optional<RequestLink> findRequest(UUID project, UUID request) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
     default Optional<RequestLink> findRequestByKey(UUID project, UUID owner, String key) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }

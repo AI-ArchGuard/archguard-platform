@@ -146,6 +146,14 @@ public class DailyAgentControlService {
      * 原始剩余预算直传凭据元数据，所有等待后复核身份/时间/累计用量；不读取 Key 或发送模型。
      */
     public Grant requireCurrent(UUID project, UUID id, String purpose, LongSupplier remaining) {
+        return requireCurrent(project, id, purpose, remaining, null);
+    }
+    /** 仅已持久化且尚未结算的精确预留可使用此复核；最后一次预留无需再次拥有新增额度。 */
+    Grant requireReserved(UUID project, UUID request, String purpose, LongSupplier remaining) {
+        var link = store.findRequest(project, request).orElseThrow(this::invalidState);
+        return requireCurrent(project, link.grantId(), purpose, remaining, request);
+    }
+    private Grant requireCurrent(UUID project, UUID id, String purpose, LongSupplier remaining, UUID reservedRequest) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) throw new AgentUnavailableException();
         remaining(remaining); access(project, false);
         DailyPurpose allowed;
@@ -158,7 +166,25 @@ public class DailyAgentControlService {
         if (!settings.enabled() || !id.equals(settings.grantId()) || !value.allowedPurposes().contains(allowed)) throw invalidState();
         policy.requireConfigured(); var binding = policy.binding(remaining); remaining(remaining);
         access(project, allowed == DailyPurpose.PR_SUMMARY);
-        requireUsable(settings, value, risk, binding, clock.instant()); remaining(remaining);
+        var reason = unavailable(settings, value, risk, binding, true, clock.instant());
+        if (reservedRequest == null) {
+            if (reason != null) throw invalidState();
+        } else {
+            var attempt = store.attempt(project, reservedRequest).orElseThrow(this::invalidState);
+            if (!id.equals(attempt.grantId()) || attempt.state() != null
+                    || !reservedRequest.equals(value.usage().activeRequestId())
+                    || value.usage().attempts() < 1 || value.usage().attempts() > value.maxAttempts()
+                    || value.usage().reservedMicrousd() < RESERVATION
+                    || value.usage().reservedMicrousd() > value.maxCostMicrousd()
+                    || value.usage().spentMicrousd() > value.maxCostMicrousd() - value.usage().reservedMicrousd()
+                    || attempt.reserved() != RESERVATION || !value.deploymentId().equals(attempt.deploymentId())
+                    || !value.credentialVersion().equals(attempt.credentialVersion())
+                    || !value.runtimeBindingDigest().equals(attempt.runtimeBindingDigest())
+                    || settings.revision() != attempt.settingsRevision()
+                    || !io.github.aiarchguard.platform.agent.LiveCostPolicy.CONTEXT_VERSION.equals(attempt.priceVersion())
+                    || (reason != null && reason != DailyUnavailableReason.GRANT_EXHAUSTED)) throw invalidState();
+        }
+        remaining(remaining);
         return value;
     }
     private DailyContext contextView(UUID project) {

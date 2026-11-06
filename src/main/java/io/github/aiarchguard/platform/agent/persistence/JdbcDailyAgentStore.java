@@ -18,7 +18,79 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 public final class JdbcDailyAgentStore implements DailyAgentStore {
     private final JdbcClient jdbc;
     private final ObjectMapper mapper;
-    public JdbcDailyAgentStore(JdbcClient jdbc, ObjectMapper mapper) { this.jdbc = jdbc; this.mapper = mapper; }
+    private final JdbcLiveMonetaryBudgetStore money;
+    public JdbcDailyAgentStore(JdbcClient jdbc, ObjectMapper mapper) {
+        this.jdbc = jdbc; this.mapper = mapper; this.money = new JdbcLiveMonetaryBudgetStore(jdbc);
+    }
+    @Override public io.github.aiarchguard.platform.agent.internal.LiveMonetaryBudgetStore money() { return money; }
+    @Override public Optional<Attempt> attempt(UUID project, UUID request) {
+        return jdbc.sql("""
+            SELECT a.*,o.state,o.actual_microusd FROM agent.daily_attempts a
+            LEFT JOIN agent.daily_outcomes o ON o.request_id=a.request_id
+            WHERE a.project_id=:p AND a.request_id=:r
+            """).param("p", project).param("r", request).query((rs, row) -> new Attempt(request, project,
+                rs.getObject("grant_id", UUID.class), rs.getObject("attempt_id", UUID.class),
+                rs.getObject("deployment_id", UUID.class), rs.getObject("credential_version", UUID.class),
+                rs.getLong("settings_revision"), rs.getString("runtime_binding_digest"),
+                rs.getObject("utc_day", java.time.LocalDate.class), rs.getString("price_version"),
+                rs.getLong("reserved_microusd"), rs.getString("state"), (Long) rs.getObject("actual_microusd"))).optional();
+    }
+    @Override public void lockRequest(UUID project, UUID request) {
+        jdbc.sql("SELECT id FROM agent.requests WHERE project_id=:p AND id=:r FOR UPDATE")
+            .param("p", project).param("r", request).query(UUID.class).optional().orElseThrow(AgentUnavailableException::new);
+    }
+    @Override public void insertAttempt(Attempt a, Instant at) {
+        changed(jdbc.sql("""
+            INSERT INTO agent.daily_attempts(request_id,project_id,grant_id,attempt_id,deployment_id,credential_version,
+                settings_revision,runtime_binding_digest,utc_day,price_version,reserved_microusd,created_at)
+            VALUES (:r,:p,:g,:a,:d,:v,:revision,:binding,:day,:price,:reserved,:at)
+            """).param("r",a.requestId()).param("p",a.projectId()).param("g",a.grantId()).param("a",a.attemptId())
+            .param("d",a.deploymentId()).param("v",a.credentialVersion()).param("revision",a.settingsRevision())
+            .param("binding",a.runtimeBindingDigest()).param("day",a.day()).param("price",a.priceVersion())
+            .param("reserved",a.reserved()).param("at",Timestamp.from(at)).update());
+    }
+    @Override public void reserveUsage(UUID project, UUID grant, UUID request, long reserved) {
+        changed(jdbc.sql("""
+            UPDATE agent.daily_grant_usage SET attempts=attempts+1,reserved_microusd=reserved_microusd+:reserved
+            WHERE project_id=:p AND grant_id=:g AND active_request_id=:r
+            """).param("reserved",reserved).param("p",project).param("g",grant).param("r",request).update());
+    }
+    /** 调用方按统一顺序持锁；费用与授权用量、原日金额共同提交。 */
+    @Override public void finish(Attempt a, io.github.aiarchguard.platform.agent.LiveTokenUsage usage, Long actual, Instant at) {
+        changed(jdbc.sql("""
+            INSERT INTO agent.daily_outcomes(request_id,state,usage,actual_microusd,created_at)
+            VALUES (:r,:state,CAST(:usage AS jsonb),:actual,:at)
+            """).param("r",a.requestId()).param("state",actual == null ? "UNKNOWN" : "SETTLED")
+            .param("usage",actual == null ? null : json(usage)).param("actual",actual).param("at",Timestamp.from(at)).update());
+        if (actual == null) return;
+        money.settle("DEPLOYMENT",a.deploymentId(),a.day(),a.reserved(),actual);
+        money.settle("PROJECT",a.projectId(),a.day(),a.reserved(),actual);
+        changed(jdbc.sql("""
+            UPDATE agent.daily_grant_usage SET reserved_microusd=reserved_microusd-:reserved,spent_microusd=spent_microusd+:actual
+            WHERE project_id=:p AND grant_id=:g AND reserved_microusd>=:reserved
+            """).param("reserved",a.reserved()).param("actual",actual).param("p",a.projectId()).param("g",a.grantId()).update());
+    }
+    @Override public void stop(UUID project, UUID grant, UUID request, String code, Instant at) {
+        if (!java.util.Set.of("MODEL_DISABLED","MODEL_UNAVAILABLE","MODEL_TIMEOUT","AUTHORIZATION_REVOKED",
+                "QUOTA_EXHAUSTED","OUTPUT_INVALID","CITATION_INVALID","INTERNAL_ERROR","INPUT_TOKEN_LIMIT")
+                .contains(code == null ? "" : code)) throw new AgentUnavailableException();
+        jdbc.sql("""
+            INSERT INTO agent.daily_grant_stops(grant_id,project_id,request_id,code,created_at)
+            VALUES (:g,:p,:r,:code,:at) ON CONFLICT (grant_id) DO NOTHING
+            """).param("g",grant).param("p",project).param("r",request).param("code",code).param("at",Timestamp.from(at)).update();
+    }
+    /** 只清除精确成功请求的槽，调用方须已持有设置、授权、原日金额与请求锁。 */
+    @Override public void releaseActive(UUID project, UUID grant, UUID request) {
+        changed(jdbc.sql("""
+            UPDATE agent.daily_grant_usage u SET active_request_id=NULL
+            WHERE u.project_id=:p AND u.grant_id=:g AND u.active_request_id=:r
+            AND EXISTS (SELECT 1 FROM agent.daily_attempts a JOIN agent.daily_outcomes o ON o.request_id=a.request_id
+                JOIN agent.requests r ON r.project_id=a.project_id AND r.id=a.request_id
+                WHERE a.project_id=u.project_id AND a.grant_id=u.grant_id AND a.request_id=:r
+                    AND o.state='SETTLED' AND r.state='SUCCEEDED')
+            """).param("p",project).param("g",grant).param("r",request).update());
+    }
+    private void changed(int count) { if (count != 1) throw new AgentUnavailableException(); }
 
     @Override public Optional<RequestLink> findRequest(UUID project, UUID request) {
         return jdbc.sql("SELECT l.* FROM agent.daily_request_links l WHERE l.project_id=:p AND l.request_id=:r")

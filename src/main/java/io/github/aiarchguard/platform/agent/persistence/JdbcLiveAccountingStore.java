@@ -30,7 +30,10 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
         "AUTHORIZATION_REVOKED", "QUOTA_EXHAUSTED", "OUTPUT_INVALID", "CITATION_INVALID", "INTERNAL_ERROR", "INPUT_TOKEN_LIMIT");
     private final JdbcClient jdbc;
     private final ObjectMapper mapper;
-    JdbcLiveAccountingStore(JdbcClient jdbc, ObjectMapper mapper) { this.jdbc = jdbc; this.mapper = mapper; }
+    private final JdbcLiveMonetaryBudgetStore money;
+    JdbcLiveAccountingStore(JdbcClient jdbc, ObjectMapper mapper) {
+        this.jdbc = jdbc; this.mapper = mapper; this.money = new JdbcLiveMonetaryBudgetStore(jdbc);
+    }
     @Override public void insert(Batch value) {
         var view = value.view();
         jdbc.sql("""
@@ -73,14 +76,11 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
             .param("id", id).param("actor", actor).param("at", Timestamp.from(at)).update() == 1;
     }
     @Override public Usage lockBudget(String scope, UUID id, LocalDate day) {
-        jdbc.sql("INSERT INTO agent.live_budget_usage(scope,scope_id,utc_day) VALUES (:s,:id,:day) ON CONFLICT DO NOTHING")
-            .param("s", scope).param("id", id).param("day", day).update();
-        return jdbc.sql("SELECT reserved_microusd,spent_microusd FROM agent.live_budget_usage WHERE scope=:s AND scope_id=:id AND utc_day=:day FOR UPDATE")
-            .param("s", scope).param("id", id).param("day", day).query((rs, row) -> new Usage(rs.getLong(1), rs.getLong(2), 0)).single();
+        var usage = money.lock(scope, id, day);
+        return new Usage(usage.reserved(), usage.spent(), 0);
     }
     @Override public void reserveBudget(String scope, UUID id, LocalDate day, long value) {
-        changed(jdbc.sql("UPDATE agent.live_budget_usage SET reserved_microusd=reserved_microusd+:n WHERE scope=:s AND scope_id=:id AND utc_day=:day")
-            .param("n", value).param("s", scope).param("id", id).param("day", day).update());
+        money.reserve(scope, id, day, value);
     }
     @Override public void reserveBatch(UUID id, long value) {
         changed(jdbc.sql("UPDATE agent.live_batch_usage SET reserved_microusd=reserved_microusd+:n,attempts=attempts+1 WHERE batch_id=:id")
@@ -119,11 +119,8 @@ class JdbcLiveAccountingStore implements LiveAccountingStore {
             .param("cost", cost).param("at", Timestamp.from(now)).update();
         if (cost == null) return;
         for (String scope : java.util.List.of("DEPLOYMENT", "PROJECT")) {
-            changed(jdbc.sql("""
-                UPDATE agent.live_budget_usage SET reserved_microusd=reserved_microusd-:reserved,spent_microusd=spent_microusd+:cost
-                WHERE scope=:s AND scope_id=:id AND utc_day=:day AND reserved_microusd>=:reserved
-                """).param("reserved", value.reservation()).param("cost", cost).param("s", scope)
-                .param("id", "DEPLOYMENT".equals(scope) ? value.deploymentId() : value.projectId()).param("day", value.day()).update());
+            money.settle(scope, "DEPLOYMENT".equals(scope) ? value.deploymentId() : value.projectId(),
+                value.day(), value.reservation(), cost);
         }
         changed(jdbc.sql("""
             UPDATE agent.live_batch_usage SET reserved_microusd=reserved_microusd-:reserved,spent_microusd=spent_microusd+:cost

@@ -27,6 +27,7 @@ public interface LiveAccountingStore {
     Optional<Batch> batch(UUID project, UUID batch);
     Usage lockBatch(UUID batch);
     boolean revoke(UUID batch, UUID actor, Instant at);
+    /** 兼容旧批次外观；共享日金额由 LiveMonetaryBudgetStore 提供，此返回值的 attempts 不代表批次额度。 */
     Usage lockBudget(String scope, UUID scopeId, LocalDate day);
     void reserveBudget(String scope, UUID scopeId, LocalDate day, long reservation);
     void reserveBatch(UUID batch, long reservation);

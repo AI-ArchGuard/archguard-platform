@@ -59,6 +59,10 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         legacy.mvc = mvc; legacy.mapper = mapper; legacy.jdbc = jdbc; legacy.enablements = enablements;
         legacy.requests = requests; legacy.links = links; legacy.accounting = accounting; legacy.ledger = ledger;
         legacy.prepare(); project = legacy.project; now = legacy.now; explanation = legacy.template;
+        prepareContextPair();
+    }
+
+    private void prepareContextPair() throws Exception {
         var old = new AgentPersonalEnablementIntegrationTest();
         ObjectNode input = mapper.valueToTree(old.input());
         input.put("schemaVersion", "0.4.0").put("priceCatalogVersion", LiveCostPolicy.CONTEXT_VERSION)
@@ -69,6 +73,17 @@ class AgentContextAccountingIntegrationTest extends AgentLiveDatabaseIntegration
         enablements.update(project, enablements.settings(project).revision(), new AgentSettingsUpdate(true, approval));
         summary = insert(null, null, "PR_SUMMARY", false);
     }
+
+    /** 复用已验证的双模板夹具，沿用调用方的项目、时钟及 JDBC 端口。 */
+    ContextRequest firstContextRequest(AgentLiveAccountingIntegrationTest fixture) throws Exception {
+        project = fixture.project; now = fixture.now; explanation = fixture.template;
+        mapper = fixture.mapper; requests = fixture.requests; links = fixture.links;
+        accounting = fixture.accounting; enablements = fixture.enablements;
+        prepareContextPair();
+        var batch = batch(700000);
+        return new ContextRequest(batch.id(), explanation, insert(batch.id(), explanation, "FINDING_EXPLANATION", true));
+    }
+    record ContextRequest(UUID batch, UUID template, UUID request) {}
 
     @AfterEach void clear() { Thread.interrupted(); SecurityContextHolder.clearContext(); org.slf4j.MDC.remove("traceId"); }
 

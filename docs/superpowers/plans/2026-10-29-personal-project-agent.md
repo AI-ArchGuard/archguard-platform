@@ -109,11 +109,11 @@ record Creation<T>(T value, boolean created) {} // 只供controller选择201/200
 
 **Interfaces:** 请求服务提供任务1的`create`；store新增`RequestLink`（设计§7精确列）、按project/request及project/owner/key查询、daily link插入与活动槽操作。创建只调用尚未装配的内部`Consumer<RequestLink>`调度依赖，不能回退`AgentWorker`。任务7负责把该依赖接入受控dispatcher；在此之前生产bean不暴露HTTP。
 
-- [ ] **RED:** `sameKeyReplaysStoredSnapshotWithoutSearchOrSchedule`：首次requests+link+active槽+审计同事务；随后发布新文档版本、使旧grant过期/撤销、模拟响应丢失，当前有读取权限时同键返回同requestId、model_input/candidates/hash且检索/调度次数不增加。规范化集合顺序不冲突，选择/grant/内容版本不同409；先查原记录再争槽。
-- [ ] **RED:** `concurrentCreateOwnsOneSlotAndOneRequest`：用闩锁强制两个同project/owner/key请求的首次历史查询都未命中，再让胜者取得settings→所选grant usage锁并提交；等待者锁后复查必须得到200，胜者201，两者requestId相同且总afterCommit调度恰好一次，不报DAILY_ACTION_IN_PROGRESS。同样的并发窗口中，同键不同选择/grant/原绑定输入返回409 IDEMPOTENCY_CONFLICT；等待期间grant撤销/过期不能遮蔽已存在的同键重放。同grant真正不同键第二个409 DAILY_ACTION_IN_PROGRESS，不创建请求或停止grant。跨模式同键409，回滚创建无调度；创建时超过6,000完整编码字节/非法投影为零请求/零attempt。
-- [ ] **RED:** 直接SQL测试V18精确FK、link/attempt绑定、outcome上限、active指向其他grant拒绝；对同一requests行同时插入daily及live link，只一侧成功。两侧排他trigger先锁requests再查另一侧，旧函数原字节不动。
-- [ ] 运行新测试确认RED，然后实现V18、JDBC及创建事务，严格遵循设计§4.4/7/8：首次查历史→锁settings/所选grant usage→再次按project/owner/key查历史→仅无历史时检查当前grant可发送性及active槽。锁后重放/冲突只比较已保存的grant/选择/版本摘要，不检索/调度；插入唯一键冲突仍读取胜者按同规则处理，覆盖不同grant锁域或模式的竞争。payload/candidates hash使用已持久化规范字节；业务digest使用已存文档绑定比较，不重检索。不存在关联或双关联的DeepSeek请求拒绝fake路由。
-- [ ] 重跑 `AgentDailyRequestCreationIntegrationTest,PersonalDailyRequestMigrationIntegrationTest,AgentWorkerIsolationTest,AgentLiveRequestCreationIntegrationTest,LiveRequestLinkMigrationIntegrationTest,LiveTemplateSlotMigrationIntegrationTest`；证明旧模板唯一槽和旧普通API语义保持，再提交。
+- [x] **RED:** `sameKeyReplaysStoredSnapshotWithoutSearchOrSchedule`：首次requests+link+active槽+审计同事务；随后发布新文档版本、使旧grant过期/撤销、模拟响应丢失，当前有读取权限时同键返回同requestId、model_input/candidates/hash且检索/调度次数不增加。规范化集合顺序不冲突，选择/grant/内容版本不同409；先查原记录再争槽。
+- [x] **RED:** `concurrentCreateOwnsOneSlotAndOneRequest`：用闩锁强制两个同project/owner/key请求的首次历史查询都未命中，再让胜者取得settings→所选grant usage锁并提交；等待者锁后复查必须得到200，胜者201，两者requestId相同且总afterCommit调度恰好一次，不报DAILY_ACTION_IN_PROGRESS。同样的并发窗口中，同键不同选择/grant/原绑定输入返回409 IDEMPOTENCY_CONFLICT；等待期间grant撤销/过期不能遮蔽已存在的同键重放。同grant真正不同键第二个409 DAILY_ACTION_IN_PROGRESS，不创建请求或停止grant。跨模式同键409，回滚创建无调度；创建时超过6,000完整编码字节/非法投影为零请求/零attempt。
+- [x] **RED:** 直接SQL测试V18精确FK、link/attempt绑定、outcome上限、active指向其他grant拒绝；对同一requests行同时插入daily及live link，只一侧成功。两侧排他trigger先锁requests再查另一侧，旧函数原字节不动。
+- [x] 运行新测试确认RED，然后实现V18、JDBC及创建事务，严格遵循设计§4.4/7/8：首次查历史→锁settings/所选grant usage→再次按project/owner/key查历史→仅无历史时检查当前grant可发送性及active槽。锁后重放/冲突只比较已保存的grant/选择/版本摘要，不检索/调度；插入唯一键冲突仍读取胜者按同规则处理，覆盖不同grant锁域或模式的竞争。payload/candidates hash使用已持久化规范字节；业务digest使用已存文档绑定比较，不重检索。不存在关联或双关联的DeepSeek请求拒绝fake路由。
+- [x] 重跑 `AgentDailyRequestCreationIntegrationTest,PersonalDailyRequestMigrationIntegrationTest,AgentWorkerIsolationTest,AgentLiveRequestCreationIntegrationTest,LiveRequestLinkMigrationIntegrationTest,LiveTemplateSlotMigrationIntegrationTest`；证明旧模板唯一槽和旧普通API语义保持，再提交。
 
 ### Task 5: 共享纯金额日账本与日常次数/费用
 

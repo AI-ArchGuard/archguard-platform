@@ -147,6 +147,17 @@ public final class LiveRequestDispatcher {
         return "INTERNAL_ERROR";
     }
 
+    /** RED 接缝：调度接线未完成时禁止领取和发送。 */
+    LiveRequestDispatcher(AgentStore requests, LiveRequestAssociation association, CurrentActorProvider actors,
+            AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
+            LeaseExecution execution, Executor executor, Runnable admission, LongSupplier nanos) {
+        throw new AgentUnavailableException();
+    }
+
+    @FunctionalInterface interface LeaseExecution {
+        void execute(LiveExecutionLease lease, LongSupplier remaining);
+    }
+
     @FunctionalInterface interface Execution {
         void execute(UUID project, UUID batch, UUID template, UUID request);
     }

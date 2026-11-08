@@ -519,6 +519,63 @@ class LiveRequestDispatcherTest {
     }
 
     // 以下辅助断言同时检查查找、队列和执行计数，确保拒绝路径没有隐式工作。
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"budget","loser","beforeClaim","afterCommit"})
+    void dailyDispatchOwnershipAndOriginalBudget(String phase) {
+        fixture.useContextPolicy();
+        var binding=new DailyLiveBinding(new DailyAgentStore.RequestLink(fixture.request,fixture.project,UUID.randomUUID(),
+            UUID.randomUUID(),UUID.randomUUID(),1,"a".repeat(64),"b".repeat(64),"c".repeat(64),NOW));
+        var nanos=new AtomicLong(); var claimed=new AtomicBoolean(); var times=new ArrayList<Long>(); var stops=new ArrayList<String>();
+        var association=new LiveRequestAssociation() {
+            public Optional<LiveRequestBinding> find(UUID p,UUID r) { return Optional.of(binding); }
+            public boolean claim(LiveRequestBinding exact,UUID actor,Instant at) {
+                assertThat(exact).isEqualTo(binding); assertThat(actor).isEqualTo(fixture.owner);
+                nanos.addAndGet(TimeUnit.SECONDS.toNanos(4));
+                if (phase.equals("loser")) return false;
+                fixture.requests.state("RUNNING",null,at); claimed.set(true); return true;
+            }
+            public void requireCurrent(LiveRequestBinding exact,AgentSnapshot snapshot,LongSupplier left) {
+                assertThat(exact).isEqualTo(binding); assertThat(left.getAsLong()).isPositive();
+                if (phase.equals("beforeClaim")) throw privateFailure();
+            }
+            public LiveExecutionLease lease(LiveRequestBinding exact) {
+                assertThat(exact).isEqualTo(binding);
+                // 测试核心仅查看剩余时间与请求身份，不允许模拟费用行为。
+                return (LiveExecutionLease)java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                    new Class<?>[]{LiveExecutionLease.class},(proxy,method,args)->switch(method.getName()) {
+                        case "projectId" -> fixture.project;
+                        case "requestId" -> fixture.request;
+                        default -> throw new AssertionError(method.getName());
+                    });
+            }
+            public void stop(LiveRequestBinding exact,String code) { assertThat(exact).isEqualTo(binding); stops.add(code); }
+        };
+        var db=new CleanupDatabase(fixture,new ArrayList<>());
+        var transitions=new LiveDispatchTransitions(fixture.requests,association,fixture.projects,fixture.actors,fixture.scope,
+            ()->MDC.get("traceId"),fixture.audit::add,Clock.fixed(NOW,ZoneOffset.UTC),fixture.transactions,db);
+        var dispatcher=new LiveRequestDispatcher(fixture.requests,association,fixture.actors,fixture.scope,new TraceTaskScope(),transitions,
+            (lease,left)->{ assertThat(lease.requestId()).isEqualTo(fixture.request); times.add(left.getAsLong()); },
+            fixture.queue,()->{},nanos::get);
+        dispatcher.dispatch(fixture.project,fixture.request);
+        nanos.addAndGet(TimeUnit.SECONDS.toNanos(7));
+        if (phase.equals("afterCommit")) fixture.transactions.afterCommit=()->fixture.scope.rejectChecks=true;
+        fixture.queue.runNext();
+        if (phase.equals("afterCommit")) {
+            assertThat(claimed).isTrue(); assertThat(times).isEmpty();
+            assertThat(stops).containsExactly("AUTHORIZATION_REVOKED");
+            assertThat(fixture.requests.value.view().state()).isEqualTo("FAILED");
+        } else if (phase.equals("budget")) {
+            // 7 秒排队由 60 秒年龄单独约束；从 worker 开始的 30 秒扣去领取 4 秒。
+            assertThat(times).containsExactly(TimeUnit.SECONDS.toNanos(26));
+            assertThat(claimed).isTrue(); assertThat(stops).isEmpty();
+            assertThat(fixture.requests.value.view().state()).isEqualTo("RUNNING");
+        } else {
+            assertThat(times).isEmpty(); assertThat(stops).isEmpty(); assertThat(fixture.requests.finishes).isZero();
+            assertThat(fixture.requests.value.view().state()).isEqualTo("QUEUED");
+            assertThat(fixture.audit).isEmpty();
+        }
+    }
+
     private void assertNoWork() {
         assertThat(fixture.queue.submissions).isZero(); assertThat(fixture.queue.tasks).isEmpty();
         assertThat(fixture.links.claims).isZero(); assertThat(fixture.executions).isEmpty();

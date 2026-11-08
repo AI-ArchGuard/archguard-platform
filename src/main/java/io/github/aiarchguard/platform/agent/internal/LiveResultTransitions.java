@@ -74,6 +74,12 @@ public final class LiveResultTransitions {
         });
     }
 
+    /** RED 接缝：禁止在槽释放尚未接入事务时成功。 */
+    void finishBounded(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
+            AgentRequestView.AgentUsage usage, LongSupplier remaining, LiveExecutionLease lease) {
+        throw new AgentUnavailableException();
+    }
+
     private void persist(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
             AgentRequestView.AgentFailure failure, AgentRequestView.AgentUsage usage, Runnable deadline) {
         transaction.executeWithoutResult(status -> persistBody(snapshot, result, failure, usage, deadline));

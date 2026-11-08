@@ -72,6 +72,13 @@ public final class LiveDispatchTransitions {
             : new LiveResultTransitions(requests, audit, clock, manager);
     }
 
+    /** RED 接缝：没有精确领取事务时不签发执行权。 */
+    LiveDispatchTransitions(AgentStore requests, LiveRequestAssociation association, ProjectAuthorization projects,
+            CurrentActorProvider actors, AuthenticatedTaskScope identities, TraceIdProvider traces,
+            AuditRecorder audit, Clock clock, PlatformTransactionManager manager, LiveDatabaseWork database) {
+        throw new AgentUnavailableException();
+    }
+
     public Claim start(UUID project, UUID request) {
         return transaction.execute(status -> startBody(project, request, () -> {}));
     }

@@ -76,6 +76,11 @@ class LiveExecutionCoordinatorTest {
         }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()), body -> {}, nanos::get, database);
     }
     void execute(LiveExecutionCoordinator core) { core.execute(project, batch, template, request); }
+    void executeBounded(LiveExecutionCoordinator core, LongSupplier remaining) {
+        core.execute(project, batch, template, request, remaining);
+    }
+    void executeWithLedger(LiveExecutionCoordinator core, LiveAccountingOperations ledger) { execute(core); }
+
     Consumer<AgentSnapshot> validResources() { return snapshot -> resourceChecks.incrementAndGet(); }
 
     // 领取已耗用的时间必须计入同一次原始预算，进入核心不能重新计时。
@@ -86,7 +91,7 @@ class LiveExecutionCoordinatorTest {
                 preflight.run(); return operation.apply("synthetic-placeholder-not-a-key");
             }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
             body -> {}, nanos::get, database, () -> {});
-        execution.execute(project, batch, template, request, remaining::get);
+        executeBounded(execution, remaining::get);
         assertThat(provider.timeout).isEqualTo(Duration.ofSeconds(3));
         assertThat(provider.sends.get()).isOne();
     }
@@ -351,7 +356,7 @@ class LiveExecutionCoordinatorTest {
                 preflight.run(); credentialReads.incrementAndGet(); return operation.apply("synthetic-placeholder-not-a-key");
             }), writer(), new AgentOutputValidator(new ObjectMapper()), () -> new CurrentActor(owner, Set.of()),
             body -> {}, nanos::get, database);
-        Throwable failure = catchThrowable(() -> execute(core));
+        Throwable failure = catchThrowable(() -> executeWithLedger(core, legacy));
         assertThat(accounting.reserves.get()).isZero();
         assertThat(failure).isInstanceOf(AgentUnavailableException.class).hasNoCause();
         assertThat(accounting.checks.get()).isZero(); assertThat(provider.sends.get()).isZero();
@@ -876,11 +881,16 @@ class LiveExecutionCoordinatorTest {
     }
 
     static final class Port implements LiveResponsePort {
+        final AtomicInteger prepares = new AtomicInteger();
+        final byte[] preparedBody = {1};
+        byte[] sentBody;
+        Set<String> sentModels;
         final AtomicInteger sends = new AtomicInteger();
         volatile Reply reply = new Reply(INSUFFICIENT, null, new LiveTokenUsage(1000, 100, 500, 1100, 0), "resp-synthetic", "deepseek-flash");
         Runnable onSend = () -> {}; RuntimeException failure; Duration timeout;
-        public byte[] prepare(AgentModelPort.ModelInput input) { return new byte[]{1}; }
+        public byte[] prepare(AgentModelPort.ModelInput input) { prepares.incrementAndGet(); return preparedBody; }
         public Reply send(byte[] body, String key, Duration remaining, Set<String> models) {
+            sentBody = body.clone(); sentModels = Set.copyOf(models);
             sends.incrementAndGet(); timeout = remaining; onSend.run(); if (failure != null) throw failure; return reply;
         }
         public Reply send(byte[] body, String key, Duration remaining, Set<String> models, String price) {
@@ -893,17 +903,25 @@ class LiveExecutionCoordinatorTest {
         final AtomicInteger stops = new AtomicInteger(); String price = LiveCostPolicy.VERSION;
         final List<LongSupplier> deadlines = new CopyOnWriteArrayList<>();
         Runnable onReserve = () -> {}, onSettle = () -> {}, onCheck = () -> {}; int rejectCheck;
-        public Admission reserve(UUID p, UUID b, UUID t, UUID r) { reserves.incrementAndGet(); onReserve.run(); return new Admission(r, LiveCostPolicy.reservation(price), owns.compareAndSet(false, true)); }
-        public Admission reserve(UUID p, UUID b, UUID t, UUID r, LongSupplier remaining) {
-            deadlines.add(remaining); requireBudget(remaining); return reserve(p, b, t, r);
+        Admission reserveRequest(UUID r) { reserves.incrementAndGet(); onReserve.run(); return new Admission(r, LiveCostPolicy.reservation(price), owns.compareAndSet(false, true)); }
+        public Admission reserve(UUID p, UUID b, UUID t, UUID r) { return reserveRequest(r); }
+        Admission reserveRequest(UUID r, LongSupplier remaining) {
+            deadlines.add(remaining); requireBudget(remaining); return reserveRequest(r);
         }
-        public SendApproval checkBeforeSend(UUID p, UUID b, UUID t, UUID r) {
+        public Admission reserve(UUID p, UUID b, UUID t, UUID r, LongSupplier remaining) {
+            return reserveRequest(r,remaining);
+        }
+        SendApproval checkRequest() {
             onCheck.run();
             if (checks.incrementAndGet() == rejectCheck) throw new AgentEnablementInvalidStateException();
             return new SendApproval(credential, Set.of("deepseek-flash"));
         }
+        public SendApproval checkBeforeSend(UUID p, UUID b, UUID t, UUID r) { return checkRequest(); }
+        SendApproval checkRequest(LongSupplier remaining) {
+            deadlines.add(remaining); requireBudget(remaining); return checkRequest();
+        }
         public SendApproval checkBeforeSend(UUID p, UUID b, UUID t, UUID r, LongSupplier remaining) {
-            deadlines.add(remaining); requireBudget(remaining); return checkBeforeSend(p, b, t, r);
+            return checkRequest(remaining);
         }
         public Outcome settle(UUID p, UUID r, String price, LiveTokenUsage usage) { settled.incrementAndGet(); onSettle.run(); return new Outcome("SETTLED", LiveCostPolicy.cost(price, usage)); }
         public Outcome unknown(UUID p, UUID r) { unknown.incrementAndGet(); return new Outcome("UNKNOWN", null); }

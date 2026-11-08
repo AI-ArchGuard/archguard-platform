@@ -8,6 +8,10 @@ import java.util.UUID;
 
 /** 日常授权与账本存储边界；事务编排负责设置、授权用量、共享日金额及请求的固定锁序。 */
 public interface DailyAgentStore {
+    /** RED 接缝：精确日常领取不得回退到普通领取。 */
+    default boolean claim(RequestLink exactBinding, UUID requester, Instant at) {
+        throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
+    }
     /** 账本能力由适配器明确提供；旧装饰器没有实现时继续失败关闭。 */
     default LiveMonetaryBudgetStore money() { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
     default Optional<Attempt> attempt(UUID project, UUID request) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }

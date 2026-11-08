@@ -68,6 +68,11 @@ public final class LiveExecutionCoordinator {
         this.requireActive = java.util.Objects.requireNonNull(requireActive);
     }
 
+    /** RED 接缝：保留旧算法，新路径尚不允许执行。 */
+    void execute(LiveExecutionLease lease, LongSupplier remaining) {
+        throw new AgentUnavailableException();
+    }
+
     void execute(UUID project, UUID batch, UUID template, UUID request, LongSupplier remainingNanos) {
         execute(project, batch, template, request, new LiveExecutionBudget(nanos, remainingNanos));
     }

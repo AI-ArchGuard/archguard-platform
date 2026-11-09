@@ -148,6 +148,27 @@ public final class DailyAccountingService {
         store.releaseActive(project, link.grantId(), request);
     }
 
+    /** 参与结果事务；先锁原记账日和请求，再用持久化事实复核，已终结行由后续 CAS 自行判负。 */
+    AgentSnapshot lockAndValidateSuccess(RequestLink expected, AgentSnapshot supplied, LongSupplier remaining) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || TransactionSynchronizationManager.isCurrentTransactionReadOnly()) throw new AgentUnavailableException();
+        var link = prefix(expected.projectId(), expected.requestId());
+        if (!link.equals(expected)) throw invalid();
+        var attempt = attempt(link);
+        lockMoney(attempt);
+        store.lockRequest(link.projectId(), link.requestId());
+        var current = snapshot(link);
+        if (!current.input().equals(supplied.input()) || !current.candidates().equals(supplied.candidates())
+                || !current.view().bindings().equals(supplied.view().bindings())
+                || !current.view().requesterId().equals(supplied.view().requesterId())
+                || !current.view().traceId().equals(supplied.view().traceId())
+                || !current.view().createdAt().equals(supplied.view().createdAt())
+                || !current.view().purpose().equals(supplied.view().purpose())) throw invalid();
+        var grant = controls.requireSettled(link, current.view().purpose(), remaining);
+        validateBinding(link, grant, current);
+        return current;
+    }
+
     private RequestLink prefix(UUID project, UUID request) {
         var link = store.findRequest(project, request).orElseThrow(DailyAccountingService::invalid);
         store.lockSettings(project);
@@ -182,11 +203,18 @@ public final class DailyAccountingService {
         return snapshot;
     }
     private void validateRunning(RequestLink link, Grant grant, AgentSnapshot snapshot) {
+        if (!"RUNNING".equals(snapshot.view().state())) throw invalid();
+        validateBinding(link, grant, snapshot);
+    }
+
+    void validateBinding(RequestLink link, Grant grant, AgentSnapshot snapshot) {
         var settings = store.settings(link.projectId());
         var binding = snapshot.view().bindings();
         var profile = AuthorizedAgentSnapshotBuilder.DAILY;
         String prompt = "PR_SUMMARY".equals(snapshot.view().purpose()) ? profile.summaryPrompt() : profile.explanationPrompt();
-        if (!"RUNNING".equals(snapshot.view().state()) || !link.requestId().equals(grant.usage().activeRequestId())
+        if (!link.requestId().equals(snapshot.view().id()) || !link.projectId().equals(snapshot.view().projectId())
+                || !snapshot.view().requesterId().equals(grant.ownerId()) || !link.riskAcknowledgementId().equals(grant.riskAcknowledgementId())
+                || !link.requestId().equals(grant.usage().activeRequestId())
                 || !link.credentialVersion().equals(grant.credentialVersion()) || link.settingsRevision() != settings.revision()
                 || !link.runtimeBindingDigest().equals(grant.runtimeBindingDigest())
                 || !profile.modelId().equals(binding.modelId()) || !profile.modelProfile().equals(binding.modelProfileVersion())

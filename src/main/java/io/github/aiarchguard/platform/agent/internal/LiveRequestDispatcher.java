@@ -26,15 +26,15 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public final class LiveRequestDispatcher {
     private static final Logger LOGGER = LoggerFactory.getLogger(LiveRequestDispatcher.class);
     private final AgentStore requests;
-    private final LiveRequestStore links;
+    private final LiveRequestAssociation association;
     private final CurrentActorProvider actors;
     private final AuthenticatedTaskScope identities;
     private final TraceTaskScope traces;
     private final LiveDispatchTransitions transitions;
     private final Executor executor;
-    private final Execution execution;
+    private final BindingExecution execution;
     private final Runnable admission;
-    private final BoundedExecution boundedExecution;
+    private final boolean bounded;
     private final LongSupplier nanos;
 
     public LiveRequestDispatcher(AgentStore requests, LiveRequestStore links, CurrentActorProvider actors,
@@ -48,20 +48,45 @@ public final class LiveRequestDispatcher {
     LiveRequestDispatcher(AgentStore requests, LiveRequestStore links, CurrentActorProvider actors,
             AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
             Execution execution, Executor executor, Runnable admission) {
-        this.requests = requests; this.links = links; this.actors = actors; this.identities = identities;
-        this.traces = traces; this.transitions = transitions; this.execution = execution;
-        this.executor = executor; this.admission = admission;
-        this.boundedExecution = null; this.nanos = System::nanoTime;
+        this(requests, new SyntheticLiveRequestAssociation(links, null), actors, identities, traces, transitions,
+            (binding, remaining) -> {
+                var link = syntheticLink(binding);
+                execution.execute(link.projectId(), link.batchId(), link.templateId(), link.requestId());
+            }, executor, admission, System::nanoTime, false);
     }
 
     LiveRequestDispatcher(AgentStore requests, LiveRequestStore links, CurrentActorProvider actors,
             AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
             BoundedExecution execution, Executor executor, Runnable admission, LongSupplier nanos) {
-        this.requests = requests; this.links = links; this.actors = actors; this.identities = identities;
-        this.traces = traces; this.transitions = transitions; this.execution = null;
-        this.executor = executor; this.admission = admission;
-        this.boundedExecution = java.util.Objects.requireNonNull(execution);
-        this.nanos = java.util.Objects.requireNonNull(nanos);
+        this(requests, new SyntheticLiveRequestAssociation(links, null), actors, identities, traces, transitions,
+            (binding, remaining) -> {
+                var link = syntheticLink(binding);
+                execution.execute(link.projectId(), link.batchId(), link.templateId(), link.requestId(), remaining);
+            }, executor, admission, nanos, true);
+        java.util.Objects.requireNonNull(execution);
+    }
+
+    LiveRequestDispatcher(AgentStore requests, LiveRequestAssociation association, CurrentActorProvider actors,
+            AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
+            LeaseExecution execution, Executor executor, Runnable admission, LongSupplier nanos) {
+        this(requests, association, actors, identities, traces, transitions,
+            (binding, remaining) -> execution.execute(association.lease(binding), remaining),
+            executor, admission, nanos, true);
+        java.util.Objects.requireNonNull(execution);
+    }
+
+    private LiveRequestDispatcher(AgentStore requests, LiveRequestAssociation association, CurrentActorProvider actors,
+            AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
+            BindingExecution execution, Executor executor, Runnable admission, LongSupplier nanos, boolean bounded) {
+        this.requests = requests; this.association = association; this.actors = actors; this.identities = identities;
+        this.traces = traces; this.transitions = transitions; this.execution = execution;
+        this.executor = executor; this.admission = admission; this.nanos = java.util.Objects.requireNonNull(nanos);
+        this.bounded = bounded;
+    }
+
+    private static LiveRequestStore.Link syntheticLink(LiveRequestBinding binding) {
+        if (binding instanceof SyntheticLiveBinding synthetic) return synthetic.link();
+        throw new AgentUnavailableException();
     }
 
     /** 对外只传播稳定身份/输入错误；其余失败转为不可用，避免执行器或数据库异常穿透 API。 */
@@ -80,7 +105,7 @@ public final class LiveRequestDispatcher {
         var view = snapshot.view();
         if (!actors.currentActor().id().equals(view.requesterId())) throw new ProjectPermissionDeniedException();
         if (!"QUEUED".equals(view.state())) return;
-        links.find(project, request).orElseThrow(AgentNotFoundException::new);
+        association.find(project, request).orElseThrow(AgentNotFoundException::new);
         String trace = view.traceId();
         // Only IDs, verified immutable identity facts and trace are captured, never a JWT or request body.
         Runnable scoped = identities.capture(view.requesterId(), traces.wrap(trace, () -> process(project, request)));
@@ -114,17 +139,13 @@ public final class LiveRequestDispatcher {
     private void process(UUID project, UUID request) {
         LiveDispatchTransitions.Claim claim = null;
         try {
-            var budget = boundedExecution == null ? null : new LiveExecutionBudget(nanos);
+            var budget = bounded ? new LiveExecutionBudget(nanos) : null;
             identities.requireActive();
             claim = budget == null ? transitions.start(project, request) : transitions.start(project, request, budget);
             if (claim == null) return;
             identities.requireActive();
-            var link = claim.link();
-            if (budget == null) execution.execute(project, link.batchId(), link.templateId(), request);
-            else {
-                budget.requireRemaining();
-                boundedExecution.execute(project, link.batchId(), link.templateId(), request, budget);
-            }
+            if (budget != null) budget.requireRemaining();
+            execution.execute(claim.binding(), budget);
         } catch (RuntimeException failure) {
             String code = code(failure);
             if (claim != null) {
@@ -147,11 +168,8 @@ public final class LiveRequestDispatcher {
         return "INTERNAL_ERROR";
     }
 
-    /** RED 接缝：调度接线未完成时禁止领取和发送。 */
-    LiveRequestDispatcher(AgentStore requests, LiveRequestAssociation association, CurrentActorProvider actors,
-            AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
-            LeaseExecution execution, Executor executor, Runnable admission, LongSupplier nanos) {
-        throw new AgentUnavailableException();
+    @FunctionalInterface private interface BindingExecution {
+        void execute(LiveRequestBinding binding, LongSupplier remaining);
     }
 
     @FunctionalInterface interface LeaseExecution {

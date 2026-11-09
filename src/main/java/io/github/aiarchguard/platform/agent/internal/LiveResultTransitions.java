@@ -55,13 +55,7 @@ public final class LiveResultTransitions {
     /** The live core never falls back to the compatibility-only unbounded writer. */
     public void finishBounded(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
             AgentRequestView.AgentUsage usage, LongSupplier remainingNanos) {
-        if (result == null) throw new IllegalArgumentException("Invalid live result state");
-        Runnable deadline = () -> checkRemaining(remainingNanos);
-        deadline.run();
-        database.transaction(remainingNanos, false, () -> {
-            persistBody(snapshot, result, null, usage, deadline);
-            return null;
-        });
+        finishSuccess(snapshot, result, usage, remainingNanos, null);
     }
 
     /** Failure persistence gets an independent finite budget, not a renewed model/send deadline. */
@@ -74,10 +68,25 @@ public final class LiveResultTransitions {
         });
     }
 
-    /** RED 接缝：禁止在槽释放尚未接入事务时成功。 */
+    /** 先持完整锁序并核验当前权限，只有结果 CAS 胜者在同一事务释放精确槽。 */
     void finishBounded(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
             AgentRequestView.AgentUsage usage, LongSupplier remaining, LiveExecutionLease lease) {
-        throw new AgentUnavailableException();
+        if (lease == null || !snapshot.view().projectId().equals(lease.projectId())
+                || !snapshot.view().id().equals(lease.requestId())) throw new AgentUnavailableException();
+        finishSuccess(snapshot, result, usage, remaining, lease);
+    }
+
+    private void finishSuccess(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
+            AgentRequestView.AgentUsage usage, LongSupplier remaining, LiveExecutionLease lease) {
+        if (result == null) throw new IllegalArgumentException("Invalid live result state");
+        Runnable deadline = () -> checkRemaining(remaining);
+        deadline.run();
+        database.transaction(remaining, false, () -> {
+            if (lease != null) lease.lockAndValidateSuccess(snapshot, remaining);
+            if (persistBody(snapshot, result, null, usage, deadline) && lease != null) lease.completeSuccess();
+            deadline.run();
+            return null;
+        });
     }
 
     private void persist(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
@@ -88,11 +97,11 @@ public final class LiveResultTransitions {
     /**
      * 只有 RUNNING 行可变更；CAS 可能等待行锁，因此写后、审计后和提交前都检查成功期限，超期回滚结果与审计，独立费用保留。
      */
-    private void persistBody(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
+    private boolean persistBody(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
             AgentRequestView.AgentFailure failure, AgentRequestView.AgentUsage usage, Runnable deadline) {
         deadline.run();
         var view = snapshot.view();
-        if (!store.finish(view.id(), result, failure, usage, Instant.now(clock))) return;
+        if (!store.finish(view.id(), result, failure, usage, Instant.now(clock))) return false;
         // The CAS may have waited on a row lock. Expiry now rolls back its tentative success.
         deadline.run();
         var metadata = new HashMap<String, Object>();
@@ -122,6 +131,7 @@ public final class LiveResultTransitions {
         if (result != null) TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void beforeCommit(boolean readOnly) { deadline.run(); }
         });
+        return true;
     }
 
     private static void checkRemaining(LongSupplier remainingNanos) {

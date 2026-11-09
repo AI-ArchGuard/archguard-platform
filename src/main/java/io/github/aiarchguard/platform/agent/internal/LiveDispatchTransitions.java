@@ -31,7 +31,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  */
 public final class LiveDispatchTransitions {
     private final AgentStore requests;
-    private final LiveRequestStore links;
+    private final LiveRequestAssociation association;
     private final ProjectAuthorization projects;
     private final CurrentActorProvider actors;
     private final AuthenticatedTaskScope identities;
@@ -40,31 +40,30 @@ public final class LiveDispatchTransitions {
     private final Clock clock;
     private final TransactionTemplate transaction;
     private final LiveResultTransitions results;
-    private final LiveAccountingOperations accounting;
     private final LiveDatabaseWork database;
     private final boolean bounded;
 
     public LiveDispatchTransitions(AgentStore requests, LiveRequestStore links, ProjectAuthorization projects,
             CurrentActorProvider actors, AuthenticatedTaskScope identities, TraceIdProvider traces,
             AuditRecorder audit, Clock clock, PlatformTransactionManager manager) {
-        this(requests, links, projects, actors, identities, traces, audit, clock, manager, null, null, false);
+        this(requests, new SyntheticLiveRequestAssociation(links, null), projects, actors, identities, traces, audit, clock, manager, null, false);
     }
 
     public LiveDispatchTransitions(AgentStore requests, LiveRequestStore links, ProjectAuthorization projects,
             CurrentActorProvider actors, AuthenticatedTaskScope identities, TraceIdProvider traces,
             AuditRecorder audit, Clock clock, PlatformTransactionManager manager,
             LiveAccountingOperations accounting, LiveDatabaseWork database) {
-        this(requests, links, projects, actors, identities, traces, audit, clock, manager,
-            Objects.requireNonNull(accounting), Objects.requireNonNull(database), true);
+        this(requests, new SyntheticLiveRequestAssociation(links, Objects.requireNonNull(accounting)), projects,
+            actors, identities, traces, audit, clock, manager, Objects.requireNonNull(database), true);
     }
 
-    private LiveDispatchTransitions(AgentStore requests, LiveRequestStore links, ProjectAuthorization projects,
+    private LiveDispatchTransitions(AgentStore requests, LiveRequestAssociation association, ProjectAuthorization projects,
             CurrentActorProvider actors, AuthenticatedTaskScope identities, TraceIdProvider traces,
             AuditRecorder audit, Clock clock, PlatformTransactionManager manager,
-            LiveAccountingOperations accounting, LiveDatabaseWork database, boolean bounded) {
-        this.requests = requests; this.links = links; this.projects = projects; this.actors = actors;
+            LiveDatabaseWork database, boolean bounded) {
+        this.requests = requests; this.association = association; this.projects = projects; this.actors = actors;
         this.identities = identities; this.traces = traces; this.audit = audit; this.clock = clock;
-        this.accounting = accounting; this.bounded = bounded;
+        this.bounded = bounded;
         this.database = database;
         transaction = new TransactionTemplate(manager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -72,29 +71,29 @@ public final class LiveDispatchTransitions {
             : new LiveResultTransitions(requests, audit, clock, manager);
     }
 
-    /** RED 接缝：没有精确领取事务时不签发执行权。 */
     LiveDispatchTransitions(AgentStore requests, LiveRequestAssociation association, ProjectAuthorization projects,
             CurrentActorProvider actors, AuthenticatedTaskScope identities, TraceIdProvider traces,
             AuditRecorder audit, Clock clock, PlatformTransactionManager manager, LiveDatabaseWork database) {
-        throw new AgentUnavailableException();
+        this(requests, Objects.requireNonNull(association), projects, actors, identities, traces,
+            audit, clock, manager, Objects.requireNonNull(database), true);
     }
 
     public Claim start(UUID project, UUID request) {
-        return transaction.execute(status -> startBody(project, request, () -> {}));
+        return transaction.execute(status -> startBody(project, request, () -> {}, null));
     }
 
     public Claim start(UUID project, UUID request, LongSupplier remainingNanos) {
         if (!bounded) throw new AgentUnavailableException();
-        var budget = new LiveExecutionBudget(System::nanoTime, remainingNanos);
+        var budget = remainingNanos instanceof LiveExecutionBudget original ? original : new LiveExecutionBudget(System::nanoTime, remainingNanos);
         Runnable deadline = () -> budget.requireRemaining();
         deadline.run();
-        return database.transaction(budget, false, () -> startBody(project, request, deadline));
+        return database.transaction(budget, false, () -> startBody(project, request, deadline, budget));
     }
 
     /**
      * 核对原请求者、trace、队列年龄与完整关联后 CAS 领取；锁等待、审计后和提交前重新检查期限及身份，防止迟到领取提交。
      */
-    private Claim startBody(UUID project, UUID request, Runnable deadline) {
+    private Claim startBody(UUID project, UUID request, Runnable deadline, LongSupplier remaining) {
         deadline.run(); identities.requireActive(); projects.requireViewer(project);
         var snapshot = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
         var view = snapshot.view();
@@ -105,18 +104,20 @@ public final class LiveDispatchTransitions {
             throw new AgentUnavailableException();
         }
         if (!"QUEUED".equals(view.state())) return null;
-        var link = links.find(project, request).orElseThrow(AgentEnablementInvalidStateException::new);
+        var link = association.find(project, request).orElseThrow(AgentEnablementInvalidStateException::new);
+        if (remaining == null && link instanceof DailyLiveBinding) throw new AgentUnavailableException();
         requireContext(snapshot, link); deadline.run(); identities.requireActive();
-        if (!links.claim(link, view.requesterId(), Instant.now(clock))) return null;
+        association.requireCurrent(link, snapshot, remaining);
+        deadline.run(); identities.requireActive();
+        if (!association.claim(link, view.requesterId(), Instant.now(clock))) return null;
         // CAS may wait on a row lock. Recheck before auditing/committing its tentative claim.
         deadline.run(); identities.requireActive();
         var claimed = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
         if (!"RUNNING".equals(claimed.view().state())) throw new AgentEnablementInvalidStateException();
         requireContext(claimed, link); identities.requireActive(); projects.requireViewer(project); deadline.run();
-        audit.record(new AuditEvent(view.requesterId(), project, "agent.live.request.running", AuditResult.SUCCESS,
-            view.traceId(), Map.of("requestId", request, "batchId", link.batchId(), "templateId", link.templateId(),
-                "enablementId", link.enablementId(), "credentialVersion", link.credentialVersion(),
-                "settingsRevision", link.settingsRevision(), "inputDigest", view.bindings().inputDigest())));
+        association.requireCurrent(link, claimed, remaining);
+        deadline.run(); identities.requireActive();
+        recordRunning(claimed, link);
         deadline.run(); requireContext(claimed, link); identities.requireActive();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void beforeCommit(boolean readOnly) {
@@ -124,6 +125,27 @@ public final class LiveDispatchTransitions {
             }
         });
         return new Claim(this, claimed, link);
+    }
+
+    private void recordRunning(AgentSnapshot snapshot, LiveRequestBinding binding) {
+        var view = snapshot.view();
+        String action;
+        Map<String, Object> metadata;
+        if (binding instanceof SyntheticLiveBinding synthetic) {
+            var link = synthetic.link();
+            action = "agent.live.request.running";
+            metadata = Map.of("requestId", view.id(), "batchId", link.batchId(), "templateId", link.templateId(),
+                "enablementId", link.enablementId(), "credentialVersion", link.credentialVersion(),
+                "settingsRevision", link.settingsRevision(), "inputDigest", view.bindings().inputDigest());
+        } else {
+            var link = ((DailyLiveBinding) binding).link();
+            action = "agent.daily.request.running";
+            metadata = Map.of("requestId", view.id(), "grantId", link.grantId(),
+                "riskAcknowledgementId", link.riskAcknowledgementId(), "credentialVersion", link.credentialVersion(),
+                "settingsRevision", link.settingsRevision(), "runtimeBindingDigest", link.runtimeBindingDigest(),
+                "inputDigest", view.bindings().inputDigest());
+        }
+        audit.record(new AuditEvent(view.requesterId(), view.projectId(), action, AuditResult.SUCCESS, view.traceId(), metadata));
     }
 
     /** Only the committed claim winner calls this; no retry, synthetic settlement or refund. */
@@ -137,7 +159,7 @@ public final class LiveDispatchTransitions {
         if (LiveCostPolicy.CONTEXT_VERSION.equals(snapshot.view().bindings().priceCatalogVersion())) {
             if (!bounded) throw new AgentUnavailableException();
             try {
-                accounting.stopBatch(snapshot.view().projectId(), claim.link().batchId(), snapshot.view().id(), safe);
+                association.stop(claim.binding(), safe);
             } catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
         }
         if (bounded) {
@@ -151,7 +173,7 @@ public final class LiveDispatchTransitions {
     /**
      * 要求持久化 trace 与当前隔离作用域一致，并限制创建后 60 秒的队列年龄；UUID 相等不能代替可信身份有效性。
      */
-    private void requireContext(AgentSnapshot snapshot, LiveRequestStore.Link link) {
+    private void requireContext(AgentSnapshot snapshot, LiveRequestBinding link) {
         var view = snapshot.view();
         if (!actors.currentActor().id().equals(view.requesterId())) throw new ProjectPermissionDeniedException();
         if (view.traceId() == null || !view.traceId().matches("[0-9a-f]{32}")
@@ -168,12 +190,16 @@ public final class LiveDispatchTransitions {
     public static final class Claim {
         private final LiveDispatchTransitions issuer;
         private final AgentSnapshot snapshot;
-        private final LiveRequestStore.Link link;
-        private Claim(LiveDispatchTransitions issuer, AgentSnapshot snapshot, LiveRequestStore.Link link) {
+        private final LiveRequestBinding link;
+        private Claim(LiveDispatchTransitions issuer, AgentSnapshot snapshot, LiveRequestBinding link) {
             this.issuer = issuer; this.snapshot = snapshot; this.link = link;
         }
         public AgentSnapshot snapshot() { return snapshot; }
-        public LiveRequestStore.Link link() { return link; }
+        LiveRequestBinding binding() { return link; }
+        public LiveRequestStore.Link link() {
+            if (link instanceof SyntheticLiveBinding synthetic) return synthetic.link();
+            throw new AgentUnavailableException();
+        }
         @Override public String toString() { return "Live dispatch claim [content omitted]"; }
     }
 }

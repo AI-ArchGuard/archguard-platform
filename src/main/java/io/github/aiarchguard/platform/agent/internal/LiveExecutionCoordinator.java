@@ -68,24 +68,24 @@ public final class LiveExecutionCoordinator {
         this.requireActive = java.util.Objects.requireNonNull(requireActive);
     }
 
-    /** RED 接缝：保留旧算法，新路径尚不允许执行。 */
     void execute(LiveExecutionLease lease, LongSupplier remaining) {
-        throw new AgentUnavailableException();
+        execute(lease, remaining instanceof LiveExecutionBudget budget ? budget : new LiveExecutionBudget(nanos, remaining));
     }
 
     void execute(UUID project, UUID batch, UUID template, UUID request, LongSupplier remainingNanos) {
-        execute(project, batch, template, request, new LiveExecutionBudget(nanos, remainingNanos));
+        execute(new SyntheticLiveRequestAssociation.BatchLease(accounting, project, batch, template, request), remainingNanos);
     }
 
     public void execute(UUID project, UUID batch, UUID template, UUID request) {
-        execute(project, batch, template, request, new LiveExecutionBudget(nanos));
+        execute(new SyntheticLiveRequestAssociation.BatchLease(accounting, project, batch, template, request), new LiveExecutionBudget(nanos));
     }
 
     /**
      * 只在无外层事务且可信身份匹配时处理 RUNNING 请求；
      * 取得新 attempt 后才拥有失败收尾权，HTTP、用量结算和结果事务彼此分离。
      */
-    private void execute(UUID project, UUID batch, UUID template, UUID request, LiveExecutionBudget budget) {
+    private void execute(LiveExecutionLease lease, LiveExecutionBudget budget) {
+        UUID project = lease.projectId(), request = lease.requestId();
         requireNoDatabaseTransaction();
         long started = nanos.getAsLong();
         LongSupplier remaining = budget;
@@ -103,13 +103,13 @@ public final class LiveExecutionCoordinator {
             byte[] body = responses.prepare(snapshot.input());
             budget.requireRemaining(); requireActive.run(); policy.require(body.clone()); validateResources(snapshot, remaining);
             budget.requireRemaining(); requireActive.run();
-            var admission = accounting.reserve(project, batch, template, request, remaining);
+            var admission = lease.reserve(remaining);
             // A replay must not send or terminalize the original in-flight executor's request.
             // 重放者没有尝试所有权：既不发送，也不替原执行者写终态。
             if (!admission.newAttempt()) return;
             ownsAttempt = true;
             budget.requireRemaining(); requireActive.run();
-            var approval = accounting.checkBeforeSend(project, batch, template, request, remaining);
+            var approval = lease.checkBeforeSend(remaining);
             validateResources(snapshot, remaining); policy.require(body.clone()); requireRunning(project, request, remaining);
             budget.requireRemaining(); requireActive.run();
             AtomicBoolean sent = new AtomicBoolean();
@@ -128,7 +128,7 @@ public final class LiveExecutionCoordinator {
                         throw new LiveResponsePort.CallFailure("MODEL_UNAVAILABLE");
                     }
                     budget.requireRemaining(); requireActive.run();
-                    var fresh = accounting.checkBeforeSend(project, batch, template, request, remaining);
+                    var fresh = lease.checkBeforeSend(remaining);
                     if (!fresh.equals(approval)) throw new AgentEnablementInvalidStateException();
                     validateResources(snapshot, remaining); policy.require(body.clone()); requireRunning(project, request, remaining);
                     budget.requireRemaining(); requireActive.run();
@@ -170,7 +170,7 @@ public final class LiveExecutionCoordinator {
             }
             validateAccounting(reply, approval.allowedResponseModels(), price);
             // 合法用量先以独立事务结算；后续输出拒绝、撤权或成功结果回滚都不能退回这笔已发生费用。
-            var outcome = accounting.settle(project, request, price, reply.usage());
+            var outcome = lease.settle(price, reply.usage());
             finalized = true;
             if (!"SETTLED".equals(outcome.state()) || outcome.actualMicrousd() == null) throw new LiveResponsePort.CallFailure("OUTPUT_INVALID");
             usage = new AgentRequestView.AgentUsage(reply.usage().inputTokens(), reply.usage().outputTokens(), elapsedMs(started),
@@ -185,20 +185,20 @@ public final class LiveExecutionCoordinator {
             var result = validator.validate(reply.rawJson(), snapshot);
             validateResources(snapshot, remaining); budget.requireRemaining(); requireActive.run();
             usage = observedUsage(usage, started);
-            transitions.finishBounded(snapshot, result, usage, remaining);
+            transitions.finishBounded(snapshot, result, usage, remaining, lease);
         } catch (RuntimeException failure) {
             // Preflight denial (including a concurrent replay) never owns a shared RUNNING row.
             // Only the call awarded newAttempt=true may persist its outcome or terminalize work.
             // 尚未拥有 newAttempt 的预检失败不能污染共享请求或账本。
             if (!ownsAttempt) throw preflightFailure(failure);
             if (LiveCostPolicy.isContext(snapshot.view().bindings().priceCatalogVersion())) {
-                try { accounting.stopBatch(project, batch, request, failureCode(failure)); }
+                try { lease.stop(failureCode(failure)); }
                 catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
             }
             // 没有可信结算的失败保守记 UNKNOWN，保留预留且不自动重试。
             if (!finalized) {
                 // Audit/accounting failure must not refund a possibly incurred charge or trigger a retry.
-                try { accounting.unknown(project, request); }
+                try { lease.unknown(); }
                 catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
             }
             try {
@@ -245,7 +245,7 @@ public final class LiveExecutionCoordinator {
         if (failure instanceof AgentQuotaExceededException) return "QUOTA_EXHAUSTED";
         if (failure instanceof ProjectPermissionDeniedException || failure instanceof ProjectNotFoundException
                 || failure instanceof InactiveAuthenticatedTaskException || failure instanceof InvalidCurrentActorException) return "AUTHORIZATION_REVOKED";
-        if (failure instanceof AgentEnablementInvalidStateException) return "MODEL_UNAVAILABLE";
+        if (failure instanceof AgentEnablementInvalidStateException || failure instanceof AgentDailyStateInvalidException) return "MODEL_UNAVAILABLE";
         if (failure instanceof AgentUnavailableException) return "MODEL_UNAVAILABLE";
         return "INTERNAL_ERROR";
     }

@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.aiarchguard.platform.agent.AgentUnavailableException;
 import io.github.aiarchguard.platform.agent.DailyAgentOperations.*;
 import io.github.aiarchguard.platform.agent.internal.DailyAgentStore;
+import io.github.aiarchguard.platform.agent.LiveCostPolicy;
+import io.github.aiarchguard.platform.agent.internal.LiveAccountingOperations;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -91,6 +93,32 @@ public final class JdbcDailyAgentStore implements DailyAgentStore {
             """).param("p",project).param("g",grant).param("r",request).update());
     }
     private void changed(int count) { if (count != 1) throw new AgentUnavailableException(); }
+
+    /** 一条更新同时核对不可变关联、模型契约与原请求者，失去领取竞争不写任何状态。 */
+    @Override public boolean claim(RequestLink link, UUID requester, Instant at) {
+        if (link == null || requester == null || at == null || link.createdAt() == null) return false;
+        return jdbc.sql("""
+            UPDATE agent.requests r SET state='RUNNING', updated_at=:at
+            FROM agent.daily_request_links l
+            WHERE r.id=:request AND r.project_id=:project AND r.requester_id=:actor AND r.state='QUEUED'
+              AND l.request_id=r.id AND l.project_id=r.project_id AND l.created_at=r.created_at AND l.created_at=:created
+              AND l.grant_id=:grant AND l.risk_acknowledgement_id=:risk AND l.credential_version=:credential
+              AND l.settings_revision=:revision AND l.runtime_binding_digest=:digest
+              AND l.payload_sha256=:payload AND l.candidates_sha256=:candidates
+              AND r.bindings->>'modelProfileVersion'=:profile AND r.bindings->>'priceCatalogVersion'=:price
+              AND r.bindings->>'modelProtocolVersion'='responses-v1-restricted' AND r.bindings->>'modelId'='deepseek-flash'
+              AND r.bindings->>'outputSchemaVersion'='0.1.0' AND r.model_input->>'schemaVersion'='0.1.0'
+              AND r.model_input->>'purpose'=r.purpose AND r.model_input->>'promptVersion'=r.bindings->>'promptVersion'
+              AND ((r.purpose='FINDING_EXPLANATION' AND r.bindings->>'promptVersion'=:explanation)
+                OR (r.purpose='PR_SUMMARY' AND r.bindings->>'promptVersion'=:summary))
+            """).param("request", link.requestId()).param("project", link.projectId()).param("actor", requester)
+            .param("created", Timestamp.from(link.createdAt())).param("grant", link.grantId()).param("risk", link.riskAcknowledgementId())
+            .param("credential", link.credentialVersion()).param("revision", link.settingsRevision()).param("digest", link.runtimeBindingDigest())
+            .param("payload", link.payloadSha256()).param("candidates", link.candidatesSha256()).param("at", Timestamp.from(at))
+            .param("profile", LiveCostPolicy.CONTEXT_MODEL_PROFILE).param("price", LiveCostPolicy.CONTEXT_VERSION)
+            .param("explanation", LiveAccountingOperations.EXPLANATION_PROMPT).param("summary", LiveAccountingOperations.SUMMARY_PROMPT)
+            .update() == 1;
+    }
 
     @Override public Optional<RequestLink> findRequest(UUID project, UUID request) {
         return jdbc.sql("SELECT l.* FROM agent.daily_request_links l WHERE l.project_id=:p AND l.request_id=:r")

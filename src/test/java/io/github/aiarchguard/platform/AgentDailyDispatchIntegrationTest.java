@@ -162,8 +162,8 @@ class AgentDailyDispatchIntegrationTest extends DailyExecutionIntegrationSupport
         var original=requests.find(c.p(),c.r()).orElseThrow();
         var binding=store.findRequest(c.p(),c.r()).orElseThrow();
         String column=Set.of("purpose","schemaVersion").contains(field)?"model_input":"bindings";
-        // 已发布 V9 在领取前保护原快照；失败必须来自该触发器，而不是普通 SQL 或权限错误。
-        assertThatThrownBy(()->jdbc.sql("UPDATE agent.requests SET "+column+"=jsonb_set("+column+",ARRAY[cast(:field AS text)],to_jsonb('different'::text)) WHERE id=:r")
+        // 同一语句先满足状态转换，再触发不可变检查；整条更新回滚后才可尝试真实领取。
+        assertThatThrownBy(()->jdbc.sql("UPDATE agent.requests SET state='RUNNING', "+column+"=jsonb_set("+column+",ARRAY[cast(:field AS text)],to_jsonb('different'::text)) WHERE id=:r")
             .param("r",c.r()).param("field",field).update())
             .hasRootCauseInstanceOf(java.sql.SQLException.class)
             .satisfies(error->{

@@ -40,7 +40,7 @@ abstract class DailyExecutionIntegrationSupport extends DailyAccountingTestSuppo
 
     DailyExecutionTestBridge bridge() {
         var resources = new LiveResourceAuthorizer(projects,jobs,findings,documents,reports);
-        return new DailyExecutionTestBridge(store,controls,service,resources::validateDaily);
+        return new DailyExecutionTestBridge(store,controls,service,resources::validateDaily,scope);
     }
     LiveDispatchTransitions transitions(AuditRecorder recorder) {
         return bridge().transitions(requests,projects,actors,scope,traces,recorder,clock,manager,work);

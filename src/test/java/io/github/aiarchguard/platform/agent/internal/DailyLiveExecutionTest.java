@@ -11,6 +11,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** 原测试仍通过公开合成入口独立运行，此处让同一套隐私、回调和费用断言经过窄能力入口。 */
 class DailyLiveExecutionTest extends LiveExecutionCoordinatorTest {
+    private Runnable afterResultLock = () -> {};
+    private int releases;
+
     @Override void execute(LiveExecutionCoordinator core) {
         executeBounded(core, new LiveExecutionBudget(nanos::get));
     }
@@ -41,12 +44,13 @@ class DailyLiveExecutionTest extends LiveExecutionCoordinatorTest {
             public LiveAccountingOperations.Outcome unknown() { return ledger.unknown(project,request); }
             public void stop(String code) { accounting.stops.incrementAndGet(); }
             public void lockAndValidateSuccess(AgentSnapshot snapshot, LongSupplier left) {
+                afterResultLock.run();
                 assertThat(left.getAsLong()).isPositive();
                 assertThat(accounting.settled).hasValue(1);
                 // 恢复任务可能已经赢得终态，保留后续 RUNNING-only CAS 的空操作语义。
                 assertThat(requests.value.view().state()).isNotEqualTo("SUCCEEDED");
             }
-            public void completeSuccess() { assertThat(requests.value.view().state()).isEqualTo("SUCCEEDED"); }
+            public void completeSuccess() { releases++; assertThat(requests.value.view().state()).isEqualTo("SUCCEEDED"); }
         };
     }
 
@@ -82,6 +86,40 @@ class DailyLiveExecutionTest extends LiveExecutionCoordinatorTest {
         assertThat(accounting.settled).hasValue(1);
         assertThat(provider.sends).hasValue(1);
         assertThat(requests.value.view().state()).isEqualTo("SUCCEEDED");
+    }
+
+    @ParameterizedTest @ValueSource(strings={"lock", "audit", "beforeCommit"})
+    void expiredScopeCannotPublishSettledReply(String phase) {
+        var active = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var manager = new RollbackResultTransactions(requests);
+        var successAudits = new java.util.concurrent.atomic.AtomicInteger();
+        afterResultLock = () -> { if (phase.equals("lock")) active.set(false); };
+        var writer = new LiveResultTransitions(requests, event -> {
+            if (!event.action().equals("agent.live.result_succeeded")) return;
+            successAudits.incrementAndGet();
+            if (phase.equals("audit")) active.set(false);
+            if (phase.equals("beforeCommit")) {
+                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        public void beforeCommit(boolean readOnly) { active.set(false); }
+                    });
+            }
+        }, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC), manager, memoryDatabaseWork(manager));
+        var core = new LiveExecutionCoordinator(requests, accounting, validResources(), provider,
+            boundedFake((version, preflight, send) -> { preflight.run(); return send.apply("synthetic-placeholder"); }),
+            writer, new AgentOutputValidator(new com.fasterxml.jackson.databind.ObjectMapper()),
+            () -> new io.github.aiarchguard.platform.identity.CurrentActor(owner, java.util.Set.of()),
+            body -> {}, nanos::get, database, () -> {
+                if (!active.get()) throw new io.github.aiarchguard.platform.identity.InactiveAuthenticatedTaskException();
+            });
+        execute(core);
+        assertThat(active).isFalse();
+        assertThat(requests.value.view().state()).isEqualTo("FAILED");
+        assertThat(requests.value.view().failure().code()).isEqualTo("AUTHORIZATION_REVOKED");
+        assertThat(successAudits).hasValue(phase.equals("lock") ? 0 : 1);
+        assertThat(releases).isEqualTo(phase.equals("beforeCommit") ? 1 : 0);
+        assertThat(accounting.settled).hasValue(1);
+        assertThat(accounting.unknown).hasValue(0);
     }
 
     @Test void duplicateReservationCannotFailOrChargeWinner() {

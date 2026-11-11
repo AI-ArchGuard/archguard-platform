@@ -78,6 +78,13 @@ public final class LiveDispatchTransitions {
             audit, clock, manager, Objects.requireNonNull(database), true);
     }
 
+    /** 入队前的独立只读等待上限；请求创建已有事务时由调度器直接参与该事务。 */
+    Runnable prepareDispatch(LongSupplier nanos, java.util.function.Supplier<Runnable> read) {
+        if (!bounded) throw new AgentUnavailableException();
+        var remaining = new LiveExecutionBudget(nanos, () -> java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
+        return database.transaction(remaining, true, read);
+    }
+
     public Claim start(UUID project, UUID request) {
         return transaction.execute(status -> startBody(project, request, () -> {}, null));
     }

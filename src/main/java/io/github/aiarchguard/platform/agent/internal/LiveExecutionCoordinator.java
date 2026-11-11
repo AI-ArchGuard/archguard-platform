@@ -185,7 +185,7 @@ public final class LiveExecutionCoordinator {
             var result = validator.validate(reply.rawJson(), snapshot);
             validateResources(snapshot, remaining); budget.requireRemaining(); requireActive.run();
             usage = observedUsage(usage, started);
-            transitions.finishBounded(snapshot, result, usage, remaining, lease);
+            transitions.finishBounded(snapshot, result, usage, remaining, lease, requireActive);
         } catch (RuntimeException failure) {
             // Preflight denial (including a concurrent replay) never owns a shared RUNNING row.
             // Only the call awarded newAttempt=true may persist its outcome or terminalize work.

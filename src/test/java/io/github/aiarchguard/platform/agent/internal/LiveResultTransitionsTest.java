@@ -117,7 +117,7 @@ class LiveResultTransitionsTest {
             sameTx.run(); events.add("audit"); persistedAudit.incrementAndGet();
             if (phase.equals("auditFailure")) throw new AgentUnavailableException();
         },Clock.fixed(LiveExecutionCoordinatorTest.NOW,ZoneOffset.UTC),manager,LiveExecutionCoordinatorTest.memoryDatabaseWork(manager));
-        Runnable finish=()->writer.finishBounded(before,result(),null,()->expired.get()?0:1_000_000_000L,lease);
+        Runnable finish=()->writer.finishBounded(before,result(),null,()->expired.get()?0:1_000_000_000L,lease,()->assertThat(expired).isFalse());
         if (phase.equals("success") || phase.equals("lose")) finish.run();
         else assertThatThrownBy(finish::run).isInstanceOf(RuntimeException.class);
         var expected=switch (phase) {

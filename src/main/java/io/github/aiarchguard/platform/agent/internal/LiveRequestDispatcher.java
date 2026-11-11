@@ -35,6 +35,7 @@ public final class LiveRequestDispatcher {
     private final BindingExecution execution;
     private final Runnable admission;
     private final boolean bounded;
+    private final boolean boundedPreparation;
     private final LongSupplier nanos;
 
     public LiveRequestDispatcher(AgentStore requests, LiveRequestStore links, CurrentActorProvider actors,
@@ -52,7 +53,7 @@ public final class LiveRequestDispatcher {
             (binding, remaining) -> {
                 var link = syntheticLink(binding);
                 execution.execute(link.projectId(), link.batchId(), link.templateId(), link.requestId());
-            }, executor, admission, System::nanoTime, false);
+            }, executor, admission, System::nanoTime, false, false);
     }
 
     LiveRequestDispatcher(AgentStore requests, LiveRequestStore links, CurrentActorProvider actors,
@@ -62,7 +63,7 @@ public final class LiveRequestDispatcher {
             (binding, remaining) -> {
                 var link = syntheticLink(binding);
                 execution.execute(link.projectId(), link.batchId(), link.templateId(), link.requestId(), remaining);
-            }, executor, admission, nanos, true);
+            }, executor, admission, nanos, true, false);
         java.util.Objects.requireNonNull(execution);
     }
 
@@ -71,17 +72,17 @@ public final class LiveRequestDispatcher {
             LeaseExecution execution, Executor executor, Runnable admission, LongSupplier nanos) {
         this(requests, association, actors, identities, traces, transitions,
             (binding, remaining) -> execution.execute(association.lease(binding), remaining),
-            executor, admission, nanos, true);
+            executor, admission, nanos, true, true);
         java.util.Objects.requireNonNull(execution);
     }
 
     private LiveRequestDispatcher(AgentStore requests, LiveRequestAssociation association, CurrentActorProvider actors,
             AuthenticatedTaskScope identities, TraceTaskScope traces, LiveDispatchTransitions transitions,
-            BindingExecution execution, Executor executor, Runnable admission, LongSupplier nanos, boolean bounded) {
+            BindingExecution execution, Executor executor, Runnable admission, LongSupplier nanos, boolean bounded, boolean boundedPreparation) {
         this.requests = requests; this.association = association; this.actors = actors; this.identities = identities;
         this.traces = traces; this.transitions = transitions; this.execution = execution;
         this.executor = executor; this.admission = admission; this.nanos = java.util.Objects.requireNonNull(nanos);
-        this.bounded = bounded;
+        this.bounded = bounded; this.boundedPreparation = boundedPreparation;
     }
 
     private static LiveRequestStore.Link syntheticLink(LiveRequestBinding binding) {
@@ -101,29 +102,35 @@ public final class LiveRequestDispatcher {
     private void dispatchTrusted(UUID project, UUID request) {
         admission.run();
         if (project == null || request == null) throw new AgentInvalidException();
+        boolean callerTransaction = TransactionSynchronizationManager.isActualTransactionActive();
+        if (callerTransaction != TransactionSynchronizationManager.isSynchronizationActive()) throw new AgentUnavailableException();
+        // 创建事务内必须看见本事务刚插入的行；独立调用先结束短只读事务，再入队。
+        Runnable task = boundedPreparation && !callerTransaction
+            ? transitions.prepareDispatch(nanos, () -> dispatchTask(project, request))
+            : dispatchTask(project, request);
+        if (task == null) return;
+        if (callerTransaction) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { queue(task); }
+            });
+        } else queue(task);
+    }
+
+    private Runnable dispatchTask(UUID project, UUID request) {
         var snapshot = requests.find(project, request).orElseThrow(AgentNotFoundException::new);
         var view = snapshot.view();
         if (!actors.currentActor().id().equals(view.requesterId())) throw new ProjectPermissionDeniedException();
-        if (!"QUEUED".equals(view.state())) return;
+        if (!"QUEUED".equals(view.state())) return null;
         association.find(project, request).orElseThrow(AgentNotFoundException::new);
         String trace = view.traceId();
         // Only IDs, verified immutable identity facts and trace are captured, never a JWT or request body.
         Runnable scoped = identities.capture(view.requesterId(), traces.wrap(trace, () -> process(project, request)));
-        Runnable task = () -> {
+        return () -> {
             try { scoped.run(); }
             catch (RuntimeException rejectedScope) {
                 LOGGER.warn("Live dispatch scope rejected requestId={} traceId={} code={}", request, trace, code(rejectedScope));
             }
         };
-        if (TransactionSynchronizationManager.isActualTransactionActive()) {
-            if (!TransactionSynchronizationManager.isSynchronizationActive()) throw new AgentUnavailableException();
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override public void afterCommit() { queue(task); }
-            });
-        } else {
-            if (TransactionSynchronizationManager.isSynchronizationActive()) throw new AgentUnavailableException();
-            queue(task);
-        }
     }
 
     /** 排队拒绝只报告不可用；同请求可能已被其他调度副本接收，不能在这里终结它或补发。 */

@@ -14,8 +14,10 @@ import org.springframework.transaction.PlatformTransactionManager;
 /** 仅供不同测试包手工装配真实日常关联。生产代码不导出 lease，也不注册 worker。 */
 public final class DailyExecutionTestBridge {
     private final LiveRequestAssociation association;
+    private final AuthenticatedTaskScope scope;
     public DailyExecutionTestBridge(DailyAgentStore store, DailyAgentControlService controls,
-            DailyAccountingService accounting, Consumer<AgentSnapshot> resources) {
+            DailyAccountingService accounting, Consumer<AgentSnapshot> resources, AuthenticatedTaskScope scope) {
+        this.scope = scope;
         association = new DailyLiveRequestAssociation(store, controls, accounting, resources);
     }
 
@@ -61,6 +63,6 @@ public final class DailyExecutionTestBridge {
             AgentRequestView.AgentUsage usage, LongSupplier remaining) {
         var view = snapshot.view();
         var binding = association.find(view.projectId(), view.id()).orElseThrow();
-        writer.finishBounded(snapshot,result,usage,remaining,association.lease(binding));
+        writer.finishBounded(snapshot,result,usage,remaining,association.lease(binding),scope::requireActive);
     }
 }

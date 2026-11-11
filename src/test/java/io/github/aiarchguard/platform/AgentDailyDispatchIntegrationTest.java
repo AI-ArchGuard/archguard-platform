@@ -85,9 +85,9 @@ class AgentDailyDispatchIntegrationTest extends DailyExecutionIntegrationSupport
         var b=store.findRequest(c.p(),c.r()).orElseThrow();
         String metadata=jdbc.sql("SELECT metadata::text FROM audit.audit_records WHERE project_id=:p AND action=:a")
             .param("p",c.p()).param("a",RUNNING).query(String.class).single();
-        var expected=mapper.valueToTree(Map.of("requestId",c.r(),"grantId",c.g(),"riskAcknowledgementId",b.riskAcknowledgementId(),
+        var expected=mapper.readTree(mapper.writeValueAsBytes(Map.of("requestId",c.r(),"grantId",c.g(),"riskAcknowledgementId",b.riskAcknowledgementId(),
             "credentialVersion",b.credentialVersion(),"settingsRevision",b.settingsRevision(),"runtimeBindingDigest",b.runtimeBindingDigest(),
-            "inputDigest",claim.snapshot().view().bindings().inputDigest()));
+            "inputDigest",claim.snapshot().view().bindings().inputDigest())));
         assertThat(mapper.readTree(metadata)).isEqualTo(expected);
         winner.fail(claim,"MODEL_UNAVAILABLE");
         assertThat(state(c)).isEqualTo("FAILED");
@@ -198,6 +198,31 @@ class AgentDailyDispatchIntegrationTest extends DailyExecutionIntegrationSupport
                 assertThat(loser.get(5,TimeUnit.SECONDS)).isNull(); uncharged(c,"RUNNING"); assertThat(audits(c,RUNNING)).isOne();
             } finally { release.countDown(); }
         }
+    }
+
+    @ParameterizedTest @ValueSource(strings={"requests", "daily_request_links"})
+    void standaloneDispatchMetadataWaitEndsBeforeTableRelease(String table) throws Exception {
+        var c = queued(2);
+        var submissions = new AtomicInteger();
+        var dispatcher = bridge().dispatcher(requests, actors, scope, transitions(audit),
+            task -> submissions.incrementAndGet(), (id, left) -> { throw new AssertionError(); });
+        try (var worker = Executors.newSingleThreadExecutor(); var holder = source.getConnection()) {
+            holder.setAutoCommit(false);
+            try {
+                int pid = pid(holder);
+                try (var lock = holder.createStatement()) {
+                    lock.setQueryTimeout(5);
+                    lock.execute("LOCK TABLE agent." + table + " IN ACCESS EXCLUSIVE MODE");
+                }
+                var pending = worker.submit(asOwner(() -> { dispatcher.dispatch(c.p(), c.r()); return null; }));
+                awaitWait(pid, pending);
+                assertThatThrownBy(() -> pending.get(7, TimeUnit.SECONDS)).hasCauseInstanceOf(AgentUnavailableException.class)
+                    .satisfies(error -> assertThat(error.getCause()).hasNoCause());
+                assertThat(submissions).hasValue(0);
+            } finally { holder.rollback(); }
+        }
+        uncharged(c, "QUEUED");
+        assertThat(audits(c, RUNNING)).isZero();
     }
 
     @Test void claimWaitEndsBeforeBlockerReleasesRow() throws Exception {

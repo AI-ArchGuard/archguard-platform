@@ -176,6 +176,53 @@ class AgentDailyResultIntegrationTest extends DailyExecutionIntegrationSupport {
         }
     }
 
+    @Test void scopeExpiresWhileSuccessWaitsForSettingsLock() throws Exception {
+        var c = settled(2);
+        var left = deadline(20);
+        try (var pool = Executors.newSingleThreadExecutor(); var holder = source.getConnection()) {
+            holder.setAutoCommit(false);
+            try {
+                int pid = pid(holder);
+                try (var query = holder.prepareStatement("SELECT project_id FROM agent.daily_project_settings WHERE project_id=? FOR UPDATE")) {
+                    query.setObject(1, c.p()); query.setQueryTimeout(5);
+                    try (var row = query.executeQuery()) { assertThat(row.next()).isTrue(); }
+                }
+                var pending = pool.submit(asOwner(() -> { finish(c, audit, left); return null; }));
+                awaitWait(pid, pending);
+                active.set(false);
+                holder.rollback();
+                assertThatThrownBy(() -> pending.get(7, TimeUnit.SECONDS))
+                    .hasCauseInstanceOf(io.github.aiarchguard.platform.identity.InactiveAuthenticatedTaskException.class);
+                assertThat(left.getAsLong()).isPositive();
+                retained(c);
+            } finally { holder.rollback(); }
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings={"audit", "beforeCommit"})
+    void scopeExpiresWhilePublishingResult(String phase) {
+        var c = settled(2);
+        var reached = new AtomicBoolean();
+        var left = deadline(8);
+        AuditRecorder recorder = event -> {
+            audit.record(event);
+            assertThat(state(c)).isEqualTo("SUCCEEDED");
+            if (phase.equals("audit")) {
+                reached.set(true); active.set(false);
+            } else TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                public void beforeCommit(boolean readOnly) {
+                    assertThat(usage(c).activeRequestId()).isNull();
+                    reached.set(true); active.set(false);
+                }
+            });
+        };
+        assertThatThrownBy(() -> finish(c, recorder, left))
+            .isInstanceOf(io.github.aiarchguard.platform.identity.InactiveAuthenticatedTaskException.class);
+        assertThat(reached).isTrue();
+        assertThat(left.getAsLong()).isPositive();
+        retained(c);
+    }
+
     @Test void resultMustHoldSettingsGrantAndOriginalDailyBudgetsBeforeWaitingForRequest() throws Exception {
         var c=settled(2);
         try (var pool=Executors.newSingleThreadExecutor(); var holder=source.getConnection()) {

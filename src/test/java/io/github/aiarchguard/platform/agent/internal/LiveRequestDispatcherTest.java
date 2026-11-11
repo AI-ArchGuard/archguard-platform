@@ -550,7 +550,17 @@ class LiveRequestDispatcherTest {
             }
             public void stop(LiveRequestBinding exact,String code) { assertThat(exact).isEqualTo(binding); stops.add(code); }
         };
-        var db=new CleanupDatabase(fixture,new ArrayList<>());
+        var claimDatabase=new CleanupDatabase(fixture,new ArrayList<>());
+        // 入队读取独立于 worker 的领取提交钩子，不能在准备事务中提前触发模拟身份过期。
+        var db=new LiveDatabaseWork() {
+            public <T> T transaction(LongSupplier remaining, boolean readOnly, Supplier<T> action) {
+                if (!readOnly) return claimDatabase.transaction(remaining, false, action);
+                assertThat(remaining.getAsLong()).isPositive().isLessThanOrEqualTo(TimeUnit.SECONDS.toNanos(5));
+                return LiveExecutionCoordinatorTest.memoryDatabaseWork(new LiveExecutionCoordinatorTest.MemoryTransactions())
+                    .transaction(remaining, true, action);
+            }
+            public <T> T cleanup(Supplier<T> action) { return claimDatabase.cleanup(action); }
+        };
         var transitions=new LiveDispatchTransitions(fixture.requests,association,fixture.projects,fixture.actors,fixture.scope,
             ()->MDC.get("traceId"),fixture.audit::add,Clock.fixed(NOW,ZoneOffset.UTC),fixture.transactions,db);
         var dispatcher=new LiveRequestDispatcher(fixture.requests,association,fixture.actors,fixture.scope,new TraceTaskScope(),transitions,
@@ -574,6 +584,38 @@ class LiveRequestDispatcherTest {
             assertThat(fixture.requests.value.view().state()).isEqualTo("QUEUED");
             assertThat(fixture.audit).isEmpty();
         }
+    }
+
+    @Test void standaloneAssociationReadsUseFinitePreparation() {
+        var reads = new ArrayList<String>();
+        var withinRead = new AtomicBoolean();
+        var db = new LiveDatabaseWork() {
+            public <T> T transaction(LongSupplier remaining, boolean readOnly, Supplier<T> action) {
+                assertThat(readOnly).isTrue();
+                assertThat(remaining.getAsLong()).isPositive().isLessThanOrEqualTo(TimeUnit.SECONDS.toNanos(5));
+                withinRead.set(true);
+                try { return action.get(); } finally { withinRead.set(false); }
+            }
+        };
+        AgentStore requests = (AgentStore) java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+            new Class<?>[]{AgentStore.class}, (proxy, method, args) -> {
+                assertThat(method.getName()).isEqualTo("find"); assertThat(withinRead).isTrue();
+                reads.add("request"); return Optional.of(fixture.requests.value);
+            });
+        LiveRequestAssociation association = (LiveRequestAssociation) java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+            new Class<?>[]{LiveRequestAssociation.class}, (proxy, method, args) -> {
+                assertThat(method.getName()).isEqualTo("find"); assertThat(withinRead).isTrue();
+                reads.add("link"); return Optional.of(new SyntheticLiveBinding(fixture.links.find(fixture.project, fixture.request).orElseThrow()));
+            });
+        var boundary = new LiveDispatchTransitions(requests, association, fixture.projects, fixture.actors,
+            fixture.scope, () -> TRACE, fixture.audit::add, Clock.fixed(NOW, ZoneOffset.UTC), fixture.transactions, db);
+        var dispatcher = new LiveRequestDispatcher(requests, association, fixture.actors, fixture.scope, new TraceTaskScope(),
+            boundary, (lease, left) -> { throw new AssertionError(); }, task -> {
+                assertThat(withinRead).isFalse(); fixture.queue.execute(task);
+            }, () -> {}, System::nanoTime);
+        dispatcher.dispatch(fixture.project, fixture.request);
+        assertThat(reads).containsExactly("request", "link");
+        assertThat(fixture.queue.submissions).isOne();
     }
 
     private void assertNoWork() {

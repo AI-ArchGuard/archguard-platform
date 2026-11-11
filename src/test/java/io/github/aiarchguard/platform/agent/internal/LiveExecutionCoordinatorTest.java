@@ -806,7 +806,7 @@ class LiveExecutionCoordinatorTest {
     }
 
     /** Fake callbacks have no real lock; opt them into the bounded contract explicitly, never in production. */
-    private static LiveExecutionCoordinator.CredentialUse boundedFake(LiveExecutionCoordinator.CredentialUse delegate) {
+    static LiveExecutionCoordinator.CredentialUse boundedFake(LiveExecutionCoordinator.CredentialUse delegate) {
         return new LiveExecutionCoordinator.CredentialUse() {
             @Override public LiveResponsePort.Reply use(UUID version, Runnable preflight,
                     java.util.function.Function<String, LiveResponsePort.Reply> operation) {

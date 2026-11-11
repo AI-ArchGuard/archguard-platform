@@ -134,11 +134,11 @@ record Creation<T>(T value, boolean created) {} // 只供controller选择201/200
 
 **Interfaces:** 采用设计§6完整签名。`SyntheticLiveBinding`包装旧`LiveRequestStore.Link`，`DailyLiveBinding`包装`DailyAgentStore.RequestLink`，均实现`projectId/requestId/createdAt`；不使用占位batch/template。旧公开构造及execute(project,batch,template,request[,remaining])保持原失败关闭和委托。新增包内`execute(LiveExecutionLease,LongSupplier)`和结果`finishBounded(snapshot,result,usage,remaining,lease)`。
 
-- [ ] **RED:** `dailyAndSyntheticShareOneSendAlgorithm`用假responses/credential source分别验证同一次prepare、唯一attempt、发送前两次复核、30秒原期限、收到回复先独立settle再Output/Citation、失败stop/unknown。所有旧响应拒绝、记录隐私及重入/迟到credential callback断言保留；不可复制coordinator实现。
-- [ ] **RED:** `claimLoserCannotSendOrFailWinner`覆盖重复dispatch、CAS丢失、排队拒绝、afterCommit回滚、scope撤销、队列超过60秒、领取锁等待耗尽。无claim或newAttempt=false者不能停grant、写UNKNOWN或终结别人正在运行的请求。
-- [ ] **RED:** `dailySuccessAndSlotReleaseCommitTogether`在结果事务中持settings→grant锁，再验证role/resources/current binding/SETTLED；结果CAS成功后清本请求active。结果CAS丢失、锁后deadline耗尽、审计或提交失败，SUCCEEDED和active释放一起回滚，独立SETTLED保留。与撤销/新创建并发时无反向锁，无新调用趁settle先完成而进入。
-- [ ] 运行新测试确认RED，再把核心accounting参数替换为lease；synthetic适配原有语义，日常适配任务3–5。result overload的`lockAndValidateSuccess`先于请求CAS，`completeSuccess`只在CAS成功后且同事务调用；原公开result入口仍完全兼容。
-- [ ] 重跑 `DailyLiveExecutionTest,AgentDailyDispatchIntegrationTest,AgentDailyResultIntegrationTest,LiveExecutionCoordinatorTest,LiveRequestDispatcherTest,LiveResultTransitionsTest,AgentLiveDispatchIntegrationTest,AgentLiveResultIntegrationTest,AgentLiveAdmissionWaitIntegrationTest`，并跑既有bounded credential/database工作测试；未扩大allowlist、未延长期限后提交。
+- [x] **RED:** `dailyAndSyntheticShareOneSendAlgorithm`用假responses/credential source分别验证同一次prepare、唯一attempt、发送前两次复核、30秒原期限、收到回复先独立settle再Output/Citation、失败stop/unknown。所有旧响应拒绝、记录隐私及重入/迟到credential callback断言保留；不可复制coordinator实现。
+- [x] **RED:** `claimLoserCannotSendOrFailWinner`覆盖重复dispatch、CAS丢失、排队拒绝、afterCommit回滚、scope撤销、队列超过60秒、领取锁等待耗尽。无claim或newAttempt=false者不能停grant、写UNKNOWN或终结别人正在运行的请求。
+- [x] **RED:** `dailySuccessAndSlotReleaseCommitTogether`在结果事务中持settings→grant锁，再验证role/resources/current binding/SETTLED；结果CAS成功后清本请求active。结果CAS丢失、锁后deadline耗尽、审计或提交失败，SUCCEEDED和active释放一起回滚，独立SETTLED保留。与撤销/新创建并发时无反向锁，无新调用趁settle先完成而进入。
+- [x] 运行新测试确认RED，再把核心accounting参数替换为lease；synthetic适配原有语义，日常适配任务3–5。result overload的`lockAndValidateSuccess`先于请求CAS，`completeSuccess`只在CAS成功后且同事务调用；原公开result入口仍完全兼容。
+- [x] 重跑 `DailyLiveExecutionTest,AgentDailyDispatchIntegrationTest,AgentDailyResultIntegrationTest,LiveExecutionCoordinatorTest,LiveRequestDispatcherTest,LiveResultTransitionsTest,AgentLiveDispatchIntegrationTest,AgentLiveResultIntegrationTest,AgentLiveAdmissionWaitIntegrationTest`，并跑既有bounded credential/database工作测试；未扩大allowlist、未延长期限后提交。
 
 ### Task 7: 默认关闭运行装配及有界恢复
 

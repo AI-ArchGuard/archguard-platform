@@ -121,12 +121,12 @@ record Creation<T>(T value, boolean created) {} // 只供controller选择201/200
 
 **Interfaces:** `LiveMonetaryBudgetStore`是设计§7的`MoneyUsage(long reserved,long spent)`及`lock/reserve/settle`精确签名，无attempt字段。`DailyAccountingService.reserve(project,request,remaining):Admission`、`checkBeforeSend(project,request,remaining):SendApproval`、`settle(project,request,price,usage):Outcome`、`unknown(project,request):Outcome`、`stop(project,request,code):void`返回原`LiveAccountingOperations`records。`completeSuccess(project,request):void`仅加入既有结果事务，不另开事务，未SETTLED或未占槽则拒绝。
 
-- [ ] **RED:** `reserveIsAtomicBoundedAndCountedOnce`并发同请求预留返回一个newAttempt=true；attempt、grant attempts+1、grant及两级reserved+316373、审计一起提交/回滚。次数用尽、少1 microUSD、日额不足、撤销/凭据改变/锁后到期都零新attempt。使用减法核对余额避免加法溢出。
-- [ ] **RED:** `crossModeAndNewGrantSeeOldReservations`：同Project synthetic/daily共用Project和部署日行，不同Project仍共用部署行；原live UNKNOWN和daily UNKNOWN各挡住可用金额。换grant、模式或同一天重启不能绕过；synthetic只保留自己的批次次数，不能拿日行attempts=0放行。
-- [ ] **RED:** `settlementUsesOriginalUtcDayAndNeverRestoresAttempts`：23:59:59预留，午夜后checkBeforeSend拒绝；可信usage次日结算仅更新原day。SETTLED实际0才显示0；UNKNOWN保留316373且actual=null、停止grant、迟到settle仍UNKNOWN。重复settle不重复扣减；grant次数跨日不减，金额累计不清零。
-- [ ] **RED:** `trustedUsageSurvivesOutputFailureRevocationAndCleanupFailure`：分别注入输出/引用无效、8001输入、收到回复后撤权/关设置/轮换及结果提交失败，保留合法费用且停止grant；结算不得依赖失效授权拒记。没有可信usage或非法cost保守UNKNOWN；不能误触fake预算。
-- [ ] 先运行两组新集成测试确认RED，再提取原金额SQL，原JdbcLiveAccountingStore构造与外观保留，原`finish`通过同一端口更新两日行。Daily reserve/send在原有界事务，settle/unknown/stop用独立有限cleanup；不建立HTTP记费/退款入口。
-- [ ] 重跑新测试及 `AgentLiveAccountingIntegrationTest,AgentContextAccountingIntegrationTest,AgentBudgetIntegrationTest,AgentLiveDatabaseAccountingIntegrationTest,LiveCostAndClosedInventoryTest`；原UTC日金额和所有旧批次结果不变后提交。
+- [x] **RED:** `reserveIsAtomicBoundedAndCountedOnce`并发同请求预留返回一个newAttempt=true；attempt、grant attempts+1、grant及两级reserved+316373、审计一起提交/回滚。次数用尽、少1 microUSD、日额不足、撤销/凭据改变/锁后到期都零新attempt。使用减法核对余额避免加法溢出。
+- [x] **RED:** `crossModeAndNewGrantSeeOldReservations`：同Project synthetic/daily共用Project和部署日行，不同Project仍共用部署行；原live UNKNOWN和daily UNKNOWN各挡住可用金额。换grant、模式或同一天重启不能绕过；synthetic只保留自己的批次次数，不能拿日行attempts=0放行。
+- [x] **RED:** `settlementUsesOriginalUtcDayAndNeverRestoresAttempts`：23:59:59预留，午夜后checkBeforeSend拒绝；可信usage次日结算仅更新原day。SETTLED实际0才显示0；UNKNOWN保留316373且actual=null、停止grant、迟到settle仍UNKNOWN。重复settle不重复扣减；grant次数跨日不减，金额累计不清零。
+- [x] **RED:** `trustedUsageSurvivesOutputFailureRevocationAndCleanupFailure`：分别注入输出/引用无效、8001输入、收到回复后撤权/关设置/轮换及结果提交失败，保留合法费用且停止grant；结算不得依赖失效授权拒记。没有可信usage或非法cost保守UNKNOWN；不能误触fake预算。
+- [x] 先运行两组新集成测试确认RED，再提取原金额SQL，原JdbcLiveAccountingStore构造与外观保留，原`finish`通过同一端口更新两日行。Daily reserve/send在原有界事务，settle/unknown/stop用独立有限cleanup；不建立HTTP记费/退款入口。
+- [x] 重跑新测试及 `AgentLiveAccountingIntegrationTest,AgentContextAccountingIntegrationTest,AgentBudgetIntegrationTest,AgentLiveDatabaseAccountingIntegrationTest,LiveCostAndClosedInventoryTest`；原UTC日金额和所有旧批次结果不变后提交。
 
 ### Task 6: 窄执行lease/association复用与成功事务
 

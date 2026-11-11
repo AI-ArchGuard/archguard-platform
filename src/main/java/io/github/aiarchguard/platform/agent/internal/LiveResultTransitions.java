@@ -55,13 +55,7 @@ public final class LiveResultTransitions {
     /** The live core never falls back to the compatibility-only unbounded writer. */
     public void finishBounded(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
             AgentRequestView.AgentUsage usage, LongSupplier remainingNanos) {
-        if (result == null) throw new IllegalArgumentException("Invalid live result state");
-        Runnable deadline = () -> checkRemaining(remainingNanos);
-        deadline.run();
-        database.transaction(remainingNanos, false, () -> {
-            persistBody(snapshot, result, null, usage, deadline);
-            return null;
-        });
+        finishSuccess(snapshot, result, usage, remainingNanos, null, () -> checkRemaining(remainingNanos));
     }
 
     /** Failure persistence gets an independent finite budget, not a renewed model/send deadline. */
@@ -74,19 +68,48 @@ public final class LiveResultTransitions {
         });
     }
 
+    /** 先持完整锁序并核验当前权限，只有结果 CAS 胜者在同一事务释放精确槽。 */
+    void finishBounded(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
+            AgentRequestView.AgentUsage usage, LongSupplier remaining, LiveExecutionLease lease, Runnable requireActive) {
+        if (lease == null || !snapshot.view().projectId().equals(lease.projectId())
+                || !snapshot.view().id().equals(lease.requestId())) throw new AgentUnavailableException();
+        Objects.requireNonNull(requireActive);
+        // 每个成功检查点都验证捕获的任务身份；角色和请求者 UUID 无法证明该作用域仍有效。
+        finishSuccess(snapshot, result, usage, remaining, lease, () -> {
+            checkRemaining(remaining);
+            requireActive.run();
+        });
+    }
+
+    private void finishSuccess(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
+            AgentRequestView.AgentUsage usage, LongSupplier remaining, LiveExecutionLease lease, Runnable checkpoint) {
+        if (result == null) throw new IllegalArgumentException("Invalid live result state");
+        checkpoint.run();
+        database.transaction(remaining, false, () -> {
+            if (lease != null) lease.lockAndValidateSuccess(snapshot, remaining);
+            boolean completed = persistBody(snapshot, result, null, usage, checkpoint);
+            if (completed && lease != null) lease.completeSuccess();
+            checkpoint.run();
+            if (completed) beforeCommit(checkpoint);
+            return null;
+        });
+    }
+
     private void persist(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
             AgentRequestView.AgentFailure failure, AgentRequestView.AgentUsage usage, Runnable deadline) {
-        transaction.executeWithoutResult(status -> persistBody(snapshot, result, failure, usage, deadline));
+        transaction.executeWithoutResult(status -> {
+            if (persistBody(snapshot, result, failure, usage, deadline) && result != null) beforeCommit(deadline);
+        });
     }
 
     /**
      * 只有 RUNNING 行可变更；CAS 可能等待行锁，因此写后、审计后和提交前都检查成功期限，超期回滚结果与审计，独立费用保留。
      */
-    private void persistBody(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
+    private boolean persistBody(AgentSnapshot snapshot, AgentRequestView.AgentResult result,
             AgentRequestView.AgentFailure failure, AgentRequestView.AgentUsage usage, Runnable deadline) {
         deadline.run();
         var view = snapshot.view();
-        if (!store.finish(view.id(), result, failure, usage, Instant.now(clock))) return;
+        if (!store.finish(view.id(), result, failure, usage, Instant.now(clock))) return false;
         // The CAS may have waited on a row lock. Expiry now rolls back its tentative success.
         deadline.run();
         var metadata = new HashMap<String, Object>();
@@ -113,8 +136,12 @@ public final class LiveResultTransitions {
         audit.record(new AuditEvent(view.requesterId(), view.projectId(), result == null ? "agent.live.result_failed" : "agent.live.result_succeeded",
             result == null ? AuditResult.FAILURE : AuditResult.SUCCESS, view.traceId(), metadata));
         deadline.run();
-        if (result != null) TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void beforeCommit(boolean readOnly) { deadline.run(); }
+        return true;
+    }
+
+    private void beforeCommit(Runnable checkpoint) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void beforeCommit(boolean readOnly) { checkpoint.run(); }
         });
     }
 

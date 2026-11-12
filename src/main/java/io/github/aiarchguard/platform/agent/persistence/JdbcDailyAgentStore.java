@@ -16,7 +16,8 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
-/** 日常授权的 JDBC 适配器；仅存取元数据，Task7 才装配生产运行时。 */
+/** 日常授权的 JDBC 适配器；仅存取元数据，构造时不读取数据库。 */
+@org.springframework.stereotype.Component
 public final class JdbcDailyAgentStore implements DailyAgentStore {
     private final JdbcClient jdbc;
     private final ObjectMapper mapper;

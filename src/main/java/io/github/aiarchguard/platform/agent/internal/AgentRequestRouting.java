@@ -14,6 +14,24 @@ public final class AgentRequestRouting {
 
     /** 同时核对用途与完整模型绑定，最后排除持久化 live 关联；失败返回 false，不能猜测采用旧预算。 */
     public boolean synthetic(AgentSnapshot snapshot) {
+        if (!syntheticBinding(snapshot)) return false;
+        var view = snapshot.view();
+        try { return !links.hasDailyAssociation(view.projectId(), view.id()) && links.find(view.projectId(), view.id()).isEmpty(); }
+        catch (RuntimeException unavailable) { return false; }
+    }
+
+    enum RecoveryMode { DAILY, LEGACY, REJECTED }
+
+    /** 恢复仅依据不可变关联分流；无关联只有完整的合成绑定可进入旧恢复。 */
+    RecoveryMode recoveryMode(AgentSnapshot snapshot) {
+        var view = snapshot.view();
+        boolean daily = links.hasDailyAssociation(view.projectId(), view.id());
+        boolean legacy = links.find(view.projectId(), view.id()).isPresent();
+        if (daily) return legacy ? RecoveryMode.REJECTED : RecoveryMode.DAILY;
+        return legacy || syntheticBinding(snapshot) ? RecoveryMode.LEGACY : RecoveryMode.REJECTED;
+    }
+
+    private boolean syntheticBinding(AgentSnapshot snapshot) {
         if (snapshot == null || snapshot.view() == null || snapshot.view().bindings() == null || snapshot.input() == null) return false;
         var view = snapshot.view();
         var bindings = view.bindings();
@@ -31,8 +49,6 @@ public final class AgentRequestRouting {
                 || !"0.1.0".equals(bindings.outputSchemaVersion()) || !"0.1.0".equals(input.schemaVersion())
                 || !view.purpose().equals(input.purpose()) || !prompt.equals(bindings.promptVersion())
                 || !prompt.equals(input.promptVersion())) return false;
-        // A binding-looking request with an immutable live association is still never synthetic work.
-        try { return !links.hasDailyAssociation(view.projectId(), view.id()) && links.find(view.projectId(), view.id()).isEmpty(); }
-        catch (RuntimeException unavailable) { return false; }
+        return true;
     }
 }

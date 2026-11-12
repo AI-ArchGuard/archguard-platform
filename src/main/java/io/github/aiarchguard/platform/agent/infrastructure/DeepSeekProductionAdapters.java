@@ -8,13 +8,11 @@ import io.github.aiarchguard.platform.agent.internal.LiveResponsePort;
 import io.github.aiarchguard.platform.agentcredential.CredentialUseSource;
 import java.time.Duration;
 import java.util.Set;
-import org.springframework.stereotype.Component;
 
 /**
  * Spring 中注册的惰性生产适配器集合；
  * 构造不读取 Key、不创建 HTTP 或探测网络，实际使用时才初始化固定协议资源，关闭后不能重建。
  */
-@Component
 final class DeepSeekProductionAdapters implements LiveAdapterBundle {
     private final ObjectMapper mapper;
     private final VersionBoundCredentialUse credentials;

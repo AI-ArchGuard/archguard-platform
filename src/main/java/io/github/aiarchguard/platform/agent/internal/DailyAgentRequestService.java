@@ -17,7 +17,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.util.function.*;
 
-/** 日常创建的单一有界事务；仅在真实提交后通知未装配的调度端口。 */
+/** 日常创建的单一有界事务；仅在真实提交后交接给有界调度器。 */
 public final class DailyAgentRequestService {
     private final ProjectAuthorization projects;
     private final CurrentActorProvider actors;

@@ -14,6 +14,8 @@ import io.github.aiarchguard.platform.identity.CurrentActorProvider;
 import io.github.aiarchguard.platform.project.ProjectAuthorization;
 import io.github.aiarchguard.platform.project.ProjectPermissionDeniedException;
 import java.security.MessageDigest;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -23,7 +25,9 @@ import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-/** 日常风险/许可控制的应用事务；仅元数据，不注册生产运行时，也不创建请求或花费。 */
+/** 日常风险/许可控制的应用事务；仅操作元数据，不创建请求或花费。 */
+@Service
+@org.springframework.context.annotation.Fallback
 public class DailyAgentControlService {
     private static final long RESERVATION = 316373, PER_REQUEST = 350000, MAX_AGE = 604800;
     private final ProjectAuthorization projects;
@@ -41,7 +45,9 @@ public class DailyAgentControlService {
 
     DailyAgentControlService(ProjectAuthorization projects, CurrentActorProvider actors, CredentialOperations credentials,
             DailyRuntimePolicy policy, DailyAgentStore store, AgentSchemaAvailability schema, AuditRecorder audit,
-            TraceIdProvider traces, Clock clock, ObjectMapper mapper, Environment environment, long projectLimit, long deploymentLimit) {
+            TraceIdProvider traces, Clock clock, ObjectMapper mapper, Environment environment,
+            @Value("${archguard.agent.live-accounting.project-day-limit-microusd:5000000}") long projectLimit,
+            @Value("${archguard.agent.live-accounting.deployment-day-limit-microusd:20000000}") long deploymentLimit) {
         this.projects = projects; this.actors = actors; this.credentials = credentials; this.policy = policy; this.store = store;
         this.schema = schema; this.audit = audit; this.traces = traces; this.clock = clock; this.mapper = mapper; this.environment = environment;
         this.projectLimit = projectLimit; this.deploymentLimit = deploymentLimit;

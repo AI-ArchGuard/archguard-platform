@@ -12,6 +12,10 @@ final class PersonalLiveRuntime implements AutoCloseable {
         this.executor = Objects.requireNonNull(executor); this.dispatcher = Objects.requireNonNull(dispatcher);
         this.admission = Objects.requireNonNull(admission);
     }
+    /** 借用资源的构造在共享装配完成前始终拒绝。 */
+    PersonalLiveRuntime(PersonalLiveRuntimeResources resources, LiveRequestDispatcher dispatcher, Runnable admission) {
+        throw new io.github.aiarchguard.platform.agent.AgentUnavailableException();
+    }
     void requireAvailable() { executor.requireOpen(); admission.run(); executor.requireOpen(); }
     void dispatch(UUID project, UUID request) { requireAvailable(); dispatcher.dispatch(project, request); }
     @Override public void close() { executor.close(); }

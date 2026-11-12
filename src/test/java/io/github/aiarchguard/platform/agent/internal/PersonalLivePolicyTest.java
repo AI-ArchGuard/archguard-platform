@@ -85,6 +85,10 @@ class PersonalLivePolicyTest {
             var approvals = (AgentEnablementStore) Proxy.newProxyInstance(getClass().getClassLoader(), new Class[]{AgentEnablementStore.class},
                 (proxy, method, args) -> { if (method.getName().equals("find")) return Optional.ofNullable(approved.get());
                     throw new AssertionError("unexpected store operation"); });
+            // 同时具备日常开关和检查引用时仍须验证原模式自己的项目、批次和模板。
+            env.setProperty("archguard.agent.daily.enabled","true");
+            env.setProperty("archguard.agent.daily.network-check-ref","synthetic-network-check");
+            env.setProperty("archguard.agent.daily.secret-check-ref","synthetic-secret-check");
             var policy = new PersonalLivePolicy(env, pool, batches, approvals);
             var good = new LiveAccountingStore.Batch(new LiveBatchView(batchId, project, approvalId, project, now,
                 "a".repeat(64), now.plusSeconds(60), 2, 632746, false), project, project, manifest, null, LiveCostPolicy.CONTEXT_VERSION);

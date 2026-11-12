@@ -99,6 +99,9 @@ public final class LiveRequestDispatcher {
     }
 
     /** 捕获经核验请求者和持久化 trace 的受控作用域；当前有事务时在提交之后才排队，不捕获 JWT 或模型正文。 */
+    /** 已提交创建的专用交接；红灯阶段保留原提交回调语义。 */
+    void dispatchCommitted(UUID project, UUID request) { dispatch(project,request); }
+
     private void dispatchTrusted(UUID project, UUID request) {
         admission.run();
         if (project == null || request == null) throw new AgentInvalidException();

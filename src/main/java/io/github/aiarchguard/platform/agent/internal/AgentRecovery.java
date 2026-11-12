@@ -20,8 +20,15 @@ public class AgentRecovery {
     private final AgentSchemaAvailability schema;
     private final Clock clock;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public AgentRecovery(AgentStore store, AgentTransitions transitions, AgentSchemaAvailability schema, Clock clock) {
         this.store = store; this.transitions = transitions; this.schema = schema; this.clock = clock;
+    }
+
+    /** 可注入关联端口以核验歧义记录；日常恢复接线尚未启用。 */
+    AgentRecovery(AgentStore store, AgentTransitions transitions, AgentSchemaAvailability schema, Clock clock,
+            LiveRequestStore associations, DailyAgentRecovery daily) {
+        this(store, transitions, schema, clock);
     }
 
     /** Schema 就绪后每轮最多处理 100 个过期请求；60 秒窗口包含结算宽限，但不会启动新模型尝试。 */

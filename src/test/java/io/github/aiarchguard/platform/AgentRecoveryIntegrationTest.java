@@ -57,6 +57,8 @@ class AgentRecoveryIntegrationTest extends PostgresIntegrationTestSupport {
         assertThat(failedRun.state()).isEqualTo("FAILED");
         assertThat(failedRun.failure().code()).isEqualTo("INTERNAL_ERROR");
         assertThat(failedRun.result()).isNull();
+        assertThat(jdbc.sql("SELECT metadata->>'costUnknown' FROM audit.audit_records WHERE project_id=:p AND action='agent.request.failed' AND metadata->>'recovery'='true' ORDER BY 1")
+            .param("p",fixture.project()).query(String.class).list()).containsExactly("false","true");
         assertThat(store.find(fixture.project(), healthy.view().id()).orElseThrow().view().state()).isEqualTo("RUNNING");
         assertThat(jdbc.sql("SELECT reserved_microusd FROM agent.budget_usage WHERE scope='PROJECT' AND scope_id=:id AND utc_day=:day")
             .param("id", fixture.project()).param("day", day).query(Long.class).single()).isEqualTo(4000);

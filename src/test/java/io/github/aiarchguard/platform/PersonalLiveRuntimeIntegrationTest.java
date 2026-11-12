@@ -348,6 +348,56 @@ class PersonalLiveRuntimeIntegrationTest {
         assertThat(adapter.calls.get()).isOne(); assertThat(projectAmount("reserved_microusd")).isEqualTo(316373);
     }
 
+    // 旧创建端口写入真实批次关联，不启动 worker，然后检查原恢复终态、审计及费用。
+    @Autowired LiveRequestOperations liveCreation;
+    @Autowired AgentRecovery recovery;
+    @Test void legacyLinkedRequestStillRecoversExactlyOnceWithoutAProviderAttempt() {
+        identity(); long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+        java.util.function.LongSupplier budget=()->until-System.nanoTime();
+        var made=liveCreation.create(project,batch,explanation,"legacy-recovery",ORIGIN,false,budget);
+        assertThat(made.state()).isEqualTo("QUEUED");
+        TIME.set(NOW.plusSeconds(61)); recovery.recoverExpired(); recovery.recoverExpired();
+        var view=requests.find(project,made.id()).orElseThrow().view();
+        assertThat(view.state()).isEqualTo("FAILED"); assertThat(view.failure().code()).isEqualTo("MODEL_TIMEOUT");
+        assertThat(ledger.attempt(project,made.id())).isEmpty(); assertThat(adapter.calls).hasValue(0);
+        assertThat(jdbc.sql("SELECT count(*) FROM audit.audit_records WHERE project_id=:p AND action='agent.request.failed' AND metadata->>'requestId'=:r AND metadata->>'recovery'='true' AND metadata->>'costUnknown'='false'")
+            .param("p",project).param("r",made.id().toString()).query(Integer.class).single()).isOne();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"inventory","network-check-ref","secret-check-ref","retry","hostname"})
+    void dailyConfigurationCannotReplaceMissingLegacyReadiness(String missing) throws Exception {
+        var properties=new java.util.HashMap<String,Object>();
+        properties.put("archguard.agent.daily.enabled","true");
+        properties.put("archguard.agent.daily.secret-check-ref","synthetic-secret-check");
+        properties.put("archguard.agent.daily.network-check-ref","synthetic-network-check");
+        properties.put("archguard.agent.live.project-id",project.toString());
+        properties.put("archguard.agent.live.batch-id",batch.toString());
+        String property=switch(missing) {
+            case "retry"->"jdk.httpclient.enableAllMethodRetry";
+            case "hostname"->"jdk.internal.httpclient.disableHostnameVerification";
+            default->null;
+        };
+        var prior=property==null?null:System.getProperty(property);
+        try {
+            if(property!=null) System.setProperty(property,"true");
+            else if(missing.equals("inventory")) INVENTORY.clear();
+            else properties.put("archguard.agent.live."+missing,"");
+            bindRuntime(properties);
+            var response=submit(project,explanation,"daily-no-fallback",ORIGIN,owner()).andReturn();
+            if(response.getResponse().getStatus()==202) {
+                var made=mapper.readTree(response.getResponse().getContentAsByteArray());
+                assertThat(terminal(made).path("state").asText()).isEqualTo("FAILED");
+            } else assertRejectedWithoutHttp(response);
+            assertThat(adapter.calls).hasValue(0);
+            assertThat(jdbc.sql("SELECT count(*) FROM agent.live_attempts WHERE project_id=:p").param("p",project).query(Integer.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM audit.audit_records WHERE action='AGENT_CREDENTIAL_USE_REQUESTED' AND metadata->>'credentialVersion'=:v")
+                .param("v",credentialVersion.toString()).query(Integer.class).single()).isZero();
+        } finally {
+            if(property!=null) { if(prior==null) System.clearProperty(property); else System.setProperty(property,prior); }
+        }
+    }
+
     private UUID template(String purpose, UUID head, String key) {
         identity(); var view = agents.create(project, key, new CreateAgentRequest(purpose, fixture.job(), REPORT, head,
             new java.util.ArrayList<>(List.of(fixture.finding())), new java.util.ArrayList<>(List.of(document))));

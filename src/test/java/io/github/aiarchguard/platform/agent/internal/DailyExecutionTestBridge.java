@@ -21,6 +21,11 @@ public final class DailyExecutionTestBridge {
         association = new DailyLiveRequestAssociation(store, controls, accounting, resources);
     }
 
+    /** 观察清理事务时仍调用生产恢复入口，构造能力只在测试包内暴露。 */
+    public static DailyAgentRecovery recovery(DailyAccountingService accounting) {
+        return new DailyAgentRecovery(accounting);
+    }
+
     /** 故意以缺少资源校验器的构造申请能力，供集成测试核验没有任何写副作用。 */
     public static void tryUnverifiedLease(DailyAgentStore store, DailyAgentControlService controls,
             DailyAccountingService service, DailyAgentStore.RequestLink link) {

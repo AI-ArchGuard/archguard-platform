@@ -10,11 +10,13 @@ import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** 恢复测试使用已提交的真实授权、请求、尝试及结算。迟到与重启均只推进本地状态。 */
 @org.springframework.context.annotation.Import(AgentDailyRecoveryIntegrationTest.NoProvider.class)
@@ -81,13 +83,20 @@ class AgentDailyRecoveryIntegrationTest extends DailyExecutionIntegrationSupport
     }
 
     @ParameterizedTest @ValueSource(strings={"queued","running","reserved","unknown","settled"})
-    void recoveryNeverResendsAndKeepsSettlement(String phase) {
+    void recoveryNeverResendsAndKeepsSettlement(String phase) throws Exception {
         boolean charged=Set.of("reserved","unknown","settled").contains(phase);
         boolean settled=phase.equals("settled");
         var baseline=deployment();
         var c=phase.equals("queued")?queued(3):running(charged);
         if (settled) settle(c);
         if (phase.equals("unknown")) service.unknown(c.p(),c.r());
+        var originalStop=store.findStop(c.p(),c.g());
+        var originalAttempt=store.attempt(c.p(),c.r());
+        if (phase.equals("unknown")) {
+            assertThat(originalStop.orElseThrow()).isEqualTo(
+                new DailyAgentOperations.DailyStop(c.r(),"OUTPUT_INVALID",clock.instant()));
+            assertThat(originalAttempt.orElseThrow().state()).isEqualTo("UNKNOWN");
+        }
         var selected=snapshot(c);
         // 跨日并撤销，原调用资格已失效，仍必须依据原关联与原日记账。
         controls.revokeGrant(c.p(),c.g());
@@ -113,6 +122,27 @@ class AgentDailyRecoveryIntegrationTest extends DailyExecutionIntegrationSupport
         } else assertThat(store.attempt(c.p(),c.r())).isEmpty();
         assertThat(audits(c,"agent.request.failed")).as("不能进入旧恢复审计").isZero();
         assertThat(callbacks).containsExactly(c.r());
+        String accountingState=charged?(settled?"SETTLED":"UNKNOWN"):"NOT_ATTEMPTED";
+        assertSingleAudit(c,"agent.daily.request.failed","FAILURE",Map.of("requestId",c.r(),
+            "failureCode","MODEL_TIMEOUT","accountingState",accountingState,"recovery",true));
+        String stopCode=phase.equals("unknown")?"OUTPUT_INVALID":"MODEL_TIMEOUT";
+        var stop=store.findStop(c.p(),c.g()).orElseThrow();
+        assertThat(stop.code()).isEqualTo(stopCode);
+        if (phase.equals("unknown")) {
+            assertThat(stop).isEqualTo(originalStop.orElseThrow());
+            assertThat(store.attempt(c.p(),c.r())).isEqualTo(originalAttempt);
+        }
+        assertSingleAudit(c,"agent.daily.grant_stopped","SUCCESS",Map.of("requestId",c.r(),"grantId",c.g(),"code",stopCode));
+    }
+
+    private void assertSingleAudit(Case c,String action,String result,Map<String,Object> metadata) throws Exception {
+        // 夹具的项目唯一；先取该动作的全部行，错报原因或额外一条审计都必须失败。
+        var matches=jdbc.sql("""
+            SELECT result=:result AND metadata=CAST(:metadata AS jsonb)
+            FROM audit.audit_records WHERE project_id=:project AND action=:action
+            """).param("project",c.p()).param("action",action).param("result",result)
+            .param("metadata",mapper.writeValueAsString(metadata)).query(Boolean.class).list();
+        assertThat(matches).as("%s 的唯一审计须匹配结果及元数据",action).containsExactly(true);
     }
 
     @Test void staleQueuedSelectionDoesNotStopFreshClaim() {
@@ -195,13 +225,16 @@ class AgentDailyRecoveryIntegrationTest extends DailyExecutionIntegrationSupport
             }));
             try {
                 assertThat(held.await(5,TimeUnit.SECONDS)).isTrue();
-                var recovering=pool.submit(()->recover(selected,cutoff));
-                awaitWait(pid.get(),recovering);
-                var revoking=pool.submit(asOwner(()->controls.revokeGrant(c.p(),c.g())));
-                // 只释放胜者之前已进入数据库的两名等待者。
-                long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
-                while(System.nanoTime()<until && blockedCount(pid.get())<2) Thread.onSpinWait();
-                assertThat(blockedCount(pid.get())).isGreaterThanOrEqualTo(2);
+                var recoveryPid=new AtomicInteger();
+                var revokePid=new AtomicInteger();
+                var recovery=observedRecovery(recoveryPid);
+                var recovering=pool.submit(()->recovery.recoverExpired(selected,cutoff));
+                // 默认 REQUIRED，与 revokeGrant 的事务共享同一连接。
+                var revoking=pool.submit(asOwner(()->new TransactionTemplate(manager).execute(status->{
+                    revokePid.set(backendPid());
+                    return controls.revokeGrant(c.p(),c.g());
+                })));
+                awaitBothBlocked(pid.get(),recoveryPid,recovering,revokePid,revoking);
                 release.countDown(); success.get(5,TimeUnit.SECONDS);
                 recovering.get(5,TimeUnit.SECONDS); revoking.get(5,TimeUnit.SECONDS);
                 assertThat(state(c)).isEqualTo("SUCCEEDED");
@@ -211,7 +244,52 @@ class AgentDailyRecoveryIntegrationTest extends DailyExecutionIntegrationSupport
             } finally { release.countDown(); }
         }
     }
-    int blockedCount(int ownerPid) {
-        return jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE :p=ANY(pg_blocking_pids(pid))").param("p",ownerPid).query(Integer.class).single();
+    private int backendPid() {
+        return jdbc.sql("SELECT pg_backend_pid()").query(Integer.class).single();
+    }
+
+    private DailyAgentRecovery observedRecovery(AtomicInteger pid) {
+        var observed=new LiveDatabaseWork() {
+            @Override public <T> T cleanup(Supplier<T> action) {
+                // 从生产清理事务内部取 PID；期限、锁、回调和提交仍由原实现负责。
+                return work.cleanup(()->{
+                    pid.set(backendPid());
+                    return action.get();
+                });
+            }
+        };
+        return DailyExecutionTestBridge.recovery(new DailyAccountingService(controls,store,requests,
+            observed,audit,traces,clock,PROJECT_LIMIT,DEPLOYMENT_LIMIT));
+    }
+
+    private void awaitBothBlocked(int owner,AtomicInteger recoveryPid,Future<?> recovering,
+            AtomicInteger revokePid,Future<?> revoking) throws InterruptedException {
+        long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
+        List<Integer> observed=List.of();
+        while (System.nanoTime()<until && !recovering.isDone() && !revoking.isDone()) {
+            int recovery=recoveryPid.get(), revoke=revokePid.get();
+            if (recovery>0 && revoke>0) {
+                assertThat(List.of(owner,recovery,revoke)).doesNotHaveDuplicates();
+                // 队列中后一会话可能等待前一会话。路径有深度上限，同一路径不重访 PID。
+                observed=jdbc.sql("""
+                    WITH RECURSIVE waits(origin,pid,path) AS (
+                        SELECT pid,pid,ARRAY[pid] FROM (VALUES (CAST(:recovery AS integer)),
+                            (CAST(:revoke AS integer))) AS workers(pid)
+                        UNION ALL
+                        SELECT w.origin,b.pid,array_append(w.path,b.pid) FROM waits w
+                        CROSS JOIN LATERAL unnest(pg_blocking_pids(w.pid)) AS b(pid)
+                        WHERE w.pid<>:owner AND cardinality(w.path)<8 AND NOT (b.pid=ANY(w.path))
+                    )
+                    SELECT DISTINCT origin FROM waits WHERE pid=:owner
+                    """).param("recovery",recovery).param("revoke",revoke).param("owner",owner)
+                    .query(Integer.class).list();
+                if (observed.size()==2) break;
+            }
+            TimeUnit.MILLISECONDS.sleep(5);
+        }
+        assertThat(observed).as("恢复与撤销必须同时等待持锁的成功事务 %s",owner)
+            .containsExactlyInAnyOrder(recoveryPid.get(),revokePid.get());
+        assertThat(recovering.isDone()).isFalse();
+        assertThat(revoking.isDone()).isFalse();
     }
 }

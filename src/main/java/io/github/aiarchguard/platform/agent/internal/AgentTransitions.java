@@ -22,7 +22,16 @@ public class AgentTransitions {
     private final Clock clock;
     private final AgentRequestRouting routing;
 
+    private final DailyAgentRecovery dailyRecovery;
+
     AgentTransitions(AgentStore store, AgentBudgetStore budgets, AuditRecorder audit, Clock clock, AgentRequestRouting routing) {
+        this(store, budgets, audit, clock, routing, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    AgentTransitions(AgentStore store, AgentBudgetStore budgets, AuditRecorder audit, Clock clock,
+            AgentRequestRouting routing, DailyAgentRecovery dailyRecovery) {
+        this.dailyRecovery = dailyRecovery;
         this.store = store; this.budgets = budgets; this.audit = audit; this.clock = clock;
         this.routing = routing;
     }
@@ -99,6 +108,10 @@ public class AgentTransitions {
     @Transactional
     public void recoverExpired(AgentSnapshot snapshot, Instant cutoff) {
         var view = snapshot.view();
+        // 兼容直接调用状态机的入口，也必须排除日常及损坏关联。
+        var mode = routing.recoveryMode(snapshot);
+        if (mode == AgentRequestRouting.RecoveryMode.DAILY && dailyRecovery != null) dailyRecovery.recoverExpired(snapshot, cutoff);
+        if (mode != AgentRequestRouting.RecoveryMode.LEGACY) return;
         boolean unknownCost = "RUNNING".equals(view.state());
         String code = unknownCost ? "INTERNAL_ERROR" : "MODEL_TIMEOUT";
         if (store.expire(view.id(), cutoff, new AgentRequestView.AgentFailure(code,

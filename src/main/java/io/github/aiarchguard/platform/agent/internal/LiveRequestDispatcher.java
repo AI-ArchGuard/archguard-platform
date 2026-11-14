@@ -92,24 +92,30 @@ public final class LiveRequestDispatcher {
 
     /** 对外只传播稳定身份/输入错误；其余失败转为不可用，避免执行器或数据库异常穿透 API。 */
     public void dispatch(UUID project, UUID request) {
-        try { dispatchTrusted(project, request); }
+        dispatch(project, request, false);
+    }
+
+    private void dispatch(UUID project, UUID request, boolean committed) {
+        try { dispatchTrusted(project, request, committed); }
         catch (AgentInvalidException | AgentNotFoundException | ProjectPermissionDeniedException
                 | InvalidCurrentActorException | InactiveAuthenticatedTaskException stable) { throw stable; }
         catch (RuntimeException unavailable) { throw new AgentUnavailableException(); }
     }
 
-    /** 捕获经核验请求者和持久化 trace 的受控作用域；当前有事务时在提交之后才排队，不捕获 JWT 或模型正文。 */
-    private void dispatchTrusted(UUID project, UUID request) {
+    /** 创建事务已经提交。使用独立有界读取后直接入队，避免向正在完成的事务再次注册回调。 */
+    void dispatchCommitted(UUID project, UUID request) { dispatch(project, request, true); }
+
+    private void dispatchTrusted(UUID project, UUID request, boolean committed) {
         admission.run();
         if (project == null || request == null) throw new AgentInvalidException();
         boolean callerTransaction = TransactionSynchronizationManager.isActualTransactionActive();
-        if (callerTransaction != TransactionSynchronizationManager.isSynchronizationActive()) throw new AgentUnavailableException();
+        if (!committed && callerTransaction != TransactionSynchronizationManager.isSynchronizationActive()) throw new AgentUnavailableException();
         // 创建事务内必须看见本事务刚插入的行；独立调用先结束短只读事务，再入队。
-        Runnable task = boundedPreparation && !callerTransaction
+        Runnable task = boundedPreparation && (committed || !callerTransaction)
             ? transitions.prepareDispatch(nanos, () -> dispatchTask(project, request))
             : dispatchTask(project, request);
         if (task == null) return;
-        if (callerTransaction) {
+        if (callerTransaction && !committed) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override public void afterCommit() { queue(task); }
             });

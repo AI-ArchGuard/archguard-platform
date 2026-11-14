@@ -64,6 +64,8 @@ logging:
 archguard:
   agent:
     enabled: ${ARCHGUARD_AGENT_ENABLED:false}
+    daily:
+      enabled: ${ARCHGUARD_AGENT_DAILY_ENABLED:false}
     credentials:
       enabled: ${ARCHGUARD_CREDENTIAL_MANAGEMENT_ENABLED:false}
       owner-id: ${ARCHGUARD_CREDENTIAL_OWNER_ID:}

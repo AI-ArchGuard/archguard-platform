@@ -20,8 +20,20 @@ public class AgentRecovery {
     private final AgentSchemaAvailability schema;
     private final Clock clock;
 
+    private final AgentRequestRouting routing;
+    private final DailyAgentRecovery dailyRecovery;
+
     public AgentRecovery(AgentStore store, AgentTransitions transitions, AgentSchemaAvailability schema, Clock clock) {
+        this(store, transitions, schema, clock, null, null);
+    }
+
+    /** 生产装配按精确关联选择唯一恢复路径。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    AgentRecovery(AgentStore store, AgentTransitions transitions, AgentSchemaAvailability schema, Clock clock,
+            LiveRequestStore associations, DailyAgentRecovery daily) {
         this.store = store; this.transitions = transitions; this.schema = schema; this.clock = clock;
+        this.routing = associations == null ? null : new AgentRequestRouting(associations);
+        this.dailyRecovery = daily;
     }
 
     /** Schema 就绪后每轮最多处理 100 个过期请求；60 秒窗口包含结算宽限，但不会启动新模型尝试。 */
@@ -33,7 +45,20 @@ public class AgentRecovery {
         // Hard provider limit is 30s; 60s includes a settlement grace period.
         Instant cutoff = Instant.now(clock).minusSeconds(60);
         try {
-            for (var snapshot : store.expired(cutoff, 100)) transitions.recoverExpired(snapshot, cutoff);
+            for (var snapshot : store.expired(cutoff, 100)) {
+                try {
+                    if (routing == null) transitions.recoverExpired(snapshot, cutoff);
+                    else switch (routing.recoveryMode(snapshot)) {
+                        case DAILY -> dailyRecovery.recoverExpired(snapshot, cutoff);
+                        case LEGACY -> transitions.recoverExpired(snapshot, cutoff);
+                        case REJECTED -> LOGGER.error("Agent recovery association rejected requestId={} traceId={}",
+                            snapshot.view().id(), snapshot.view().traceId());
+                    }
+                } catch (RuntimeException unavailable) {
+                    LOGGER.error("Agent recovery unavailable requestId={} traceId={} errorType={}", snapshot.view().id(),
+                        snapshot.view().traceId(), unavailable.getClass().getSimpleName());
+                }
+            }
         } catch (RuntimeException unavailable) {
             LOGGER.error("Agent recovery unavailable traceId=unknown errorType={}", unavailable.getClass().getSimpleName());
         }

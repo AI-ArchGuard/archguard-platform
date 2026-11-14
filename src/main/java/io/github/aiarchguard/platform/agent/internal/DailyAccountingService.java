@@ -5,12 +5,15 @@ import io.github.aiarchguard.platform.agent.internal.DailyAgentStore.*;
 import io.github.aiarchguard.platform.agent.internal.LiveAccountingOperations.*;
 import io.github.aiarchguard.platform.audit.*;
 import io.github.aiarchguard.platform.common.TraceIdProvider;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 import java.time.*;
 import java.util.*;
 import java.util.function.LongSupplier;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-/** 日常记账的内部应用服务；任务 7 才装配，预留与发送复核沿用原执行期限。 */
+/** 日常记账的内部应用服务；预留与发送复核沿用原执行期限。 */
+@Service
 public final class DailyAccountingService {
     private static final long RESERVATION = LiveCostPolicy.CONTEXT_RESERVATION;
     private final DailyAgentControlService controls;
@@ -25,7 +28,8 @@ public final class DailyAccountingService {
 
     public DailyAccountingService(DailyAgentControlService controls, DailyAgentStore store, AgentStore requests,
             LiveDatabaseWork database, AuditRecorder audit, TraceIdProvider traces, Clock clock,
-            long projectLimit, long deploymentLimit) {
+            @Value("${archguard.agent.live-accounting.project-day-limit-microusd:5000000}") long projectLimit,
+            @Value("${archguard.agent.live-accounting.deployment-day-limit-microusd:20000000}") long deploymentLimit) {
         this.controls = controls; this.store = store; this.requests = requests; this.database = database;
         this.audit = audit; this.traces = traces; this.clock = clock;
         this.projectLimit = projectLimit; this.deploymentLimit = deploymentLimit;
@@ -121,19 +125,54 @@ public final class DailyAccountingService {
     public void stop(UUID project, UUID request, String code) {
         database.cleanup(() -> {
             var link = prefix(project, request);
-            var attempt = store.attempt(project, request);
-            if (attempt.isPresent()) {
-                exactAttempt(link, attempt.orElseThrow());
-                lockMoney(attempt.orElseThrow());
-            }
-            store.lockRequest(project, request);
+            lockCleanupRequest(link);
             stop(link, snapshot(link), code);
             return null;
         });
     }
+    /** 设置、授权、原记账日和请求行锁与结果写入同向。CAS 在这些锁内重验当前状态和年龄。 */
+    void recoverExpired(UUID project, UUID request, Instant cutoff) {
+        database.cleanup(() -> {
+            var link = prefix(project, request);
+            var attempt = lockCleanupRequest(link);
+            var current = snapshot(link);
+            var failure = new AgentRequestView.AgentFailure("MODEL_TIMEOUT", AgentApplicationService.message("MODEL_TIMEOUT"));
+            if (!requests.expire(request, cutoff, failure, clock.instant())) return null;
+            // 只有过期 CAS 的胜者能写 UNKNOWN 或停授权；已有费用事实、预留和槽位保持不动。
+            if (attempt.isPresent() && attempt.get().state() == null) {
+                store.finish(attempt.get(), null, null, clock.instant());
+                record(current, "agent.daily.finished", Map.of("requestId", request, "state", "UNKNOWN",
+                    "actualMicrousd", "UNKNOWN"), current.view().traceId());
+            }
+            stop(link, current, failure.code(), current.view().traceId());
+            String state = attempt.map(a -> a.state() == null ? "UNKNOWN" : a.state()).orElse("NOT_ATTEMPTED");
+            audit.record(new AuditEvent(current.view().requesterId(), project, "agent.daily.request.failed",
+                AuditResult.FAILURE, current.view().traceId(), Map.of("requestId", request, "failureCode", failure.code(),
+                    "recovery", true, "accountingState", state)));
+            return null;
+        });
+    }
+
+    private Optional<Attempt> lockCleanupRequest(RequestLink link) {
+        var attempt = store.attempt(link.projectId(), link.requestId());
+        attempt.ifPresent(existing -> {
+            exactAttempt(link, existing);
+            lockMoney(existing);
+        });
+        store.lockRequest(link.projectId(), link.requestId());
+        return attempt;
+    }
     private void stop(RequestLink link, AgentSnapshot snapshot, String code) {
-        store.stop(link.projectId(), link.grantId(), link.requestId(), code, clock.instant());
-        record(snapshot, "agent.daily.grant_stopped", Map.of("requestId", link.requestId(), "grantId", link.grantId(), "code", code));
+        stop(link, snapshot, code, traces.currentTraceId());
+    }
+    private void stop(RequestLink link, AgentSnapshot snapshot, String code, String traceId) {
+        if (!store.insertStop(link.projectId(), link.grantId(), link.requestId(), code, clock.instant())) {
+            // 同一授权的首次停止原因不可变；原请求不匹配时回滚本次清理。
+            var original = store.findStop(link.projectId(), link.grantId()).orElseThrow(DailyAccountingService::invalid);
+            if (!link.requestId().equals(original.requestId())) throw invalid();
+            return;
+        }
+        record(snapshot, "agent.daily.grant_stopped", Map.of("requestId", link.requestId(), "grantId", link.grantId(), "code", code), traceId);
     }
     /**
      * 调用方须已按设置→授权→原部署日→原项目日→请求持锁，并在同一事务赢得成功结果 CAS。
@@ -231,8 +270,11 @@ public final class DailyAccountingService {
     }
     private LocalDate today() { return clock.instant().atZone(ZoneOffset.UTC).toLocalDate(); }
     private void record(AgentSnapshot snapshot, String action, Map<String, Object> metadata) {
+        record(snapshot, action, metadata, traces.currentTraceId());
+    }
+    private void record(AgentSnapshot snapshot, String action, Map<String, Object> metadata, String traceId) {
         audit.record(new AuditEvent(snapshot.view().requesterId(), snapshot.view().projectId(), action,
-            AuditResult.SUCCESS, traces.currentTraceId(), metadata));
+            AuditResult.SUCCESS, traceId, metadata));
     }
     private static AgentDailyStateInvalidException invalid() { return new AgentDailyStateInvalidException(); }
 }

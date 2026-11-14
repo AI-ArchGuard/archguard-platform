@@ -25,7 +25,7 @@ abstract class AgentLiveDatabaseIntegrationTestSupport {
     }
 
     // 创建随机命名测试数据库并设置有限 SQL 等待，失败直接终止夹具初始化。
-    private static String createDatabase() {
+    static String createDatabase() {
         var postgres = PostgresIntegrationTestSupport.POSTGRES;
         String database = "archguard_live_deadline_" + UUID.randomUUID().toString().replace("-", "");
         try (var connection = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());

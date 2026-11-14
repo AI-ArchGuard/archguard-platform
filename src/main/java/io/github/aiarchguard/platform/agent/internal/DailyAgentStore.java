@@ -19,7 +19,8 @@ public interface DailyAgentStore {
     default void insertAttempt(Attempt attempt, Instant at) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
     default void reserveUsage(UUID project, UUID grant, UUID request, long reserved) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
     default void finish(Attempt attempt, io.github.aiarchguard.platform.agent.LiveTokenUsage usage, Long actual, Instant at) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
-    default void stop(UUID project, UUID grant, UUID request, String code, Instant at) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
+    /** 仅新插入停止记录时返回 true；冲突时由调用方核对原请求。 */
+    default boolean insertStop(UUID project, UUID grant, UUID request, String code, Instant at) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
     default void releaseActive(UUID project, UUID grant, UUID request) { throw new io.github.aiarchguard.platform.agent.AgentUnavailableException(); }
     record Attempt(UUID requestId, UUID projectId, UUID grantId, UUID attemptId, UUID deploymentId,
             UUID credentialVersion, long settingsRevision, String runtimeBindingDigest,

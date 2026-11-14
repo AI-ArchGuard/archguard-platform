@@ -166,7 +166,12 @@ public final class DailyAccountingService {
         stop(link, snapshot, code, traces.currentTraceId());
     }
     private void stop(RequestLink link, AgentSnapshot snapshot, String code, String traceId) {
-        store.stop(link.projectId(), link.grantId(), link.requestId(), code, clock.instant());
+        if (!store.insertStop(link.projectId(), link.grantId(), link.requestId(), code, clock.instant())) {
+            // 同一授权的首次停止原因不可变；原请求不匹配时回滚本次清理。
+            var original = store.findStop(link.projectId(), link.grantId()).orElseThrow(DailyAccountingService::invalid);
+            if (!link.requestId().equals(original.requestId())) throw invalid();
+            return;
+        }
         record(snapshot, "agent.daily.grant_stopped", Map.of("requestId", link.requestId(), "grantId", link.grantId(), "code", code), traceId);
     }
     /**

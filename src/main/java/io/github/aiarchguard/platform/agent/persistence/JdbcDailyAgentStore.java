@@ -73,14 +73,14 @@ public final class JdbcDailyAgentStore implements DailyAgentStore {
             WHERE project_id=:p AND grant_id=:g AND reserved_microusd>=:reserved
             """).param("reserved",a.reserved()).param("actual",actual).param("p",a.projectId()).param("g",a.grantId()).update());
     }
-    @Override public void stop(UUID project, UUID grant, UUID request, String code, Instant at) {
+    @Override public boolean insertStop(UUID project, UUID grant, UUID request, String code, Instant at) {
         if (!java.util.Set.of("MODEL_DISABLED","MODEL_UNAVAILABLE","MODEL_TIMEOUT","AUTHORIZATION_REVOKED",
                 "QUOTA_EXHAUSTED","OUTPUT_INVALID","CITATION_INVALID","INTERNAL_ERROR","INPUT_TOKEN_LIMIT")
                 .contains(code == null ? "" : code)) throw new AgentUnavailableException();
-        jdbc.sql("""
+        return jdbc.sql("""
             INSERT INTO agent.daily_grant_stops(grant_id,project_id,request_id,code,created_at)
             VALUES (:g,:p,:r,:code,:at) ON CONFLICT (grant_id) DO NOTHING
-            """).param("g",grant).param("p",project).param("r",request).param("code",code).param("at",Timestamp.from(at)).update();
+            """).param("g",grant).param("p",project).param("r",request).param("code",code).param("at",Timestamp.from(at)).update() == 1;
     }
     /** 只清除精确成功请求的槽，调用方须已持有设置、授权、原日金额与请求锁。 */
     @Override public void releaseActive(UUID project, UUID grant, UUID request) {
